@@ -1,0 +1,19 @@
+# OpenThread C++ reference (local clone, not tracked)
+openthread
+
+# Go build artifacts
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git worktrees
+.worktrees

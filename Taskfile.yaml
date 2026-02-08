@@ -1,0 +1,70 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build all packages
+    cmds:
+      - go build ./...
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run tests with race detector
+    cmds:
+      - go test -race ./...
+
+  test:cover:
+    desc: Run tests with coverage
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out
+
+  test:verbose:
+    desc: Run tests with verbose output
+    cmds:
+      - go test -v ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
+  fmt:
+    desc: Format code
+    cmds:
+      - gofmt -s -w .
+
+  fmt:check:
+    desc: Check formatting (fails if unformatted)
+    cmds:
+      - test -z "$(gofmt -s -l .)"
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  fuzz:
+    desc: Run fuzz tests (30s per target)
+    cmds:
+      - |
+        for dir in $(grep -rl 'func Fuzz' --include='*_test.go' . | xargs -I{} dirname {} | sort -u); do
+          echo "Fuzzing $dir..."
+          go test -fuzz=. -fuzztime=30s "$dir" || true
+        done
+
+  ci:
+    desc: Run all CI checks
+    cmds:
+      - task: fmt:check
+      - task: vet
+      - task: lint
+      - task: test:race
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -f coverage.out

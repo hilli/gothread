@@ -1,0 +1,43 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+formatters:
+  enable:
+    - gofmt
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - ineffassign
+    - gocritic
+    - revive
+
+linters-settings:
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+  revive:
+    rules:
+      - name: blank-imports
+      - name: exported
+      - name: var-naming
+      - name: indent-error-flow
+      - name: range
+      - name: error-return
+      - name: error-naming
+      - name: unexported-return
+      - name: time-naming
+      - name: receiver-naming
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
