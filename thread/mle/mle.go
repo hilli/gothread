@@ -347,6 +347,13 @@ func (m *Mle) SetRoleChangeCallback(cb RoleChangeCallback) {
 	m.onRoleChange = cb
 }
 
+// GetAttachMode returns the current attach mode.
+func (m *Mle) GetAttachMode() AttachMode {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.attachMode
+}
+
 // GetAttachState returns the current attach sub-state.
 func (m *Mle) GetAttachState() AttachState {
 	m.mu.RLock()
