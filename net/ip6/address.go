@@ -16,6 +16,26 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Scope constants
+// ---------------------------------------------------------------------------
+
+// Well-known IPv6 scope values as defined in RFC 7346.
+const (
+	// ScopeInterfaceLocal is the interface-local scope (loopback).
+	ScopeInterfaceLocal uint8 = 1
+	// ScopeLinkLocal is the link-local scope.
+	ScopeLinkLocal uint8 = 2
+	// ScopeRealmLocal is the realm-local scope (Thread-specific).
+	ScopeRealmLocal uint8 = 3
+	// ScopeAdminLocal is the admin-local scope.
+	ScopeAdminLocal uint8 = 4
+	// ScopeSiteLocal is the site-local scope.
+	ScopeSiteLocal uint8 = 5
+	// ScopeGlobal is the global scope.
+	ScopeGlobal uint8 = 14
+)
+
+// ---------------------------------------------------------------------------
 // Address
 // ---------------------------------------------------------------------------
 
@@ -322,6 +342,28 @@ func (a Address) IsAnycastRoutingLocator() bool {
 func (a Address) IsIidReserved() bool {
 	iid := a.GetIid()
 	return iid.isSubnetRouterAnycast() || iid.isReservedSubnetAnycast() || iid.IsAnycastLocator()
+}
+
+// IsLinkLocalUnicast returns true if the address is a unicast link-local
+// address (fe80::/10 and NOT multicast).
+func (a Address) IsLinkLocalUnicast() bool {
+	return a.IsLinkLocal() && !a.IsMulticast()
+}
+
+// MatchesPrefix returns true if the address matches the given prefix.
+func (a Address) MatchesPrefix(p Prefix) bool {
+	if p.GetLength() == 0 {
+		return true
+	}
+	prefixAddr := Address(p.GetBytes())
+	return a.PrefixMatch(prefixAddr) >= p.GetLength()
+}
+
+// SetMulticastNetworkPrefix sets the network prefix portion of a
+// prefix-based multicast address (ffx3:00pp:pppp:pppp:pppp::).
+// Bytes 2 through 9 are set from the given prefix.
+func (a *Address) SetMulticastNetworkPrefix(prefix NetworkPrefix) {
+	copy(a[2:10], prefix[:])
 }
 
 // ---------------------------------------------------------------------------
