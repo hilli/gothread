@@ -142,7 +142,7 @@ func NewDeviceMode(mode uint8) DeviceMode {
 }
 
 // Get returns the raw mode byte.
-func (m *DeviceMode) Get() uint8 {
+func (m DeviceMode) Get() uint8 {
 	return m.mode
 }
 
@@ -152,29 +152,29 @@ func (m *DeviceMode) Set(mode uint8) {
 }
 
 // IsRxOnWhenIdle returns true if the device keeps its receiver on when idle.
-func (m *DeviceMode) IsRxOnWhenIdle() bool {
+func (m DeviceMode) IsRxOnWhenIdle() bool {
 	return m.mode&ModeRxOnWhenIdle != 0
 }
 
 // IsFullThreadDevice returns true if the device is a Full Thread Device.
-func (m *DeviceMode) IsFullThreadDevice() bool {
+func (m DeviceMode) IsFullThreadDevice() bool {
 	return m.mode&ModeFullThreadDevice != 0
 }
 
 // IsFullNetworkData returns true if the device requests full network data.
-func (m *DeviceMode) IsFullNetworkData() bool {
+func (m DeviceMode) IsFullNetworkData() bool {
 	return m.mode&ModeFullNetworkData != 0
 }
 
 // IsMinimalEndDevice returns true if the device is a Minimal End Device
 // (not a Full Thread Device, but with RxOnWhenIdle set).
-func (m *DeviceMode) IsMinimalEndDevice() bool {
+func (m DeviceMode) IsMinimalEndDevice() bool {
 	return !m.IsFullThreadDevice() && m.IsRxOnWhenIdle()
 }
 
 // IsValid returns true if the mode flags are a valid combination.
 // A Full Thread Device must have RxOnWhenIdle set.
-func (m *DeviceMode) IsValid() bool {
+func (m DeviceMode) IsValid() bool {
 	return !m.IsFullThreadDevice() || m.IsRxOnWhenIdle()
 }
 
