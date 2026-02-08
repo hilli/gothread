@@ -185,6 +185,14 @@ type Mle struct {
 
 	// previousRouterID stores the last router ID (for reconnection).
 	previousRouterID uint8
+
+	// retrieveNewNetworkData is set when the child needs to request
+	// fresh network data from its parent via a Data Request.
+	retrieveNewNetworkData bool
+
+	// dataRequestPending indicates a Data Request should be sent to
+	// the parent (scheduled by HandleAdvertisement or HandleDataResponse).
+	dataRequestPending bool
 }
 
 // NewMle creates a new MLE state machine in the Disabled state.
@@ -606,4 +614,33 @@ func (m *Mle) PreviousRole() DeviceRole {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.previousRole
+}
+
+// NeedsNewNetworkData reports whether the child needs to request fresh
+// network data from its parent.
+func (m *Mle) NeedsNewNetworkData() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.retrieveNewNetworkData
+}
+
+// SetRetrieveNewNetworkData sets whether the child needs fresh network data.
+func (m *Mle) SetRetrieveNewNetworkData(v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.retrieveNewNetworkData = v
+}
+
+// IsDataRequestPending reports whether a Data Request is scheduled.
+func (m *Mle) IsDataRequestPending() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.dataRequestPending
+}
+
+// SetDataRequestPending sets whether a Data Request should be sent.
+func (m *Mle) SetDataRequestPending(v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dataRequestPending = v
 }
