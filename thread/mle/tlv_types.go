@@ -2,91 +2,165 @@
 // All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 
-// This file defines the MLE TLV type constants as specified in OpenThread's
-// src/core/thread/mle_tlvs.hpp.
-
 package mle
 
-// TLVType represents the type field of an MLE TLV.
-type TLVType uint8
-
+// TLV type constants for MLE messages.
+//
+// Reference: openthread/src/core/thread/mle_tlvs.hpp
 const (
-	// TLVSourceAddress is the Source Address TLV type.
-	TLVSourceAddress TLVType = 0
-	// TLVMode is the Mode TLV type.
-	TLVMode TLVType = 1
-	// TLVTimeout is the Timeout TLV type.
-	TLVTimeout TLVType = 2
-	// TLVChallenge is the Challenge TLV type.
-	TLVChallenge TLVType = 3
-	// TLVResponse is the Response TLV type.
-	TLVResponse TLVType = 4
-	// TLVLinkFrameCounter is the Link Frame Counter TLV type.
-	TLVLinkFrameCounter TLVType = 5
-	// TLVLinkQuality is the Link Quality TLV type.
-	TLVLinkQuality TLVType = 6
-	// TLVNetworkParameter is the Network Parameter TLV type.
-	TLVNetworkParameter TLVType = 7
-	// TLVMleFrameCounter is the MLE Frame Counter TLV type.
-	TLVMleFrameCounter TLVType = 8
-	// TLVRoute is the Route TLV type.
-	TLVRoute TLVType = 9
-	// TLVAddress16 is the Address16 TLV type.
-	TLVAddress16 TLVType = 10
-	// TLVLeaderData is the Leader Data TLV type.
-	TLVLeaderData TLVType = 11
-	// TLVNetworkData is the Network Data TLV type.
-	TLVNetworkData TLVType = 12
-	// TLVTlvRequest is the TLV Request TLV type.
-	TLVTlvRequest TLVType = 13
-	// TLVScanMask is the Scan Mask TLV type.
-	TLVScanMask TLVType = 14
-	// TLVConnectivity is the Connectivity TLV type.
-	TLVConnectivity TLVType = 15
-	// TLVLinkMargin is the Link Margin TLV type.
-	TLVLinkMargin TLVType = 16
-	// TLVStatus is the Status TLV type.
-	TLVStatus TLVType = 17
-	// TLVVersion is the Version TLV type.
-	TLVVersion TLVType = 18
-	// TLVAddressRegistration is the Address Registration TLV type.
-	TLVAddressRegistration TLVType = 19
-	// TLVChannel is the Channel TLV type.
-	TLVChannel TLVType = 20
-	// TLVPanID is the PAN ID TLV type.
-	TLVPanID TLVType = 21
-	// TLVActiveTimestamp is the Active Timestamp TLV type.
-	TLVActiveTimestamp TLVType = 22
-	// TLVPendingTimestamp is the Pending Timestamp TLV type.
-	TLVPendingTimestamp TLVType = 23
-	// TLVActiveDataset is the Active Dataset TLV type.
-	TLVActiveDataset TLVType = 24
-	// TLVPendingDataset is the Pending Dataset TLV type.
-	TLVPendingDataset TLVType = 25
-	// TLVDiscovery is the Discovery TLV type.
-	TLVDiscovery TLVType = 26
-	// TLVSupervisionInterval is the Supervision Interval TLV type.
-	TLVSupervisionInterval TLVType = 27
-	// TLVWakeupChannel is the Wakeup Channel TLV type.
-	TLVWakeupChannel TLVType = 74
-	// TLVCSLChannel is the CSL Channel TLV type.
-	TLVCSLChannel TLVType = 80
-	// TLVCSLTimeout is the CSL Timeout TLV type.
-	TLVCSLTimeout TLVType = 85
-	// TLVCSLClockAccuracy is the CSL Clock Accuracy TLV type.
-	TLVCSLClockAccuracy TLVType = 86
-	// TLVLinkMetricsQuery is the Link Metrics Query TLV type.
-	TLVLinkMetricsQuery TLVType = 87
-	// TLVLinkMetricsManagement is the Link Metrics Management TLV type.
-	TLVLinkMetricsManagement TLVType = 88
-	// TLVLinkMetricsReport is the Link Metrics Report TLV type.
-	TLVLinkMetricsReport TLVType = 89
-	// TLVLinkProbe is the Link Probe TLV type.
-	TLVLinkProbe TLVType = 90
-	// TLVTimeRequest is the Time Request TLV type.
-	TLVTimeRequest TLVType = 252
-	// TLVTimeParameter is the Time Parameter TLV type.
-	TLVTimeParameter TLVType = 253
-	// TLVXtalAccuracy is the Crystal Accuracy TLV type.
-	TLVXtalAccuracy TLVType = 254
+	// TLVSourceAddress identifies the Source Address TLV (RLOC16).
+	TLVSourceAddress uint8 = 0
+
+	// TLVMode identifies the Mode TLV (device mode flags).
+	TLVMode uint8 = 1
+
+	// TLVTimeout identifies the Timeout TLV (child timeout in seconds).
+	TLVTimeout uint8 = 2
+
+	// TLVChallenge identifies the Challenge TLV (random bytes for handshake).
+	TLVChallenge uint8 = 3
+
+	// TLVResponse identifies the Response TLV (echo of a received Challenge).
+	TLVResponse uint8 = 4
+
+	// TLVLinkFrameCounter identifies the Link Frame Counter TLV.
+	TLVLinkFrameCounter uint8 = 5
+
+	// TLVRoute64 identifies the Route64 TLV (router cost/quality table).
+	TLVRoute64 uint8 = 9
+
+	// TLVAddress16 identifies the Address16 TLV (short address / RLOC16).
+	TLVAddress16 uint8 = 10
+
+	// TLVLeaderData identifies the Leader Data TLV.
+	TLVLeaderData uint8 = 11
+
+	// TLVNetworkData identifies the Network Data TLV.
+	TLVNetworkData uint8 = 12
+
+	// TLVTLVRequest identifies the TLV Request TLV (list of requested TLV types).
+	TLVTLVRequest uint8 = 13
+
+	// TLVScanMask identifies the Scan Mask TLV.
+	TLVScanMask uint8 = 14
+
+	// TLVConnectivity identifies the Connectivity TLV.
+	TLVConnectivity uint8 = 15
+
+	// TLVLinkMargin identifies the Link Margin TLV.
+	TLVLinkMargin uint8 = 16
+
+	// TLVStatus identifies the Status TLV.
+	TLVStatus uint8 = 17
+
+	// TLVVersion identifies the Version TLV (Thread protocol version).
+	TLVVersion uint8 = 18
+
+	// TLVAddressRegistration identifies the Address Registration TLV.
+	TLVAddressRegistration uint8 = 19
+
+	// TLVChannel identifies the Channel TLV.
+	TLVChannel uint8 = 20
+
+	// TLVPanID identifies the PAN ID TLV.
+	TLVPanID uint8 = 21
+
+	// TLVActiveTimestamp identifies the Active Timestamp TLV.
+	TLVActiveTimestamp uint8 = 22
+
+	// TLVPendingTimestamp identifies the Pending Timestamp TLV.
+	TLVPendingTimestamp uint8 = 23
+
+	// TLVActiveDataset identifies the Active Operational Dataset TLV.
+	TLVActiveDataset uint8 = 24
+
+	// TLVPendingDataset identifies the Pending Operational Dataset TLV.
+	TLVPendingDataset uint8 = 25
+
+	// TLVDiscovery identifies the Discovery TLV.
+	TLVDiscovery uint8 = 26
+
+	// TLVSupervisionInterval identifies the Supervision Interval TLV.
+	TLVSupervisionInterval uint8 = 27
+
+	// TLVMleFrameCounter identifies the MLE Frame Counter TLV.
+	TLVMleFrameCounter uint8 = 8
+
+	// TLVCSLTimeout identifies the CSL Timeout TLV.
+	TLVCSLTimeout uint8 = 28
+
+	// TLVTimeRequest identifies the Time Request TLV.
+	TLVTimeRequest uint8 = 252
+
+	// TLVTimeParameter identifies the Time Parameter TLV.
+	TLVTimeParameter uint8 = 253
+
+	// TLVLinkMetricsQuery identifies the Link Metrics Query TLV.
+	TLVLinkMetricsQuery uint8 = 87
+
+	// TLVLinkMetricsManagement identifies the Link Metrics Management TLV.
+	TLVLinkMetricsManagement uint8 = 88
+
+	// TLVLinkMetricsReport identifies the Link Metrics Report TLV.
+	TLVLinkMetricsReport uint8 = 89
+
+	// TLVLinkProbe identifies the Link Probe TLV.
+	TLVLinkProbe uint8 = 90
+)
+
+// Status codes for the MLE Status TLV.
+const (
+	// StatusError indicates a generic error.
+	StatusError uint8 = 1
+
+	// StatusDuplicate indicates a duplicate Address16 was detected.
+	StatusDuplicate uint8 = 2
+)
+
+// Scan mask bits for the ScanMask TLV.
+const (
+	// ScanMaskRouterFlag requests responses from routers.
+	ScanMaskRouterFlag uint8 = 1 << 7
+
+	// ScanMaskEndDeviceFlag requests responses from end devices.
+	ScanMaskEndDeviceFlag uint8 = 1 << 6
+)
+
+// ConnectivityFlags for the Connectivity TLV.
+const (
+	// ConnectivityFlagParentPriority is the mask for parent priority bits (bits 7:6).
+	ConnectivityFlagParentPriority uint8 = 0xC0
+)
+
+// Connectivity TLV sizes.
+const (
+	// ConnectivityTLVMinSize is the minimum size of a Connectivity TLV value (without SED fields).
+	ConnectivityTLVMinSize = 7
+
+	// ConnectivityTLVMaxSize is the maximum size of a Connectivity TLV value (with SED fields).
+	ConnectivityTLVMaxSize = 10
+)
+
+// LeaderDataTLVSize is the size of a LeaderData TLV value in bytes.
+const LeaderDataTLVSize = 8
+
+// Route64 entry encoding constants.
+const (
+	// Route64EntryLinkQualityOutShift is the bit shift for the outgoing link quality.
+	Route64EntryLinkQualityOutShift = 6
+
+	// Route64EntryLinkQualityInShift is the bit shift for the incoming link quality.
+	Route64EntryLinkQualityInShift = 4
+
+	// Route64EntryCostMask is the mask for the route cost nibble.
+	Route64EntryCostMask = 0x0F
+)
+
+// Address registration entry constants.
+const (
+	// AddressRegistrationCompressed indicates a compressed address entry (context ID + IID).
+	AddressRegistrationCompressed uint8 = 0x80
+
+	// AddressRegistrationFull indicates a full 16-byte IPv6 address entry.
+	AddressRegistrationFull uint8 = 0x00
 )
