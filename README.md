@@ -2,7 +2,7 @@
 
 A pure Go implementation of the [Thread](https://www.threadgroup.org/What-is-Thread/Overview) 1.4.0 networking protocol.
 
-This project is a port of [OpenThread](https://github.com/openthread/openthread), Google's open-source C++ implementation of the Thread networking protocol. gothread aims to provide a fully independent, idiomatic Go implementation of the complete Thread protocol stack.
+This project is a port of [OpenThread](https://github.com/openthread/openthread), Google's open-source C++ implementation of the Thread networking protocol. `gothread` aims to provide a fully independent, idiomatic Go implementation of the complete Thread protocol stack. 
 
 ## Status
 
@@ -35,3 +35,5 @@ task ci        # Run all CI checks
 BSD 3-Clause License. See [LICENSE](LICENSE).
 
 This project is a port of OpenThread, which is Copyright (c) 2016, The OpenThread Authors, also under the BSD 3-Clause License.
+
+`gothread` is in NO WAY affiliated with Nest, Google, or The Thread Group.
