@@ -10,7 +10,12 @@
 
 package mle
 
-import "time"
+import (
+	"math/rand/v2"
+	"time"
+
+	goterrors "github.com/hilli/gothread/errors"
+)
 
 // FTD advertisement timing constants.
 const (
@@ -475,4 +480,211 @@ func DetermineAdvertiseIntervalMax(lq2Neighbors int) time.Duration {
 		iMax = AdvIntervalMaxUpperBound
 	}
 	return iMax
+}
+
+// --- FTD role transition enums ---
+
+// LeaderStartMode indicates how the device is becoming the leader.
+type LeaderStartMode uint8
+
+const (
+	// StartingAsLeader indicates a fresh leader start (new partition).
+	StartingAsLeader LeaderStartMode = 0
+
+	// RestoringLeaderRoleAfterReset indicates restoring leader state
+	// after a device reset.
+	RestoringLeaderRoleAfterReset LeaderStartMode = 1
+)
+
+// --- Router table callback interface ---
+
+// RouterTableOps is the interface that the routing layer must implement
+// to allow MLE to perform router table operations during role transitions.
+// This breaks the circular dependency: mle defines the interface, and the
+// routing package provides the implementation.
+type RouterTableOps interface {
+	// Clear resets the router table, removing all routers.
+	Clear()
+
+	// AllocateWithID allocates a router entry with the given ID.
+	// Returns the RLOC16 of the allocated entry, or an error.
+	AllocateWithID(routerID uint8) (uint16, error)
+
+	// Allocate allocates a new router with an available ID.
+	// Returns the allocated router ID, its RLOC16, and an error.
+	Allocate() (routerID uint8, rloc16 uint16, err error)
+
+	// GetActiveRouterCount returns the number of active routers.
+	GetActiveRouterCount() int
+
+	// GetRouterIDSet returns the current set of allocated router IDs.
+	GetRouterIDSet() RouterIDSet
+
+	// GetRouterIDSequence returns the current router ID sequence number.
+	GetRouterIDSequence() uint8
+}
+
+// --- Leader ID and Partition ID selection ---
+
+// SelectLeaderID chooses a router ID for the new leader. It prefers the
+// previous router ID if available (i.e., valid and not InvalidRouterID).
+// Otherwise it returns a random ID in [0, MaxRouterID].
+func SelectLeaderID(previousRouterID uint8) uint8 {
+	if previousRouterID <= MaxRouterID {
+		return previousRouterID
+	}
+	return uint8(rand.IntN(int(MaxRouterID) + 1))
+}
+
+// SelectPartitionID generates a random non-zero partition ID.
+func SelectPartitionID() uint32 {
+	for {
+		id := rand.Uint32()
+		if id != 0 {
+			return id
+		}
+	}
+}
+
+// --- Enhanced FTD role transitions ---
+
+// BecomeRouterFtd initiates a router upgrade from the Child role on an FTD.
+// It validates preconditions, stops the router role transition timer, and
+// marks an Address Solicit as pending. The actual CoAP Address Solicit
+// message is sent by the transport layer.
+//
+// This replaces the basic BecomeRouter precondition check with full FTD
+// logic. Must be called with mu NOT held.
+func (m *Mle) BecomeRouterFtd(_ RouterUpgradeReason) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.role != RoleChild {
+		return goterrors.ErrInvalidState
+	}
+	if !m.deviceMode.IsFullThreadDevice() {
+		return goterrors.ErrNotCapable
+	}
+	if !m.routerEligible {
+		return goterrors.ErrNotCapable
+	}
+
+	m.ftd.routerRoleTransition.StopTimeout()
+	m.ftd.addressSolicitPending = true
+	m.ftd.addressSolicitRejected = false
+	return nil
+}
+
+// BecomeLeaderFtd creates a new Thread partition with this device as the
+// Leader. It clears the router table, self-allocates a router ID, sets up
+// leader data, and transitions to the Leader role.
+//
+// The routerTableOps parameter provides the router table operations needed
+// without importing the routing package. Pass nil to skip router table
+// operations (for testing the MLE state machine in isolation).
+//
+// Must be called with mu NOT held.
+func (m *Mle) BecomeLeaderFtd(routerTableOps RouterTableOps) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.role == RoleDisabled {
+		return goterrors.ErrInvalidState
+	}
+	if m.role == RoleLeader {
+		return goterrors.ErrAlready
+	}
+	if !m.deviceMode.IsFullThreadDevice() {
+		return goterrors.ErrNotCapable
+	}
+	if !m.routerEligible {
+		return goterrors.ErrNotCapable
+	}
+
+	// Select leader router ID, preferring our previous ID.
+	leaderID := SelectLeaderID(m.previousRouterID)
+	partitionID := SelectPartitionID()
+
+	var rloc16 uint16
+
+	if routerTableOps != nil {
+		// Clear existing router table and self-allocate.
+		routerTableOps.Clear()
+
+		allocatedRLOC, err := routerTableOps.AllocateWithID(leaderID)
+		if err != nil {
+			// If preferred ID not available, try any ID.
+			var allocErr error
+			leaderID, allocatedRLOC, allocErr = routerTableOps.Allocate()
+			if allocErr != nil {
+				return allocErr
+			}
+		}
+		rloc16 = allocatedRLOC
+	} else {
+		rloc16 = RLOC16FromRouterID(leaderID)
+	}
+
+	// Set up leader data.
+	m.leaderData = LeaderData{
+		PartitionID:    partitionID,
+		Weighting:      m.ftd.leaderWeight,
+		LeaderRouterID: leaderID,
+	}
+
+	m.ftd.routerID = leaderID
+	m.ftd.routerRoleTransition.StopTimeout()
+	m.ftd.addressSolicitPending = false
+	m.ftd.addressSolicitRejected = false
+
+	m.setStateRouterOrLeader(RoleLeader, rloc16)
+
+	return nil
+}
+
+// HandleAddressSolicitSuccess processes a successful Address Solicit response,
+// transitioning the device from Child to Router with the allocated router ID
+// and RLOC16.
+//
+// Must be called with mu NOT held.
+func (m *Mle) HandleAddressSolicitSuccess(routerID uint8, rloc16 uint16) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.role == RoleDisabled {
+		return goterrors.ErrInvalidState
+	}
+
+	m.ftd.routerID = routerID
+	m.ftd.addressSolicitPending = false
+	m.ftd.addressSolicitRejected = false
+
+	m.setStateRouterOrLeader(RoleRouter, rloc16)
+
+	return nil
+}
+
+// HandleAddressSolicitRejection records that the Address Solicit was rejected
+// by the leader.
+//
+// Must be called with mu NOT held.
+func (m *Mle) HandleAddressSolicitRejection() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.ftd.addressSolicitPending = false
+	m.ftd.addressSolicitRejected = true
+}
+
+// setStateRouterOrLeader is the common helper for transitioning to Router
+// or Leader. It updates the RLOC16, sets the role, resets the attach state,
+// and clears previous role state.
+//
+// Must be called with mu held.
+func (m *Mle) setStateRouterOrLeader(role DeviceRole, rloc16 uint16) {
+	m.rloc16 = rloc16
+	m.setRole(role)
+	m.attachState = AttachStateIdle
+	m.dataRequestPending = false
+	m.retrieveNewNetworkData = false
 }

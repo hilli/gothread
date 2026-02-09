@@ -5,8 +5,11 @@
 package mle
 
 import (
+	"errors"
 	"testing"
 	"time"
+
+	goterrors "github.com/hilli/gothread/errors"
 )
 
 // --- RouterRoleTransition tests ---
@@ -594,4 +597,594 @@ func TestFtdConstantValues(t *testing.T) {
 	if DefaultRouterDowngradeThreshold != 23 {
 		t.Errorf("DefaultRouterDowngradeThreshold = %d, want 23", DefaultRouterDowngradeThreshold)
 	}
+}
+
+// --- LeaderStartMode enum ---
+
+func TestLeaderStartModeValues(t *testing.T) {
+	t.Parallel()
+
+	if StartingAsLeader != 0 {
+		t.Errorf("StartingAsLeader = %d, want 0", StartingAsLeader)
+	}
+	if RestoringLeaderRoleAfterReset != 1 {
+		t.Errorf("RestoringLeaderRoleAfterReset = %d, want 1", RestoringLeaderRoleAfterReset)
+	}
+}
+
+// --- SelectLeaderId ---
+
+func TestSelectLeaderID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		previousRouterID uint8
+		wantExact        bool // if true, result must equal previousRouterID
+		wantMax          uint8
+	}{
+		{
+			name:             "valid previous ID 0",
+			previousRouterID: 0,
+			wantExact:        true,
+		},
+		{
+			name:             "valid previous ID mid-range",
+			previousRouterID: 30,
+			wantExact:        true,
+		},
+		{
+			name:             "valid previous ID max",
+			previousRouterID: MaxRouterID,
+			wantExact:        true,
+		},
+		{
+			name:             "invalid ID returns random in range",
+			previousRouterID: InvalidRouterID,
+			wantExact:        false,
+			wantMax:          MaxRouterID,
+		},
+		{
+			name:             "ID above invalid returns random in range",
+			previousRouterID: 200,
+			wantExact:        false,
+			wantMax:          MaxRouterID,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := SelectLeaderID(tt.previousRouterID)
+			if tt.wantExact {
+				if got != tt.previousRouterID {
+					t.Errorf("SelectLeaderID(%d) = %d, want %d",
+						tt.previousRouterID, got, tt.previousRouterID)
+				}
+			} else {
+				if got > tt.wantMax {
+					t.Errorf("SelectLeaderID(%d) = %d, want <= %d",
+						tt.previousRouterID, got, tt.wantMax)
+				}
+			}
+		})
+	}
+}
+
+// --- SelectPartitionId ---
+
+func TestSelectPartitionID(t *testing.T) {
+	t.Parallel()
+
+	// Call multiple times to verify non-zero invariant.
+	for i := 0; i < 100; i++ {
+		id := SelectPartitionID()
+		if id == 0 {
+			t.Fatal("SelectPartitionID returned 0")
+		}
+	}
+}
+
+// --- BecomeRouterFtd ---
+
+func TestBecomeRouterFtd(t *testing.T) {
+	t.Parallel()
+
+	t.Run("wrong role disabled", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		// Default is Disabled.
+		err := m.BecomeRouterFtd(UpgradeReasonTooFewRouters)
+		if !errors.Is(err, goterrors.ErrInvalidState) {
+			t.Errorf("err = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("wrong role detached", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_, _ = m.Enable(), error(nil)
+		err := m.BecomeRouterFtd(UpgradeReasonTooFewRouters)
+		if !errors.Is(err, goterrors.ErrInvalidState) {
+			t.Errorf("err = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("wrong role router", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+		_ = m.SetStateChild(0x0401)
+		_ = m.SetStateRouter(0x0400)
+		err := m.BecomeRouterFtd(UpgradeReasonTooFewRouters)
+		if !errors.Is(err, goterrors.ErrInvalidState) {
+			t.Errorf("err = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("not FTD", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+		_ = m.SetStateChild(0x0401)
+		// Clear FTD flag.
+		m.SetDeviceMode(NewDeviceMode(ModeRxOnWhenIdle | ModeFullNetworkData))
+		err := m.BecomeRouterFtd(UpgradeReasonTooFewRouters)
+		if !errors.Is(err, goterrors.ErrNotCapable) {
+			t.Errorf("err = %v, want ErrNotCapable", err)
+		}
+	})
+
+	t.Run("not router eligible", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+		_ = m.SetStateChild(0x0401)
+		m.SetRouterEligible(false)
+		err := m.BecomeRouterFtd(UpgradeReasonTooFewRouters)
+		if !errors.Is(err, goterrors.ErrNotCapable) {
+			t.Errorf("err = %v, want ErrNotCapable", err)
+		}
+	})
+
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+		_ = m.SetStateChild(0x0401)
+
+		// Start a transition timer to verify it gets stopped.
+		m.GetRouterRoleTransition().StartTimeout(func(_ int) int { return 50 })
+		if !m.GetRouterRoleTransition().IsPending() {
+			t.Fatal("transition timer should be pending before call")
+		}
+
+		err := m.BecomeRouterFtd(UpgradeReasonTooFewRouters)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !m.IsAddressSolicitPending() {
+			t.Error("addressSolicitPending should be true")
+		}
+		if m.IsAddressSolicitRejected() {
+			t.Error("addressSolicitRejected should be false")
+		}
+		if m.GetRouterRoleTransition().IsPending() {
+			t.Error("transition timer should be stopped")
+		}
+		// Role should still be Child (actual upgrade happens on Address Solicit response).
+		if m.Role() != RoleChild {
+			t.Errorf("role = %v, want Child", m.Role())
+		}
+	})
+}
+
+// --- mockRouterTableOps ---
+
+type mockRouterTableOps struct {
+	clearCalled       bool
+	allocateIDCalled  bool
+	allocateIDArg     uint8
+	allocateCalled    bool
+	allocateIDErr     error
+	allocateIDRLOC    uint16
+	allocateRouterID  uint8
+	allocateRLOC      uint16
+	allocateErr       error
+	activeRouterCount int
+	routerIDSet       RouterIDSet
+	routerIDSequence  uint8
+}
+
+func (m *mockRouterTableOps) Clear() {
+	m.clearCalled = true
+}
+
+func (m *mockRouterTableOps) AllocateWithID(routerID uint8) (uint16, error) {
+	m.allocateIDCalled = true
+	m.allocateIDArg = routerID
+	return m.allocateIDRLOC, m.allocateIDErr
+}
+
+func (m *mockRouterTableOps) Allocate() (uint8, uint16, error) {
+	m.allocateCalled = true
+	return m.allocateRouterID, m.allocateRLOC, m.allocateErr
+}
+
+func (m *mockRouterTableOps) GetActiveRouterCount() int {
+	return m.activeRouterCount
+}
+
+func (m *mockRouterTableOps) GetRouterIDSet() RouterIDSet {
+	return m.routerIDSet
+}
+
+func (m *mockRouterTableOps) GetRouterIDSequence() uint8 {
+	return m.routerIDSequence
+}
+
+// --- BecomeLeaderFtd ---
+
+func TestBecomeLeaderFtd(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disabled returns ErrInvalidState", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		err := m.BecomeLeaderFtd(nil)
+		if !errors.Is(err, goterrors.ErrInvalidState) {
+			t.Errorf("err = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("already leader returns ErrAlready", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+		_ = m.SetStateLeader(0x0400)
+		err := m.BecomeLeaderFtd(nil)
+		if !errors.Is(err, goterrors.ErrAlready) {
+			t.Errorf("err = %v, want ErrAlready", err)
+		}
+	})
+
+	t.Run("not FTD returns ErrNotCapable", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+		m.SetDeviceMode(NewDeviceMode(ModeRxOnWhenIdle | ModeFullNetworkData))
+		err := m.BecomeLeaderFtd(nil)
+		if !errors.Is(err, goterrors.ErrNotCapable) {
+			t.Errorf("err = %v, want ErrNotCapable", err)
+		}
+	})
+
+	t.Run("not router eligible returns ErrNotCapable", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+		m.SetRouterEligible(false)
+		err := m.BecomeLeaderFtd(nil)
+		if !errors.Is(err, goterrors.ErrNotCapable) {
+			t.Errorf("err = %v, want ErrNotCapable", err)
+		}
+	})
+
+	t.Run("success with nil router table ops", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+
+		// Set a known previous router ID so leader ID is deterministic.
+		m.mu.Lock()
+		m.previousRouterID = 5
+		m.mu.Unlock()
+
+		err := m.BecomeLeaderFtd(nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if m.Role() != RoleLeader {
+			t.Errorf("role = %v, want Leader", m.Role())
+		}
+		if m.GetRouterID() != 5 {
+			t.Errorf("routerID = %d, want 5", m.GetRouterID())
+		}
+		// RLOC16 should be computed from router ID 5.
+		wantRLOC := RLOC16FromRouterID(5)
+		if m.RLOC16() != wantRLOC {
+			t.Errorf("RLOC16 = 0x%04x, want 0x%04x", m.RLOC16(), wantRLOC)
+		}
+
+		ld := m.GetLeaderData()
+		if ld.PartitionID == 0 {
+			t.Error("partition ID should be non-zero")
+		}
+		if ld.Weighting != 64 {
+			t.Errorf("weighting = %d, want 64", ld.Weighting)
+		}
+		if ld.LeaderRouterID != 5 {
+			t.Errorf("leaderRouterID = %d, want 5", ld.LeaderRouterID)
+		}
+
+		if m.IsAddressSolicitPending() {
+			t.Error("addressSolicitPending should be false")
+		}
+		if m.IsAddressSolicitRejected() {
+			t.Error("addressSolicitRejected should be false")
+		}
+		if m.GetRouterRoleTransition().IsPending() {
+			t.Error("transition timer should be stopped")
+		}
+		if m.GetAttachState() != AttachStateIdle {
+			t.Errorf("attachState = %v, want Idle", m.GetAttachState())
+		}
+		if m.IsDataRequestPending() {
+			t.Error("dataRequestPending should be false")
+		}
+		if m.NeedsNewNetworkData() {
+			t.Error("retrieveNewNetworkData should be false")
+		}
+	})
+
+	t.Run("success with mock router table ops", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+
+		m.mu.Lock()
+		m.previousRouterID = 10
+		m.mu.Unlock()
+
+		mock := &mockRouterTableOps{
+			allocateIDRLOC: RLOC16FromRouterID(10),
+		}
+
+		err := m.BecomeLeaderFtd(mock)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !mock.clearCalled {
+			t.Error("Clear() should have been called")
+		}
+		if !mock.allocateIDCalled {
+			t.Error("AllocateWithID() should have been called")
+		}
+		if mock.allocateIDArg != 10 {
+			t.Errorf("AllocateWithID arg = %d, want 10", mock.allocateIDArg)
+		}
+		if mock.allocateCalled {
+			t.Error("Allocate() should NOT have been called when AllocateWithID succeeds")
+		}
+
+		if m.Role() != RoleLeader {
+			t.Errorf("role = %v, want Leader", m.Role())
+		}
+		if m.RLOC16() != RLOC16FromRouterID(10) {
+			t.Errorf("RLOC16 = 0x%04x, want 0x%04x", m.RLOC16(), RLOC16FromRouterID(10))
+		}
+	})
+
+	t.Run("AllocateWithID fails falls back to Allocate", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+
+		m.mu.Lock()
+		m.previousRouterID = 10
+		m.mu.Unlock()
+
+		mock := &mockRouterTableOps{
+			allocateIDErr:    goterrors.ErrNoBufs,
+			allocateRouterID: 20,
+			allocateRLOC:     RLOC16FromRouterID(20),
+		}
+
+		err := m.BecomeLeaderFtd(mock)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !mock.allocateIDCalled {
+			t.Error("AllocateWithID() should have been called")
+		}
+		if !mock.allocateCalled {
+			t.Error("Allocate() should have been called as fallback")
+		}
+
+		if m.Role() != RoleLeader {
+			t.Errorf("role = %v, want Leader", m.Role())
+		}
+		// Leader ID should be the one from Allocate(), not the original preference.
+		if m.GetRouterID() != 20 {
+			t.Errorf("routerID = %d, want 20", m.GetRouterID())
+		}
+		if m.RLOC16() != RLOC16FromRouterID(20) {
+			t.Errorf("RLOC16 = 0x%04x, want 0x%04x", m.RLOC16(), RLOC16FromRouterID(20))
+		}
+		ld := m.GetLeaderData()
+		if ld.LeaderRouterID != 20 {
+			t.Errorf("leaderRouterID = %d, want 20", ld.LeaderRouterID)
+		}
+	})
+
+	t.Run("both allocations fail", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+
+		m.mu.Lock()
+		m.previousRouterID = 10
+		m.mu.Unlock()
+
+		mock := &mockRouterTableOps{
+			allocateIDErr: goterrors.ErrNoBufs,
+			allocateErr:   goterrors.ErrNoBufs,
+		}
+
+		err := m.BecomeLeaderFtd(mock)
+		if !errors.Is(err, goterrors.ErrNoBufs) {
+			t.Errorf("err = %v, want ErrNoBufs", err)
+		}
+		// Should remain Detached (not transitioned to Leader).
+		if m.Role() != RoleDetached {
+			t.Errorf("role = %v, want Detached", m.Role())
+		}
+	})
+}
+
+// --- HandleAddressSolicitSuccess ---
+
+func TestHandleAddressSolicitSuccess(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disabled returns error", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		err := m.HandleAddressSolicitSuccess(5, 0x1400)
+		if !errors.Is(err, goterrors.ErrInvalidState) {
+			t.Errorf("err = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("success from child", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMle()
+		_ = m.Enable()
+		_ = m.SetStateChild(0x0401)
+
+		// Pre-set pending/rejected to verify they get cleared.
+		m.SetAddressSolicitPending(true)
+		m.SetAddressSolicitRejected(true)
+		m.SetDataRequestPending(true)
+		m.SetRetrieveNewNetworkData(true)
+
+		rloc16 := RLOC16FromRouterID(5)
+		err := m.HandleAddressSolicitSuccess(5, rloc16)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if m.Role() != RoleRouter {
+			t.Errorf("role = %v, want Router", m.Role())
+		}
+		if m.GetRouterID() != 5 {
+			t.Errorf("routerID = %d, want 5", m.GetRouterID())
+		}
+		if m.RLOC16() != rloc16 {
+			t.Errorf("RLOC16 = 0x%04x, want 0x%04x", m.RLOC16(), rloc16)
+		}
+		if m.IsAddressSolicitPending() {
+			t.Error("addressSolicitPending should be false")
+		}
+		if m.IsAddressSolicitRejected() {
+			t.Error("addressSolicitRejected should be false")
+		}
+		if m.GetAttachState() != AttachStateIdle {
+			t.Errorf("attachState = %v, want Idle", m.GetAttachState())
+		}
+		if m.IsDataRequestPending() {
+			t.Error("dataRequestPending should be false")
+		}
+		if m.NeedsNewNetworkData() {
+			t.Error("retrieveNewNetworkData should be false")
+		}
+	})
+}
+
+// --- HandleAddressSolicitRejection ---
+
+func TestHandleAddressSolicitRejection(t *testing.T) {
+	t.Parallel()
+
+	m := NewMle()
+	_ = m.Enable()
+	_ = m.SetStateChild(0x0401)
+
+	// Pre-set pending to verify it gets cleared.
+	m.SetAddressSolicitPending(true)
+
+	m.HandleAddressSolicitRejection()
+
+	if m.IsAddressSolicitPending() {
+		t.Error("addressSolicitPending should be false")
+	}
+	if !m.IsAddressSolicitRejected() {
+		t.Error("addressSolicitRejected should be true")
+	}
+	// Role should remain Child.
+	if m.Role() != RoleChild {
+		t.Errorf("role = %v, want Child", m.Role())
+	}
+}
+
+// --- setStateRouterOrLeader common behavior ---
+
+func TestSetStateRouterOrLeaderCommon(t *testing.T) {
+	t.Parallel()
+
+	// Test via HandleAddressSolicitSuccess which calls setStateRouterOrLeader.
+	m := NewMle()
+	_ = m.Enable()
+	_ = m.SetStateChild(0x0401)
+
+	// Set up state that should be cleared.
+	m.SetAttachState(AttachStateParentRequest)
+	m.SetDataRequestPending(true)
+	m.SetRetrieveNewNetworkData(true)
+
+	rloc16 := RLOC16FromRouterID(7)
+	_ = m.HandleAddressSolicitSuccess(7, rloc16)
+
+	// Verify all common state was updated.
+	if m.RLOC16() != rloc16 {
+		t.Errorf("RLOC16 = 0x%04x, want 0x%04x", m.RLOC16(), rloc16)
+	}
+	if m.Role() != RoleRouter {
+		t.Errorf("role = %v, want Router", m.Role())
+	}
+	if m.GetAttachState() != AttachStateIdle {
+		t.Errorf("attachState = %v, want Idle", m.GetAttachState())
+	}
+	if m.IsDataRequestPending() {
+		t.Error("dataRequestPending should be false")
+	}
+	if m.NeedsNewNetworkData() {
+		t.Error("retrieveNewNetworkData should be false")
+	}
+
+	// Counters should have recorded the Router transition.
+	counters := m.GetCounters()
+	if counters.RouterCount == 0 {
+		t.Error("RouterCount should be > 0")
+	}
+}
+
+// --- RouterTableOps interface satisfaction ---
+
+func TestMockRouterTableOpsSatisfiesInterface(t *testing.T) {
+	t.Parallel()
+
+	// Compile-time check that mockRouterTableOps implements RouterTableOps.
+	var _ RouterTableOps = (*mockRouterTableOps)(nil)
 }
