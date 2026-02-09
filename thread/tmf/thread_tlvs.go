@@ -330,3 +330,66 @@ func ParseAddrReleaseRequest(data []byte) (*AddrReleaseRequest, error) {
 
 	return req, nil
 }
+
+// ---------------------------------------------------------------------------
+// Server Data request payload helpers
+// ---------------------------------------------------------------------------
+
+// ServerDataRequest represents the parsed payload of a Server Data
+// Registration (a/sd) CoAP POST request.
+type ServerDataRequest struct {
+	// RLOC16 is the registering device's RLOC16.
+	RLOC16 uint16
+	// NetworkData is the raw Thread Network Data being registered.
+	// An empty slice means the device is removing all its entries.
+	NetworkData []byte
+}
+
+// MarshalServerDataRequest serializes a Server Data Registration request
+// payload into TLV wire format.
+func MarshalServerDataRequest(req *ServerDataRequest) []byte {
+	var buf []byte
+
+	// RLOC16 TLV (type 2, 2 bytes).
+	rloc := [2]byte{}
+	binary.BigEndian.PutUint16(rloc[:], req.RLOC16)
+	buf = append(buf, tlv.TLV{
+		Type:  ThreadTLVRLOC16,
+		Value: rloc[:],
+	}.Marshal()...)
+
+	// Network Data TLV (type 10, variable length).
+	// Always present, even when empty (to distinguish from a malformed request).
+	buf = append(buf, tlv.TLV{
+		Type:  ThreadTLVNetworkData,
+		Value: req.NetworkData,
+	}.Marshal()...)
+
+	return buf
+}
+
+// ParseServerDataRequest parses a Server Data Registration request payload
+// from raw TLV bytes. The RLOC16 TLV is required; the Network Data TLV is
+// optional (absence means empty network data, i.e. remove all entries).
+func ParseServerDataRequest(data []byte) (*ServerDataRequest, error) {
+	tlvs, err := tlv.ParseAll(data)
+	if err != nil {
+		return nil, fmt.Errorf("server data request: %w", goterrors.ErrParse)
+	}
+
+	rloc16TLV := tlv.FindByType(tlvs, ThreadTLVRLOC16)
+	if rloc16TLV == nil || len(rloc16TLV.Value) != 2 {
+		return nil, fmt.Errorf("missing or invalid RLOC16 TLV: %w", goterrors.ErrParse)
+	}
+
+	req := &ServerDataRequest{
+		RLOC16: binary.BigEndian.Uint16(rloc16TLV.Value),
+	}
+
+	ndTLV := tlv.FindByType(tlvs, ThreadTLVNetworkData)
+	if ndTLV != nil {
+		req.NetworkData = ndTLV.Value
+	}
+
+	return req, nil
+}
