@@ -284,6 +284,10 @@ type Parent struct {
 	LeaderCost uint8
 }
 
+// MaxRequestTLVs is the maximum number of TLV types a child can request
+// in its Child ID Request's TLV Request TLV.
+const MaxRequestTLVs = 5
+
 // MaxChildIPAddresses is the maximum number of IPv6 addresses a child can
 // register with its parent (excluding the mesh-local EID).
 const MaxChildIPAddresses = 5
@@ -306,6 +310,11 @@ type Child struct {
 	SupervisionInterval uint16
 	// SecondsSinceSupervision is seconds since the last supervision message.
 	SecondsSinceSupervision uint16
+	// RequestTLVs stores the TLV types requested by the child in its
+	// Child ID Request. Up to MaxRequestTLVs entries are stored.
+	RequestTLVs [MaxRequestTLVs]uint8
+	// RequestTLVCount is the number of valid entries in RequestTLVs.
+	RequestTLVCount uint8
 }
 
 // AddIP6Address adds an IPv6 address to the child's registration list.
@@ -333,6 +342,31 @@ func (c *Child) HasIP6Address(addr ip6.Address) bool {
 func (c *Child) ClearIP6Addresses() {
 	c.IP6AddressCount = 0
 	c.IP6Addresses = [MaxChildIPAddresses]ip6.Address{}
+}
+
+// ClearRequestTLVs removes all stored request TLV types.
+func (c *Child) ClearRequestTLVs() {
+	c.RequestTLVCount = 0
+	c.RequestTLVs = [MaxRequestTLVs]uint8{}
+}
+
+// SetRequestTLVs stores the TLV types from a TLV Request TLV value.
+// At most MaxRequestTLVs types are stored; the rest are silently dropped.
+func (c *Child) SetRequestTLVs(types []uint8) {
+	c.ClearRequestTLVs()
+	n := len(types)
+	if n > MaxRequestTLVs {
+		n = MaxRequestTLVs
+	}
+	for i := 0; i < n; i++ {
+		c.RequestTLVs[i] = types[i]
+	}
+	c.RequestTLVCount = uint8(n)
+}
+
+// GetRequestTLVs returns a slice of the stored request TLV types.
+func (c *Child) GetRequestTLVs() []uint8 {
+	return c.RequestTLVs[:c.RequestTLVCount]
 }
 
 // GetMeshLocalIP6Address constructs the child's mesh-local IPv6 address from

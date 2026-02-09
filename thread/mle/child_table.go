@@ -140,3 +140,28 @@ func (ct *ChildTable) GetChildren() []*Child {
 	}
 	return result
 }
+
+// AllocateChildRLOC16 finds the next unused child ID for the given router
+// RLOC16 and returns the resulting child RLOC16. The child ID is chosen
+// starting from MinChildID and skipping any IDs already in use by
+// non-invalid children whose RLOC16 shares the same router ID.
+//
+// Returns 0 and false if no child ID is available.
+func (ct *ChildTable) AllocateChildRLOC16(routerRLOC16 uint16) (uint16, bool) {
+	routerBase := routerRLOC16 & ^uint16(MaxChildID)
+
+	for id := MinChildID; id <= MaxChildID; id++ {
+		candidate := routerBase | id
+		used := false
+		for i := range ct.children {
+			if ct.children[i].State != StateInvalid && ct.children[i].RLOC16 == candidate {
+				used = true
+				break
+			}
+		}
+		if !used {
+			return candidate, true
+		}
+	}
+	return 0, false
+}
