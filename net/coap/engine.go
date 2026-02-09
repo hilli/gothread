@@ -421,6 +421,38 @@ func (e *Engine) SendHeaderResponse(code Code, reqMsg *Message, info MessageInfo
 	return e.sender(resp.GetBytes(), info)
 }
 
+// SendPiggybackedResponse sends a piggybacked ACK response carrying the given
+// response code, the request's token, and an optional payload. The message ID
+// is taken from reqMsg so it matches the confirmable request being
+// acknowledged. Unlike SendMessage, the message ID is NOT reassigned.
+//
+// This is the standard way to send a response with payload to a CON request.
+func (e *Engine) SendPiggybackedResponse(code Code, reqMsg *Message, info MessageInfo, payload []byte) error {
+	resp := NewMessage(TypeAck, code, reqMsg.GetMessageID())
+	token := reqMsg.GetToken()
+	if len(token) > 0 {
+		if err := resp.SetToken(token); err != nil {
+			return err
+		}
+	}
+	if len(payload) > 0 {
+		if err := resp.AppendPayloadMarker(); err != nil {
+			return err
+		}
+		if err := resp.AppendPayload(payload); err != nil {
+			return err
+		}
+	}
+
+	// Cache the response for deduplication.
+	e.mu.Lock()
+	lifetime := DefaultTxParameters().CalculateExchangeLifetime()
+	e.addToCacheLocked(resp.GetBytes(), info, reqMsg.GetMessageID(), lifetime)
+	e.mu.Unlock()
+
+	return e.sender(resp.GetBytes(), info)
+}
+
 // ---------------------------------------------------------------------------
 // Receive path
 // ---------------------------------------------------------------------------
