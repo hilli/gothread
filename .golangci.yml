@@ -16,28 +16,26 @@ linters:
     - ineffassign
     - gocritic
     - revive
-
-linters-settings:
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-      - performance
-  revive:
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+    revive:
+      rules:
+        - name: blank-imports
+        - name: exported
+        - name: var-naming
+        - name: indent-error-flow
+        - name: range
+        - name: error-return
+        - name: error-naming
+        - name: unexported-return
+        - name: time-naming
+        - name: receiver-naming
+  exclusions:
     rules:
-      - name: blank-imports
-      - name: exported
-      - name: var-naming
-      - name: indent-error-flow
-      - name: range
-      - name: error-return
-      - name: error-naming
-      - name: unexported-return
-      - name: time-naming
-      - name: receiver-naming
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
+      - path: _test\.go
+        linters:
+          - errcheck
