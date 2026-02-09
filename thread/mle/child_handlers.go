@@ -47,7 +47,6 @@ func NewChildHandlers(mle *Mle, dispatcher *Dispatcher) *ChildHandlers {
 		dispatcher: dispatcher,
 	}
 
-	dispatcher.RegisterHandler(CommandAdvertisement, ch.HandleAdvertisement)
 	dispatcher.RegisterHandler(CommandDataResponse, ch.HandleDataResponse)
 	dispatcher.RegisterHandler(CommandChildUpdateRequest, ch.HandleChildUpdateRequest)
 	dispatcher.RegisterHandler(CommandChildUpdateResponse, ch.HandleChildUpdateResponse)

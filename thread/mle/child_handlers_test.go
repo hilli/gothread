@@ -1090,7 +1090,6 @@ func TestNewChildHandlers_RegistersAllHandlers(t *testing.T) {
 	_ = NewChildHandlers(mle, d)
 
 	expectedCommands := []Command{
-		CommandAdvertisement,
 		CommandDataResponse,
 		CommandChildUpdateRequest,
 		CommandChildUpdateResponse,

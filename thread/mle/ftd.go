@@ -112,6 +112,21 @@ const (
 	ChildRouterLinks uint8 = 3
 )
 
+// Advertisement processing link margin thresholds.
+const (
+	// PartitionMergeMinMargin is the minimum link margin (in dB) required
+	// to consider merging with a different partition.
+	PartitionMergeMinMargin uint8 = 24
+
+	// LinkRequestMinMargin is the minimum link margin (in dB) required
+	// to schedule a Link Request to an unknown router neighbor.
+	LinkRequestMinMargin uint8 = 10
+)
+
+// PreviousPartitionIDTimeout is the time in seconds during which the
+// previous partition information is kept for merge loop detection.
+const PreviousPartitionIDTimeout uint32 = 10
+
 // RouterUpgradeReason indicates why a router upgrade was requested.
 type RouterUpgradeReason uint8
 

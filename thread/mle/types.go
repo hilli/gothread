@@ -308,3 +308,9 @@ func ComparePartitions(singletonA bool, leaderDataA LeaderData, singletonB bool,
 func IsSingleton(idSet RouterIDSet) bool {
 	return idSet.GetAllocatedCount() == 1
 }
+
+// SerialNumberIsGreater returns true if a is strictly ahead of b using
+// 8-bit serial number arithmetic (RFC 1982 style comparison).
+func SerialNumberIsGreater(a, b uint8) bool {
+	return a != b && int8(a-b) > 0
+}
