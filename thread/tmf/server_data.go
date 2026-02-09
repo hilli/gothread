@@ -68,11 +68,15 @@ func (s *ServerDataService) handleServerData(_ URI, msg *coap.Message, info ip6.
 	}
 
 	if regErr := s.leader.RegisterNetworkData(req.RLOC16, req.NetworkData); regErr != nil {
-		// Registration failed — send an empty ACK to acknowledge the CON.
-		_ = s.agent.GetEngine().SendAck(msg.GetMessageID(), coap.MessageInfo{
+		// Registration failed — send a 5.00 Internal Server Error so the
+		// client's response handler is finalized (a bare ACK only stops
+		// retransmission without delivering a response code).
+		errInfo := coap.MessageInfo{
 			PeerPort: info.PeerPort,
-			PeerAddr: info.PeerAddr,
-		})
+		}
+		copy(errInfo.PeerAddr[:], info.PeerAddr[:])
+		copy(errInfo.LocalAddr[:], info.SockAddr[:])
+		_ = s.agent.GetEngine().SendHeaderResponse(coap.CodeInternalError, msg, errInfo)
 		return
 	}
 

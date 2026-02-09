@@ -170,6 +170,77 @@ func SendAddressRelease(
 }
 
 // ---------------------------------------------------------------------------
+// Server Data Registration result callback
+// ---------------------------------------------------------------------------
+
+// ServerDataResult is passed to the callback when a Server Data Registration
+// response is received (or the request times out / fails).
+type ServerDataResult struct {
+	// Accepted is true when the leader responded with 2.04 Changed,
+	// indicating the network data was successfully registered.
+	Accepted bool
+	// Err is non-nil on timeout, abort, or transport failure.
+	Err error
+}
+
+// ServerDataCallback is invoked when the Server Data Registration transaction
+// completes (successfully or not).
+type ServerDataCallback func(result ServerDataResult)
+
+// ---------------------------------------------------------------------------
+// Server Data Registration client
+// ---------------------------------------------------------------------------
+
+// SendServerData sends a CON POST to the leader's Server Data URI (a/sd),
+// registering the caller's network data entries. The result is delivered
+// asynchronously via the callback.
+//
+// Parameters:
+//   - agent: the TMF agent whose CoAP engine will send the message.
+//   - meshLocalPrefix: the mesh-local prefix for constructing RLOC addresses.
+//   - senderRLOC16: this device's current RLOC16 (used as source address and
+//     included in the request payload).
+//   - leaderRLOC16: the leader's RLOC16.
+//   - networkData: the raw network data TLVs to register. An empty slice
+//     removes all entries for this device.
+//   - cb: callback invoked when the response arrives or the request fails.
+func SendServerData(
+	agent *Agent,
+	meshLocalPrefix ip6.NetworkPrefix,
+	senderRLOC16 uint16,
+	leaderRLOC16 uint16,
+	networkData []byte,
+	cb ServerDataCallback,
+) error {
+	req := &ServerDataRequest{
+		RLOC16:      senderRLOC16,
+		NetworkData: networkData,
+	}
+
+	msg, err := buildCONPost(URIServerData, MarshalServerDataRequest(req))
+	if err != nil {
+		return err
+	}
+
+	coapInfo := tmfCoapInfo(meshLocalPrefix, senderRLOC16, leaderRLOC16)
+
+	return agent.GetEngine().SendMessage(msg, coapInfo, nil, func(respMsg *coap.Message, _ coap.MessageInfo, respErr error) {
+		if respErr != nil {
+			if cb != nil {
+				cb(ServerDataResult{Err: respErr})
+			}
+			return
+		}
+		result := ServerDataResult{
+			Accepted: respMsg.GetCode() == coap.CodeChanged,
+		}
+		if cb != nil {
+			cb(result)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

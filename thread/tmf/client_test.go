@@ -493,3 +493,205 @@ func TestParseAddrSolicitResultInvalidPayload(t *testing.T) {
 		t.Error("Err = nil, want parse error")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SendServerData tests
+// ---------------------------------------------------------------------------
+
+func TestSendServerDataSuccess(t *testing.T) {
+	t.Parallel()
+
+	engine, _ := newLoopbackEngine()
+	agent := NewAgent(engine)
+
+	leader := &mockNetworkDataLeader{}
+	sds := NewServerDataService(agent, leader)
+	defer sds.Stop()
+
+	leaderRLOC16 := uint16(0xFC00)
+	nd := []byte{0x01, 0x02, 0x03, 0x04}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var got ServerDataResult
+
+	err := SendServerData(
+		agent,
+		meshPrefix,
+		senderRLOC,
+		leaderRLOC16,
+		nd,
+		func(result ServerDataResult) {
+			got = result
+			wg.Done()
+		},
+	)
+	if err != nil {
+		t.Fatalf("SendServerData returned error: %v", err)
+	}
+
+	wg.Wait()
+
+	if got.Err != nil {
+		t.Fatalf("callback error: %v", got.Err)
+	}
+	if !got.Accepted {
+		t.Error("Accepted = false, want true")
+	}
+
+	// Verify the leader received the correct data.
+	leader.mu.Lock()
+	defer leader.mu.Unlock()
+	if leader.callCount != 1 {
+		t.Errorf("leader.callCount = %d, want 1", leader.callCount)
+	}
+	if leader.lastRLOC16 != senderRLOC {
+		t.Errorf("leader.lastRLOC16 = 0x%04x, want 0x%04x", leader.lastRLOC16, senderRLOC)
+	}
+	if len(leader.lastData) != len(nd) {
+		t.Fatalf("leader.lastData length = %d, want %d", len(leader.lastData), len(nd))
+	}
+	for i, b := range leader.lastData {
+		if b != nd[i] {
+			t.Errorf("leader.lastData[%d] = 0x%02x, want 0x%02x", i, b, nd[i])
+		}
+	}
+}
+
+func TestSendServerDataEmptyNetworkData(t *testing.T) {
+	t.Parallel()
+
+	engine, _ := newLoopbackEngine()
+	agent := NewAgent(engine)
+
+	leader := &mockNetworkDataLeader{}
+	sds := NewServerDataService(agent, leader)
+	defer sds.Stop()
+
+	leaderRLOC16 := uint16(0xFC00)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var got ServerDataResult
+
+	err := SendServerData(
+		agent,
+		meshPrefix,
+		senderRLOC,
+		leaderRLOC16,
+		nil, // empty network data — remove all entries
+		func(result ServerDataResult) {
+			got = result
+			wg.Done()
+		},
+	)
+	if err != nil {
+		t.Fatalf("SendServerData returned error: %v", err)
+	}
+
+	wg.Wait()
+
+	if got.Err != nil {
+		t.Fatalf("callback error: %v", got.Err)
+	}
+	if !got.Accepted {
+		t.Error("Accepted = false, want true")
+	}
+
+	leader.mu.Lock()
+	defer leader.mu.Unlock()
+	if leader.callCount != 1 {
+		t.Errorf("leader.callCount = %d, want 1", leader.callCount)
+	}
+	if leader.lastRLOC16 != senderRLOC {
+		t.Errorf("leader.lastRLOC16 = 0x%04x, want 0x%04x", leader.lastRLOC16, senderRLOC)
+	}
+}
+
+func TestSendServerDataRegistrationError(t *testing.T) {
+	t.Parallel()
+
+	engine, _ := newLoopbackEngine()
+	agent := NewAgent(engine)
+
+	leader := &mockNetworkDataLeader{
+		returnError: goterrors.ErrDrop,
+	}
+	sds := NewServerDataService(agent, leader)
+	defer sds.Stop()
+
+	leaderRLOC16 := uint16(0xFC00)
+	nd := []byte{0xAA, 0xBB}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var got ServerDataResult
+
+	err := SendServerData(
+		agent,
+		meshPrefix,
+		senderRLOC,
+		leaderRLOC16,
+		nd,
+		func(result ServerDataResult) {
+			got = result
+			wg.Done()
+		},
+	)
+	if err != nil {
+		t.Fatalf("SendServerData returned error: %v", err)
+	}
+
+	wg.Wait()
+
+	// The leader rejected the registration. The server sends a 5.00
+	// Internal Server Error, so Accepted should be false.
+	if got.Accepted {
+		t.Error("Accepted = true, want false (leader rejected)")
+	}
+}
+
+func TestSendServerDataNilCallback(t *testing.T) {
+	t.Parallel()
+
+	engine, _ := newLoopbackEngine()
+	agent := NewAgent(engine)
+
+	leader := &mockNetworkDataLeader{}
+	sds := NewServerDataService(agent, leader)
+	defer sds.Stop()
+
+	leaderRLOC16 := uint16(0xFC00)
+
+	// Should not panic with nil callback.
+	err := SendServerData(
+		agent,
+		meshPrefix,
+		senderRLOC,
+		leaderRLOC16,
+		[]byte{0x01},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("SendServerData returned error: %v", err)
+	}
+}
+
+func TestSendServerDataTimeoutResult(t *testing.T) {
+	t.Parallel()
+
+	// Verify the error result is structured correctly when the callback
+	// receives a timeout error.
+	var got ServerDataResult
+	got.Err = goterrors.ErrResponseTimeout
+
+	if got.Err != goterrors.ErrResponseTimeout {
+		t.Errorf("Err = %v, want ErrResponseTimeout", got.Err)
+	}
+	if got.Accepted {
+		t.Error("Accepted = true, want false on timeout")
+	}
+}

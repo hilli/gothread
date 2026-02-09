@@ -288,7 +288,7 @@ func TestServerDataServiceRegistrationError(t *testing.T) {
 		t.Fatalf("RegisterNetworkData call count = %d, want 1", leader.callCount)
 	}
 
-	// Should get an empty ACK (not CodeChanged).
+	// Should get a 5.00 Internal Server Error (not CodeChanged).
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 	if len(ms.sent) != 1 {
@@ -301,8 +301,8 @@ func TestServerDataServiceRegistrationError(t *testing.T) {
 	if resp.GetType() != coap.TypeAck {
 		t.Errorf("response type = %d, want ACK", resp.GetType())
 	}
-	if resp.GetCode() != coap.CodeEmpty {
-		t.Errorf("response code = 0x%02X, want CodeEmpty (0x%02X)", resp.GetCode(), coap.CodeEmpty)
+	if resp.GetCode() != coap.CodeInternalError {
+		t.Errorf("response code = 0x%02X, want CodeInternalError (0x%02X)", resp.GetCode(), coap.CodeInternalError)
 	}
 	if resp.GetMessageID() != 4000 {
 		t.Errorf("response message ID = %d, want 4000", resp.GetMessageID())
