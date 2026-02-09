@@ -193,6 +193,9 @@ type Mle struct {
 	// dataRequestPending indicates a Data Request should be sent to
 	// the parent (scheduled by HandleAdvertisement or HandleDataResponse).
 	dataRequestPending bool
+
+	// ftd holds FTD-specific state (router ID, thresholds, etc.).
+	ftd FtdState
 }
 
 // NewMle creates a new MLE state machine in the Disabled state.
@@ -203,6 +206,7 @@ func NewMle() *Mle {
 		childTimeout:     240, // Default 240 seconds
 		routerEligible:   true,
 		previousRouterID: InvalidRouterID,
+		ftd:              newFtdState(),
 	}
 	m.deviceMode.Set(ModeRxOnWhenIdle | ModeFullThreadDevice | ModeFullNetworkData)
 	return m
