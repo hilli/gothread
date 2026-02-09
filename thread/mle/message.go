@@ -612,6 +612,21 @@ func ReadAddressRegistrationTLV(value []byte) ([]AddressRegistrationEntry, error
 	return entries, nil
 }
 
+// AppendDiscoveryTLV appends an MLE Discovery TLV (type 26) wrapping raw
+// MeshCoP sub-TLV bytes.
+func (m *Message) AppendDiscoveryTLV(subTLVs []byte) {
+	m.appendTLV(TLVDiscovery, subTLVs)
+}
+
+// ReadDiscoveryTLV extracts the raw MeshCoP sub-TLV bytes from an MLE
+// Discovery TLV value.
+func ReadDiscoveryTLV(value []byte) ([]byte, error) {
+	if len(value) == 0 {
+		return nil, fmt.Errorf("mle: Discovery TLV value is empty")
+	}
+	return value, nil
+}
+
 // --- Finalize: fill security header and encrypt ---
 
 // Finalize fills in the security header with the given parameters and
