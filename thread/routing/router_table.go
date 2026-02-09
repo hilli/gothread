@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 
 	goterrors "github.com/hilli/gothread/errors"
+	mac_types "github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/thread/link"
 	"github.com/hilli/gothread/thread/mle"
 )
@@ -325,4 +326,100 @@ func (rt *RouterTable) HandleTimeTick() {
 // Routers returns the slice of routers for iteration.
 func (rt *RouterTable) Routers() []Router {
 	return rt.routers
+}
+
+// FindRouterByExtAddress returns the router with the given extended address,
+// or nil if not found.
+func (rt *RouterTable) FindRouterByExtAddress(addr mac_types.ExtAddress) *Router {
+	for i := range rt.routers {
+		if rt.routers[i].ExtAddress == addr {
+			return &rt.routers[i]
+		}
+	}
+	return nil
+}
+
+// GetPathCost returns the path cost to the given destination RLOC16.
+// Returns MaxRouteCost if the destination is unreachable.
+func (rt *RouterTable) GetPathCost(destRLOC16 uint16) uint8 {
+	_, cost := rt.GetNextHopAndPathCost(destRLOC16)
+	return cost
+}
+
+// GetPathCostToLeader returns the path cost to the leader identified by
+// its RLOC16.
+func (rt *RouterTable) GetPathCostToLeader(leaderRLOC16 uint16) uint8 {
+	return rt.GetPathCost(leaderRLOC16)
+}
+
+// GetLeaderAge returns the number of seconds since the router ID sequence
+// was last updated, based on the given current time in milliseconds.
+func (rt *RouterTable) GetLeaderAge(nowMs uint32) uint32 {
+	return (nowMs - rt.routerIDSequenceLastUpdated) / 1000
+}
+
+// GetNeighborCount returns the number of valid router neighbors with a
+// two-way link quality at or above the given minimum.
+func (rt *RouterTable) GetNeighborCount(minLinkQuality uint8) int {
+	count := 0
+	for i := range rt.routers {
+		r := &rt.routers[i]
+		if r.State == StateValid && r.GetTwoWayLinkQuality() >= minLinkQuality {
+			count++
+		}
+	}
+	return count
+}
+
+// GetRouterIDSet returns the set of currently allocated router IDs.
+func (rt *RouterTable) GetRouterIDSet() mle.RouterIDSet {
+	return rt.routerIDMap.GetRouterIDSet()
+}
+
+// IsRouteTlvIDSequenceMoreRecent returns true if the given sequence number
+// is strictly more recent than the current routerIDSequence, using serial
+// number arithmetic (RFC 1982 style comparison for 8-bit values).
+func (rt *RouterTable) IsRouteTlvIDSequenceMoreRecent(sequence uint8) bool {
+	return serialNumberIsAhead(sequence, rt.routerIDSequence)
+}
+
+// SetRouterIDSequence sets the router ID sequence number.
+func (rt *RouterTable) SetRouterIDSequence(sequence uint8) {
+	rt.routerIDSequence = sequence
+}
+
+// SetRouterIDSequenceLastUpdated sets the timestamp (in milliseconds)
+// when the router ID sequence was last updated.
+func (rt *RouterTable) SetRouterIDSequenceLastUpdated(nowMs uint32) {
+	rt.routerIDSequenceLastUpdated = nowMs
+}
+
+// serialNumberIsAhead returns true if a is strictly ahead of b using
+// serial number arithmetic for 8-bit values (RFC 1982).
+func serialNumberIsAhead(a, b uint8) bool {
+	return a != b && int8(a-b) > 0
+}
+
+// RemoveRouterLink clears the link to the given router. It resets the
+// outgoing link quality and invalidates next hops through this router.
+// Returns true if any route became unreachable.
+func (rt *RouterTable) RemoveRouterLink(router *Router) bool {
+	if router == nil {
+		return false
+	}
+
+	routerID := mle.RouterIDFromRLOC16(router.RLOC16)
+	router.LinkQualityOut = 0
+	router.LinkInfo.Clear()
+
+	changed := false
+	for i := range rt.routers {
+		r := &rt.routers[i]
+		if r.NextHop == routerID {
+			if r.SetNextHopToInvalid() {
+				changed = true
+			}
+		}
+	}
+	return changed
 }

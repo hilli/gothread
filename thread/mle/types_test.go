@@ -374,3 +374,115 @@ func TestALOCHelpers(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// ComparePartitions tests
+// ---------------------------------------------------------------------------
+
+func TestComparePartitions(t *testing.T) {
+	tests := []struct {
+		name       string
+		singletonA bool
+		leaderA    LeaderData
+		singletonB bool
+		leaderB    LeaderData
+		want       int
+	}{
+		{
+			name:       "higher weighting wins",
+			singletonA: false,
+			leaderA:    LeaderData{Weighting: 10, PartitionID: 1},
+			singletonB: false,
+			leaderB:    LeaderData{Weighting: 5, PartitionID: 2},
+			want:       1,
+		},
+		{
+			name:       "lower weighting loses",
+			singletonA: false,
+			leaderA:    LeaderData{Weighting: 5, PartitionID: 2},
+			singletonB: false,
+			leaderB:    LeaderData{Weighting: 10, PartitionID: 1},
+			want:       -1,
+		},
+		{
+			name:       "singleton loses to non-singleton",
+			singletonA: true,
+			leaderA:    LeaderData{Weighting: 64, PartitionID: 100},
+			singletonB: false,
+			leaderB:    LeaderData{Weighting: 64, PartitionID: 1},
+			want:       -1,
+		},
+		{
+			name:       "non-singleton beats singleton",
+			singletonA: false,
+			leaderA:    LeaderData{Weighting: 64, PartitionID: 1},
+			singletonB: true,
+			leaderB:    LeaderData{Weighting: 64, PartitionID: 100},
+			want:       1,
+		},
+		{
+			name:       "higher partition ID wins",
+			singletonA: false,
+			leaderA:    LeaderData{Weighting: 64, PartitionID: 200},
+			singletonB: false,
+			leaderB:    LeaderData{Weighting: 64, PartitionID: 100},
+			want:       1,
+		},
+		{
+			name:       "lower partition ID loses",
+			singletonA: false,
+			leaderA:    LeaderData{Weighting: 64, PartitionID: 100},
+			singletonB: false,
+			leaderB:    LeaderData{Weighting: 64, PartitionID: 200},
+			want:       -1,
+		},
+		{
+			name:       "equal partitions",
+			singletonA: false,
+			leaderA:    LeaderData{Weighting: 64, PartitionID: 100},
+			singletonB: false,
+			leaderB:    LeaderData{Weighting: 64, PartitionID: 100},
+			want:       0,
+		},
+		{
+			name:       "both singletons higher ID wins",
+			singletonA: true,
+			leaderA:    LeaderData{Weighting: 64, PartitionID: 200},
+			singletonB: true,
+			leaderB:    LeaderData{Weighting: 64, PartitionID: 100},
+			want:       1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ComparePartitions(tt.singletonA, tt.leaderA, tt.singletonB, tt.leaderB)
+			if got != tt.want {
+				t.Errorf("ComparePartitions() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IsSingleton tests
+// ---------------------------------------------------------------------------
+
+func TestIsSingleton(t *testing.T) {
+	var empty RouterIDSet
+	if IsSingleton(empty) {
+		t.Error("empty set should not be singleton")
+	}
+
+	var one RouterIDSet
+	one.Add(5)
+	if !IsSingleton(one) {
+		t.Error("set with one ID should be singleton")
+	}
+
+	var two RouterIDSet
+	two.Add(5)
+	two.Add(10)
+	if IsSingleton(two) {
+		t.Error("set with two IDs should not be singleton")
+	}
+}

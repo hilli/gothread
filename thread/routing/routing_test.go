@@ -11,8 +11,18 @@ import (
 	goterrors "github.com/hilli/gothread/errors"
 	mac_types "github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/thread/link"
 	"github.com/hilli/gothread/thread/mle"
 )
+
+// testNoiseFloor is the noise floor used by test helpers for link quality.
+const testNoiseFloor int8 = -100
+
+// initRouterLinkInfo initializes a router's LinkInfo with a proper noise floor
+// so that AddRSS calls produce meaningful link quality values.
+func initRouterLinkInfo(r *Router) {
+	r.LinkInfo = *link.NewQualityInfo(testNoiseFloor)
+}
 
 // ---------------------------------------------------------------------------
 // Neighbor / State tests
@@ -1140,4 +1150,716 @@ func TestNeighborTable(t *testing.T) {
 		// Should not panic with no callback registered.
 		nt.Signal(EventChildAdded, &Neighbor{})
 	})
+}
+
+// ---------------------------------------------------------------------------
+// RouteTlvData tests
+// ---------------------------------------------------------------------------
+
+func TestRouteTlvData_GetRouterIDForIndex(t *testing.T) {
+	// Mask has IDs 1, 5, 10 set.
+	var mask mle.RouterIDSet
+	mask.Add(1)
+	mask.Add(5)
+	mask.Add(10)
+
+	data := &RouteTlvData{
+		Sequence:     42,
+		RouterIDMask: mask,
+		Entries: []mle.Route64Entry{
+			{LinkQualityOut: 3, LinkQualityIn: 3, Cost: 1},
+			{LinkQualityOut: 2, LinkQualityIn: 2, Cost: 3},
+			{LinkQualityOut: 1, LinkQualityIn: 1, Cost: 5},
+		},
+	}
+
+	tests := []struct {
+		index int
+		want  uint8
+	}{
+		{0, 1},
+		{1, 5},
+		{2, 10},
+		{-1, InvalidRouterID},
+		{3, InvalidRouterID},
+	}
+	for _, tt := range tests {
+		got := data.GetRouterIDForIndex(tt.index)
+		if got != tt.want {
+			t.Errorf("GetRouterIDForIndex(%d) = %d, want %d", tt.index, got, tt.want)
+		}
+	}
+}
+
+func TestRouteTlvData_GetIndexForRouterID(t *testing.T) {
+	var mask mle.RouterIDSet
+	mask.Add(1)
+	mask.Add(5)
+	mask.Add(10)
+
+	data := &RouteTlvData{
+		Sequence:     42,
+		RouterIDMask: mask,
+		Entries: []mle.Route64Entry{
+			{Cost: 1}, {Cost: 3}, {Cost: 5},
+		},
+	}
+
+	tests := []struct {
+		routerID uint8
+		want     int
+	}{
+		{1, 0},
+		{5, 1},
+		{10, 2},
+		{0, -1},  // not in mask
+		{63, -1}, // out of range
+	}
+	for _, tt := range tests {
+		got := data.GetIndexForRouterID(tt.routerID)
+		if got != tt.want {
+			t.Errorf("GetIndexForRouterID(%d) = %d, want %d", tt.routerID, got, tt.want)
+		}
+	}
+}
+
+func TestRouteTlvData_GetEntryForRouterID(t *testing.T) {
+	var mask mle.RouterIDSet
+	mask.Add(3)
+	mask.Add(7)
+
+	data := &RouteTlvData{
+		RouterIDMask: mask,
+		Entries: []mle.Route64Entry{
+			{Cost: 2},
+			{Cost: 4},
+		},
+	}
+
+	e := data.GetEntryForRouterID(3)
+	if e == nil || e.Cost != 2 {
+		t.Fatalf("GetEntryForRouterID(3) = %v, want cost=2", e)
+	}
+
+	e = data.GetEntryForRouterID(7)
+	if e == nil || e.Cost != 4 {
+		t.Fatalf("GetEntryForRouterID(7) = %v, want cost=4", e)
+	}
+
+	if data.GetEntryForRouterID(0) != nil {
+		t.Error("GetEntryForRouterID(0) should be nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RouterTable helper method tests
+// ---------------------------------------------------------------------------
+
+func TestRouterTable_FindRouterByExtAddress(t *testing.T) {
+	rt := NewRouterTable()
+
+	r1, _ := rt.AllocateWithID(1)
+	r1.ExtAddress = mac_types.ExtAddress{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	r1.State = StateValid
+
+	r2, _ := rt.AllocateWithID(5)
+	r2.ExtAddress = mac_types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	r2.State = StateValid
+
+	found := rt.FindRouterByExtAddress(r1.ExtAddress)
+	if found == nil || found.RLOC16 != r1.RLOC16 {
+		t.Errorf("FindRouterByExtAddress(r1) = %v, want router ID 1", found)
+	}
+
+	found = rt.FindRouterByExtAddress(r2.ExtAddress)
+	if found == nil || found.RLOC16 != r2.RLOC16 {
+		t.Errorf("FindRouterByExtAddress(r2) = %v, want router ID 5", found)
+	}
+
+	notFound := rt.FindRouterByExtAddress(mac_types.ExtAddress{0xFF})
+	if notFound != nil {
+		t.Error("FindRouterByExtAddress(unknown) should be nil")
+	}
+}
+
+func TestRouterTable_GetPathCost(t *testing.T) {
+	rt := NewRouterTable()
+
+	r1, _ := rt.AllocateWithID(1)
+	r1.State = StateValid
+	r1.NextHop = 1 // direct link
+	r1.LinkQualityOut = 3
+	initRouterLinkInfo(r1)
+	r1.LinkInfo.AddRSS(-20) // high quality (LQ 3)
+
+	cost := rt.GetPathCost(r1.RLOC16)
+	if cost >= MaxRouteCost {
+		t.Errorf("GetPathCost(direct neighbor) = %d, want < %d", cost, MaxRouteCost)
+	}
+
+	// Unreachable router.
+	r2, _ := rt.AllocateWithID(5)
+	r2.State = StateInvalid
+	r2.NextHop = InvalidRouterID
+	cost = rt.GetPathCost(r2.RLOC16)
+	if cost != MaxRouteCost {
+		t.Errorf("GetPathCost(unreachable) = %d, want %d", cost, MaxRouteCost)
+	}
+}
+
+func TestRouterTable_GetLeaderAge(t *testing.T) {
+	rt := NewRouterTable()
+	rt.SetRouterIDSequenceLastUpdated(10000) // 10s
+
+	age := rt.GetLeaderAge(20000) // 20s
+	if age != 10 {
+		t.Errorf("GetLeaderAge = %d, want 10", age)
+	}
+}
+
+func TestRouterTable_GetNeighborCount(t *testing.T) {
+	rt := NewRouterTable()
+
+	// Add 3 valid routers with varying link quality.
+	for _, tc := range []struct {
+		id      uint8
+		lqOut   uint8
+		rss     int8
+		quality uint8
+	}{
+		{1, 3, -20, 3},   // high quality
+		{5, 2, -85, 2},   // medium quality (margin 15 → LQ 2)
+		{10, 0, -100, 0}, // zero quality
+	} {
+		r, _ := rt.AllocateWithID(tc.id)
+		r.State = StateValid
+		r.LinkQualityOut = tc.lqOut
+		initRouterLinkInfo(r)
+		r.LinkInfo.AddRSS(tc.rss)
+	}
+
+	if got := rt.GetNeighborCount(0); got != 3 {
+		t.Errorf("GetNeighborCount(0) = %d, want 3", got)
+	}
+	if got := rt.GetNeighborCount(2); got != 2 {
+		t.Errorf("GetNeighborCount(2) = %d, want 2", got)
+	}
+	if got := rt.GetNeighborCount(3); got != 1 {
+		t.Errorf("GetNeighborCount(3) = %d, want 1", got)
+	}
+}
+
+func TestRouterTable_GetRouterIDSet(t *testing.T) {
+	rt := NewRouterTable()
+
+	for _, id := range []uint8{1, 10, 62} {
+		if _, err := rt.AllocateWithID(id); err != nil {
+			t.Fatalf("AllocateWithID(%d): %v", id, err)
+		}
+	}
+
+	set := rt.GetRouterIDSet()
+	for _, id := range []uint8{1, 10, 62} {
+		if !set.Contains(id) {
+			t.Errorf("GetRouterIDSet should contain %d", id)
+		}
+	}
+	if set.Contains(0) {
+		t.Error("GetRouterIDSet should not contain 0")
+	}
+}
+
+func TestRouterTable_IsRouteTlvIDSequenceMoreRecent(t *testing.T) {
+	rt := NewRouterTable()
+
+	// Sequence starts at 0 after Clear, then we set it.
+	rt.SetRouterIDSequence(100)
+
+	tests := []struct {
+		seq  uint8
+		want bool
+	}{
+		{101, true},
+		{200, true},
+		{100, false}, // equal
+		{99, false},  // behind
+		{50, false},  // behind (wrapping)
+		// Wrapping: 100 + 128 = 228, 228 is behind (> 127 difference)
+		{228, false},
+		// 100 + 1 = 101, that's ahead
+		{101, true},
+	}
+	for _, tt := range tests {
+		got := rt.IsRouteTlvIDSequenceMoreRecent(tt.seq)
+		if got != tt.want {
+			t.Errorf("IsRouteTlvIDSequenceMoreRecent(%d) with current=%d: got %v, want %v",
+				tt.seq, rt.GetRouterIDSequence(), got, tt.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RemoveRouterLink tests
+// ---------------------------------------------------------------------------
+
+func TestRouterTable_RemoveRouterLink(t *testing.T) {
+	rt := NewRouterTable()
+
+	// Set up: router 1 is a direct neighbor.
+	r1, _ := rt.AllocateWithID(1)
+	r1.State = StateValid
+	r1.LinkQualityOut = 3
+	initRouterLinkInfo(r1)
+	r1.LinkInfo.AddRSS(-20)
+
+	// Router 5 routes through router 1.
+	r5, _ := rt.AllocateWithID(5)
+	r5.NextHop = 1
+	r5.Cost = 3
+
+	// Router 10 has its own next hop.
+	r10, _ := rt.AllocateWithID(10)
+	r10.NextHop = 10
+	r10.Cost = 0
+
+	changed := rt.RemoveRouterLink(r1)
+	if !changed {
+		t.Error("RemoveRouterLink should return true when routes are invalidated")
+	}
+
+	// Router 1 should have cleared link quality.
+	if r1.LinkQualityOut != 0 {
+		t.Errorf("r1.LinkQualityOut = %d, want 0", r1.LinkQualityOut)
+	}
+
+	// Router 5 should have invalid next hop (it went through router 1).
+	if r5.NextHop != InvalidRouterID {
+		t.Errorf("r5.NextHop = %d, want InvalidRouterID", r5.NextHop)
+	}
+
+	// Router 10 should be unaffected.
+	if r10.NextHop != 10 {
+		t.Errorf("r10.NextHop = %d, want 10", r10.NextHop)
+	}
+}
+
+func TestRouterTable_RemoveRouterLink_nil(t *testing.T) {
+	rt := NewRouterTable()
+	if rt.RemoveRouterLink(nil) {
+		t.Error("RemoveRouterLink(nil) should return false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateRouterIDSet tests
+// ---------------------------------------------------------------------------
+
+func TestRouterTable_UpdateRouterIDSet(t *testing.T) {
+	rt := NewRouterTable()
+
+	// Start with routers 1, 5, 10.
+	for _, id := range []uint8{1, 5, 10} {
+		if _, err := rt.AllocateWithID(id); err != nil {
+			t.Fatalf("AllocateWithID(%d): %v", id, err)
+		}
+	}
+
+	// New ID set: 1, 10, 20 (removes 5, adds 20).
+	var newSet mle.RouterIDSet
+	newSet.Add(1)
+	newSet.Add(10)
+	newSet.Add(20)
+
+	changed := rt.UpdateRouterIDSet(42, newSet, 5000)
+	if !changed {
+		t.Error("UpdateRouterIDSet should return true when routers change")
+	}
+
+	if rt.GetRouterIDSequence() != 42 {
+		t.Errorf("sequence = %d, want 42", rt.GetRouterIDSequence())
+	}
+
+	// Router 5 should be gone.
+	if rt.FindRouterByID(5) != nil {
+		t.Error("router 5 should have been removed")
+	}
+
+	// Router 20 should be added.
+	r20 := rt.FindRouterByID(20)
+	if r20 == nil {
+		t.Fatal("router 20 should have been added")
+	}
+	if r20.RLOC16 != mle.RLOC16FromRouterID(20) {
+		t.Errorf("r20.RLOC16 = 0x%04X, want 0x%04X", r20.RLOC16, mle.RLOC16FromRouterID(20))
+	}
+	if r20.NextHop != InvalidRouterID {
+		t.Errorf("r20.NextHop = %d, want InvalidRouterID", r20.NextHop)
+	}
+
+	// Routers 1 and 10 should still exist.
+	if rt.FindRouterByID(1) == nil {
+		t.Error("router 1 should still exist")
+	}
+	if rt.FindRouterByID(10) == nil {
+		t.Error("router 10 should still exist")
+	}
+}
+
+func TestRouterTable_UpdateRouterIDSet_noChange(t *testing.T) {
+	rt := NewRouterTable()
+	_, _ = rt.AllocateWithID(1)
+	_, _ = rt.AllocateWithID(5)
+
+	var sameSet mle.RouterIDSet
+	sameSet.Add(1)
+	sameSet.Add(5)
+
+	changed := rt.UpdateRouterIDSet(10, sameSet, 1000)
+	if changed {
+		t.Error("UpdateRouterIDSet should return false when no routers change")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateRoutes tests
+// ---------------------------------------------------------------------------
+
+func TestRouterTable_UpdateRoutes_basic(t *testing.T) {
+	rt := NewRouterTable()
+	selfID := uint8(0)
+	neighborID := uint8(1)
+	remoteID := uint8(5)
+
+	// Allocate self, neighbor, and a remote router.
+	_, _ = rt.AllocateWithID(selfID)
+	neighbor, _ := rt.AllocateWithID(neighborID)
+	neighbor.State = StateValid
+	neighbor.NextHop = neighborID // direct link
+	neighbor.LinkQualityOut = 3
+	initRouterLinkInfo(neighbor)
+	neighbor.LinkInfo.AddRSS(-20) // LQ 3
+
+	_, _ = rt.AllocateWithID(remoteID)
+
+	// Build Route64 TLV from neighbor: says remote has cost 2.
+	var mask mle.RouterIDSet
+	mask.Add(selfID)
+	mask.Add(neighborID)
+	mask.Add(remoteID)
+
+	routeTlv := &RouteTlvData{
+		Sequence:     1,
+		RouterIDMask: mask,
+		Entries: []mle.Route64Entry{
+			{LinkQualityIn: 3, LinkQualityOut: 3, Cost: 1}, // self's entry
+			{LinkQualityIn: 0, LinkQualityOut: 0, Cost: 1}, // neighbor's own
+			{LinkQualityIn: 2, LinkQualityOut: 2, Cost: 2}, // remote
+		},
+	}
+
+	changed := rt.UpdateRoutes(routeTlv, neighborID, selfID)
+	if !changed {
+		t.Error("UpdateRoutes should return true when routes become reachable")
+	}
+
+	// Remote should now route through neighbor.
+	remote := rt.FindRouterByID(remoteID)
+	if remote.NextHop != neighborID {
+		t.Errorf("remote.NextHop = %d, want %d", remote.NextHop, neighborID)
+	}
+	if remote.Cost != 2 {
+		t.Errorf("remote.Cost = %d, want 2", remote.Cost)
+	}
+}
+
+func TestRouterTable_UpdateRoutes_betterPath(t *testing.T) {
+	rt := NewRouterTable()
+	selfID := uint8(0)
+
+	// Set up: router 1, router 2, router 5.
+	_, _ = rt.AllocateWithID(selfID)
+
+	r1, _ := rt.AllocateWithID(1)
+	r1.State = StateValid
+	r1.NextHop = 1
+	r1.LinkQualityOut = 2
+	initRouterLinkInfo(r1)
+	r1.LinkInfo.AddRSS(-85) // moderate quality (margin 15 → LQ 2, cost 2)
+
+	r2, _ := rt.AllocateWithID(2)
+	r2.State = StateValid
+	r2.NextHop = 2
+	r2.LinkQualityOut = 3
+	initRouterLinkInfo(r2)
+	r2.LinkInfo.AddRSS(-20) // high quality (margin 80 → LQ 3, cost 1)
+
+	// Router 5 currently routes through r1 with cost 5.
+	r5, _ := rt.AllocateWithID(5)
+	r5.NextHop = 1
+	r5.Cost = 5
+
+	// Router 2 advertises a better path to router 5 (cost 1).
+	var mask mle.RouterIDSet
+	mask.Add(selfID)
+	mask.Add(1)
+	mask.Add(2)
+	mask.Add(5)
+
+	routeTlv := &RouteTlvData{
+		Sequence:     2,
+		RouterIDMask: mask,
+		Entries: []mle.Route64Entry{
+			{LinkQualityIn: 3, LinkQualityOut: 3, Cost: 1}, // self
+			{LinkQualityIn: 2, LinkQualityOut: 2, Cost: 3}, // r1
+			{LinkQualityIn: 0, LinkQualityOut: 0, Cost: 1}, // r2 (sender)
+			{LinkQualityIn: 3, LinkQualityOut: 3, Cost: 1}, // r5
+		},
+	}
+
+	rt.UpdateRoutes(routeTlv, 2, selfID)
+
+	// Router 5 should now route through r2 since cost 1 + link cost 1 < 5 + link cost 2.
+	if r5.NextHop != 2 {
+		t.Errorf("r5.NextHop = %d, want 2", r5.NextHop)
+	}
+	if r5.Cost != 1 {
+		t.Errorf("r5.Cost = %d, want 1", r5.Cost)
+	}
+}
+
+func TestRouterTable_UpdateRoutes_unreachable(t *testing.T) {
+	rt := NewRouterTable()
+	selfID := uint8(0)
+	neighborID := uint8(1)
+	remoteID := uint8(5)
+
+	_, _ = rt.AllocateWithID(selfID)
+
+	neighbor, _ := rt.AllocateWithID(neighborID)
+	neighbor.State = StateValid
+	neighbor.NextHop = neighborID
+	neighbor.LinkQualityOut = 3
+	initRouterLinkInfo(neighbor)
+	neighbor.LinkInfo.AddRSS(-20)
+
+	// Remote currently routes through neighbor.
+	remote, _ := rt.AllocateWithID(remoteID)
+	remote.NextHop = neighborID
+	remote.Cost = 2
+
+	// Neighbor now says remote is unreachable (cost 0 = MaxRouteCost).
+	var mask mle.RouterIDSet
+	mask.Add(selfID)
+	mask.Add(neighborID)
+	mask.Add(remoteID)
+
+	routeTlv := &RouteTlvData{
+		Sequence:     3,
+		RouterIDMask: mask,
+		Entries: []mle.Route64Entry{
+			{LinkQualityIn: 3, Cost: 1}, // self
+			{Cost: 1},                   // neighbor
+			{Cost: 0},                   // remote: cost 0 means unreachable
+		},
+	}
+
+	changed := rt.UpdateRoutes(routeTlv, neighborID, selfID)
+	if !changed {
+		t.Error("UpdateRoutes should return true when routes become unreachable")
+	}
+
+	if remote.NextHop != InvalidRouterID {
+		t.Errorf("remote.NextHop = %d, want InvalidRouterID", remote.NextHop)
+	}
+}
+
+func TestRouterTable_UpdateRoutes_nilNeighbor(t *testing.T) {
+	rt := NewRouterTable()
+	routeTlv := &RouteTlvData{}
+	// Should not panic and return false for unknown neighbor.
+	if rt.UpdateRoutes(routeTlv, 99, 0) {
+		t.Error("UpdateRoutes with unknown neighbor should return false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateRouterOnFtdChild tests
+// ---------------------------------------------------------------------------
+
+func TestRouterTable_UpdateRouterOnFtdChild(t *testing.T) {
+	rt := NewRouterTable()
+	parentID := uint8(1)
+
+	_, _ = rt.AllocateWithID(parentID) // parent
+	r5, _ := rt.AllocateWithID(5)
+	r10, _ := rt.AllocateWithID(10)
+
+	var mask mle.RouterIDSet
+	mask.Add(parentID)
+	mask.Add(5)
+	mask.Add(10)
+
+	routeTlv := &RouteTlvData{
+		Sequence:     1,
+		RouterIDMask: mask,
+		Entries: []mle.Route64Entry{
+			{Cost: 1}, // parent (skipped)
+			{Cost: 3}, // r5: reachable through parent
+			{Cost: 0}, // r10: unreachable
+		},
+	}
+
+	rt.UpdateRouterOnFtdChild(routeTlv, parentID)
+
+	if r5.NextHop != parentID {
+		t.Errorf("r5.NextHop = %d, want %d", r5.NextHop, parentID)
+	}
+	if r5.Cost != 3 {
+		t.Errorf("r5.Cost = %d, want 3", r5.Cost)
+	}
+
+	if r10.NextHop != InvalidRouterID {
+		t.Errorf("r10.NextHop = %d, want InvalidRouterID", r10.NextHop)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FillRouteTlv tests
+// ---------------------------------------------------------------------------
+
+func TestRouterTable_FillRouteTlv_basic(t *testing.T) {
+	rt := NewRouterTable()
+	selfID := uint8(0)
+	leaderID := uint8(0) // self is leader
+
+	// Allocate self.
+	selfRouter, _ := rt.AllocateWithID(selfID)
+	selfRouter.State = StateValid
+
+	// Allocate a neighbor.
+	r1, _ := rt.AllocateWithID(1)
+	r1.State = StateValid
+	r1.NextHop = 1
+	r1.LinkQualityOut = 3
+	initRouterLinkInfo(r1)
+	r1.LinkInfo.AddRSS(-20) // LQ 3
+
+	data := rt.FillRouteTlv(selfID, leaderID, nil)
+
+	if data.Sequence != rt.GetRouterIDSequence() {
+		t.Errorf("sequence = %d, want %d", data.Sequence, rt.GetRouterIDSequence())
+	}
+
+	if data.GetRouterCount() != 2 {
+		t.Errorf("router count = %d, want 2", data.GetRouterCount())
+	}
+
+	// Self entry should have cost=1, zero link qualities.
+	selfEntry := data.GetEntryForRouterID(selfID)
+	if selfEntry == nil {
+		t.Fatal("self entry missing")
+	}
+	if selfEntry.Cost != 1 || selfEntry.LinkQualityIn != 0 || selfEntry.LinkQualityOut != 0 {
+		t.Errorf("self entry = %+v, want cost=1 lqIn=0 lqOut=0", selfEntry)
+	}
+
+	// Router 1 should have non-zero link qualities.
+	r1Entry := data.GetEntryForRouterID(1)
+	if r1Entry == nil {
+		t.Fatal("r1 entry missing")
+	}
+	if r1Entry.LinkQualityOut != 3 {
+		t.Errorf("r1 entry LQOut = %d, want 3", r1Entry.LinkQualityOut)
+	}
+}
+
+func TestRouterTable_FillRouteTlv_trimForLinkAccept(t *testing.T) {
+	rt := NewRouterTable()
+	selfID := uint8(0)
+	leaderID := uint8(0)
+	neighborID := uint8(30)
+
+	// Allocate many routers to trigger trimming.
+	_, _ = rt.AllocateWithID(selfID)
+	for id := uint8(1); id <= 25; id++ {
+		_, _ = rt.AllocateWithID(id)
+	}
+	neighborRouter, _ := rt.AllocateWithID(neighborID)
+	neighborRouter.State = StateValid
+
+	data := rt.FillRouteTlv(selfID, leaderID, neighborRouter)
+
+	// Should be trimmed to 3 entries: self, neighbor, leader.
+	if data.GetRouterCount() != 2 {
+		// self == leader, so it's deduplicated in the mask, plus neighbor = 2 unique.
+		// Actually self=0, leader=0 (same), neighbor=30 => mask has {0, 30} => 2 entries.
+		t.Errorf("trimmed router count = %d, want 2", data.GetRouterCount())
+	}
+
+	// Sequence should be rolled back.
+	expectedSeq := rt.GetRouterIDSequence() - LinkAcceptSequenceRollback
+	if data.Sequence != expectedSeq {
+		t.Errorf("trimmed sequence = %d, want %d", data.Sequence, expectedSeq)
+	}
+
+	// Must contain self and neighbor.
+	if !data.RouterIDMask.Contains(selfID) {
+		t.Error("trimmed mask should contain self")
+	}
+	if !data.RouterIDMask.Contains(neighborID) {
+		t.Error("trimmed mask should contain neighbor")
+	}
+}
+
+func TestRouterTable_FillRouteTlv_unreachableEncodedAsZero(t *testing.T) {
+	rt := NewRouterTable()
+	selfID := uint8(0)
+
+	_, _ = rt.AllocateWithID(selfID)
+
+	// Router 1 with no valid next hop (unreachable).
+	r1, _ := rt.AllocateWithID(1)
+	r1.State = StateInvalid
+	r1.NextHop = InvalidRouterID
+
+	data := rt.FillRouteTlv(selfID, selfID, nil)
+
+	r1Entry := data.GetEntryForRouterID(1)
+	if r1Entry == nil {
+		t.Fatal("r1 entry missing")
+	}
+	if r1Entry.Cost != 0 {
+		t.Errorf("unreachable cost = %d, want 0", r1Entry.Cost)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// serialNumberIsAhead tests
+// ---------------------------------------------------------------------------
+
+func TestSerialNumberIsAhead(t *testing.T) {
+	tests := []struct {
+		a, b uint8
+		want bool
+	}{
+		{1, 0, true},
+		{0, 1, false},
+		{0, 0, false},     // equal
+		{128, 0, false},   // exactly half-wrap = not ahead
+		{127, 0, true},    // just under half-wrap = ahead
+		{0, 128, false},   // behind by exactly half
+		{0, 129, true},    // wrapped around
+		{255, 254, true},  // near max
+		{254, 255, false}, // one behind at max
+		{0, 255, true},    // 0 is ahead of 255 (wrapped)
+		{255, 0, false},   // 255 is behind 0
+		{200, 100, true},  // normal ahead
+		{100, 200, false}, // normal behind (wraps)
+	}
+	for _, tt := range tests {
+		got := serialNumberIsAhead(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("serialNumberIsAhead(%d, %d) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
+	}
 }

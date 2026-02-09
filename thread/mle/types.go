@@ -267,3 +267,44 @@ func (s *RouterIDSet) GetAllocatedCount() uint8 {
 func (s *RouterIDSet) Clear() {
 	*s = RouterIDSet{}
 }
+
+// ComparePartitions performs a three-way comparison of two Thread partitions.
+// Returns -1 if partition A is worse, 0 if equal, +1 if A is better.
+//
+// Comparison order:
+//  1. Higher weighting wins.
+//  2. Non-singleton wins over singleton.
+//  3. Higher partition ID wins.
+func ComparePartitions(singletonA bool, leaderDataA LeaderData, singletonB bool, leaderDataB LeaderData) int {
+	// 1. Compare weighting.
+	switch {
+	case leaderDataA.Weighting > leaderDataB.Weighting:
+		return 1
+	case leaderDataA.Weighting < leaderDataB.Weighting:
+		return -1
+	}
+
+	// 2. Singleton loses.
+	switch {
+	case singletonA && !singletonB:
+		return -1
+	case !singletonA && singletonB:
+		return 1
+	}
+
+	// 3. Higher partition ID wins.
+	switch {
+	case leaderDataA.PartitionID > leaderDataB.PartitionID:
+		return 1
+	case leaderDataA.PartitionID < leaderDataB.PartitionID:
+		return -1
+	}
+
+	return 0
+}
+
+// IsSingleton returns true if the router ID set has exactly one allocated
+// router, indicating a singleton partition.
+func IsSingleton(idSet RouterIDSet) bool {
+	return idSet.GetAllocatedCount() == 1
+}
