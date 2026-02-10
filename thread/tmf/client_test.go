@@ -695,3 +695,150 @@ func TestSendServerDataTimeoutResult(t *testing.T) {
 		t.Error("Accepted = true, want false on timeout")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SendCommissionerData tests
+// ---------------------------------------------------------------------------
+
+func TestSendCommissionerDataSuccess(t *testing.T) {
+	t.Parallel()
+
+	engine, _ := newLoopbackEngine()
+	agent := NewAgent(engine)
+
+	leader := &mockCommissioningDataLeader{}
+	cds := NewCommissionerDataService(agent, leader)
+	defer cds.Stop()
+
+	leaderRLOC16 := uint16(0xFC00)
+	meshCop := []byte{0x0B, 0x08, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var got CommissionerDataResult
+
+	err := SendCommissionerData(
+		agent,
+		meshPrefix,
+		senderRLOC,
+		leaderRLOC16,
+		meshCop,
+		func(result CommissionerDataResult) {
+			got = result
+			wg.Done()
+		},
+	)
+	if err != nil {
+		t.Fatalf("SendCommissionerData returned error: %v", err)
+	}
+
+	wg.Wait()
+
+	if got.Err != nil {
+		t.Fatalf("callback error: %v", got.Err)
+	}
+	if !got.Accepted {
+		t.Error("Accepted = false, want true")
+	}
+
+	// Verify the leader received the correct data.
+	leader.mu.Lock()
+	defer leader.mu.Unlock()
+	if leader.callCount != 1 {
+		t.Errorf("leader.callCount = %d, want 1", leader.callCount)
+	}
+	if len(leader.lastData) != len(meshCop) {
+		t.Fatalf("leader.lastData length = %d, want %d", len(leader.lastData), len(meshCop))
+	}
+	for i, b := range leader.lastData {
+		if b != meshCop[i] {
+			t.Errorf("leader.lastData[%d] = 0x%02x, want 0x%02x", i, b, meshCop[i])
+		}
+	}
+}
+
+func TestSendCommissionerDataError(t *testing.T) {
+	t.Parallel()
+
+	engine, _ := newLoopbackEngine()
+	agent := NewAgent(engine)
+
+	leader := &mockCommissioningDataLeader{
+		returnError: goterrors.ErrDrop,
+	}
+	cds := NewCommissionerDataService(agent, leader)
+	defer cds.Stop()
+
+	leaderRLOC16 := uint16(0xFC00)
+	meshCop := []byte{0xAA, 0xBB}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var got CommissionerDataResult
+
+	err := SendCommissionerData(
+		agent,
+		meshPrefix,
+		senderRLOC,
+		leaderRLOC16,
+		meshCop,
+		func(result CommissionerDataResult) {
+			got = result
+			wg.Done()
+		},
+	)
+	if err != nil {
+		t.Fatalf("SendCommissionerData returned error: %v", err)
+	}
+
+	wg.Wait()
+
+	// The leader rejected — server sends 5.00, so Accepted should be false.
+	if got.Accepted {
+		t.Error("Accepted = true, want false (leader rejected)")
+	}
+}
+
+func TestSendCommissionerDataNilCallback(t *testing.T) {
+	t.Parallel()
+
+	engine, _ := newLoopbackEngine()
+	agent := NewAgent(engine)
+
+	leader := &mockCommissioningDataLeader{}
+	cds := NewCommissionerDataService(agent, leader)
+	defer cds.Stop()
+
+	leaderRLOC16 := uint16(0xFC00)
+
+	// Should not panic with nil callback.
+	err := SendCommissionerData(
+		agent,
+		meshPrefix,
+		senderRLOC,
+		leaderRLOC16,
+		[]byte{0x01},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("SendCommissionerData returned error: %v", err)
+	}
+}
+
+func TestSendCommissionerDataTimeoutResult(t *testing.T) {
+	t.Parallel()
+
+	// Verify the error result is structured correctly when the callback
+	// receives a timeout error.
+	var got CommissionerDataResult
+	got.Err = goterrors.ErrResponseTimeout
+
+	if got.Err != goterrors.ErrResponseTimeout {
+		t.Errorf("Err = %v, want ErrResponseTimeout", got.Err)
+	}
+	if got.Accepted {
+		t.Error("Accepted = true, want false on timeout")
+	}
+}

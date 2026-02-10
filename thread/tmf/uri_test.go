@@ -108,8 +108,8 @@ func TestKnownPaths(t *testing.T) {
 func TestURICount(t *testing.T) {
 	t.Parallel()
 
-	// There should be 43 defined URIs (before URIUnknown).
-	const expectedCount = 43
+	// There should be 44 defined URIs (before URIUnknown).
+	const expectedCount = 44
 	if int(URIUnknown) != expectedCount {
 		t.Errorf("URI count = %d, want %d", URIUnknown, expectedCount)
 	}

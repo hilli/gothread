@@ -32,6 +32,8 @@ const (
 	URIAddressSolicit
 	// URIServerData is the "a/sd" (Server Data) URI.
 	URIServerData
+	// URICommissionerData is the "a/cd" (Commissioner Data) URI.
+	URICommissionerData
 	// URIAnycastLocate is the "a/yl" (Anycast Locate) URI.
 	URIAnycastLocate
 
@@ -123,13 +125,14 @@ const (
 // uriPaths maps each URI constant to its CoAP path string. The index matches
 // the URI enum value.
 var uriPaths = [URIUnknown]string{
-	URIAddressError:   "a/ae",
-	URIAddressNotify:  "a/an",
-	URIAddressQuery:   "a/aq",
-	URIAddressRelease: "a/ar",
-	URIAddressSolicit: "a/as",
-	URIServerData:     "a/sd",
-	URIAnycastLocate:  "a/yl",
+	URIAddressError:     "a/ae",
+	URIAddressNotify:    "a/an",
+	URIAddressQuery:     "a/aq",
+	URIAddressRelease:   "a/ar",
+	URIAddressSolicit:   "a/as",
+	URIServerData:       "a/sd",
+	URICommissionerData: "a/cd",
+	URIAnycastLocate:    "a/yl",
 
 	URIBackboneAnswer: "b/ba",
 	URIBackboneMlr:    "b/bmr",

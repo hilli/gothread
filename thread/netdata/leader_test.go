@@ -795,3 +795,214 @@ func TestValidateRegistrationEmpty(t *testing.T) {
 		t.Fatalf("ValidateRegistration(nil): %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CommissioningData methods
+// ---------------------------------------------------------------------------
+
+func TestLeaderSetCommissioningData(t *testing.T) {
+	t.Parallel()
+	rc := newMockRouterChecker(1)
+	l := NewLeader(rc)
+
+	verBefore := l.Version()
+	stableBefore := l.StableVersion()
+
+	meshCop := []byte{0x01, 0x02, 0x03, 0x04}
+	if err := l.SetCommissioningData(meshCop); err != nil {
+		t.Fatalf("SetCommissioningData: %v", err)
+	}
+
+	got := l.GetCommissioningData()
+	if len(got) != len(meshCop) {
+		t.Fatalf("GetCommissioningData len = %d, want %d", len(got), len(meshCop))
+	}
+	for i, b := range got {
+		if b != meshCop[i] {
+			t.Errorf("GetCommissioningData[%d] = 0x%02X, want 0x%02X", i, b, meshCop[i])
+		}
+	}
+
+	// Full version should have been bumped, stable should NOT.
+	if l.Version() != verBefore+1 {
+		t.Errorf("Version = %d, want %d", l.Version(), verBefore+1)
+	}
+	if l.StableVersion() != stableBefore {
+		t.Errorf("StableVersion = %d, want %d (unchanged)", l.StableVersion(), stableBefore)
+	}
+}
+
+func TestLeaderSetCommissioningDataReplace(t *testing.T) {
+	t.Parallel()
+	rc := newMockRouterChecker(1)
+	l := NewLeader(rc)
+
+	first := []byte{0xAA, 0xBB}
+	if err := l.SetCommissioningData(first); err != nil {
+		t.Fatalf("SetCommissioningData(first): %v", err)
+	}
+
+	second := []byte{0xCC, 0xDD, 0xEE}
+	if err := l.SetCommissioningData(second); err != nil {
+		t.Fatalf("SetCommissioningData(second): %v", err)
+	}
+
+	got := l.GetCommissioningData()
+	if len(got) != len(second) {
+		t.Fatalf("GetCommissioningData len = %d, want %d", len(got), len(second))
+	}
+	for i, b := range got {
+		if b != second[i] {
+			t.Errorf("GetCommissioningData[%d] = 0x%02X, want 0x%02X", i, b, second[i])
+		}
+	}
+}
+
+func TestLeaderSetCommissioningDataEmpty(t *testing.T) {
+	t.Parallel()
+	rc := newMockRouterChecker(1)
+	l := NewLeader(rc)
+
+	// Set data, then remove by setting empty.
+	if err := l.SetCommissioningData([]byte{0x01}); err != nil {
+		t.Fatalf("SetCommissioningData: %v", err)
+	}
+	if l.GetCommissioningData() == nil {
+		t.Fatal("expected non-nil commissioning data")
+	}
+
+	if err := l.SetCommissioningData(nil); err != nil {
+		t.Fatalf("SetCommissioningData(nil): %v", err)
+	}
+	if l.GetCommissioningData() != nil {
+		t.Error("expected nil after setting empty data")
+	}
+}
+
+func TestLeaderGetCommissioningDataNone(t *testing.T) {
+	t.Parallel()
+	rc := newMockRouterChecker(1)
+	l := NewLeader(rc)
+
+	if got := l.GetCommissioningData(); got != nil {
+		t.Errorf("GetCommissioningData = %v, want nil on fresh leader", got)
+	}
+}
+
+func TestLeaderRemoveCommissioningData(t *testing.T) {
+	t.Parallel()
+	rc := newMockRouterChecker(1)
+	l := NewLeader(rc)
+
+	if err := l.SetCommissioningData([]byte{0xDE, 0xAD}); err != nil {
+		t.Fatalf("SetCommissioningData: %v", err)
+	}
+
+	verBefore := l.Version()
+	stableBefore := l.StableVersion()
+
+	l.RemoveCommissioningData()
+
+	if l.GetCommissioningData() != nil {
+		t.Error("expected nil after RemoveCommissioningData")
+	}
+
+	// Full version bumped, stable unchanged.
+	if l.Version() != verBefore+1 {
+		t.Errorf("Version = %d, want %d", l.Version(), verBefore+1)
+	}
+	if l.StableVersion() != stableBefore {
+		t.Errorf("StableVersion = %d, want %d (unchanged)", l.StableVersion(), stableBefore)
+	}
+}
+
+func TestLeaderRemoveCommissioningDataNoop(t *testing.T) {
+	t.Parallel()
+	rc := newMockRouterChecker(1)
+	l := NewLeader(rc)
+
+	// Should not panic when no commissioning data exists.
+	l.RemoveCommissioningData()
+
+	if l.GetCommissioningData() != nil {
+		t.Error("expected nil")
+	}
+}
+
+func TestLeaderCommissioningDataIsUnstable(t *testing.T) {
+	t.Parallel()
+	rc := newMockRouterChecker(1)
+	l := NewLeader(rc)
+
+	meshCop := []byte{0x10, 0x20}
+	if err := l.SetCommissioningData(meshCop); err != nil {
+		t.Fatalf("SetCommissioningData: %v", err)
+	}
+
+	// Walk the raw data and find the CommissioningData TLV header.
+	data := l.Data()
+	found := false
+	off := 0
+	for off < len(data) {
+		if off+TLVHeaderSize > len(data) {
+			break
+		}
+		typ, stable, length, err := ParseTLVHeader(data[off:])
+		if err != nil {
+			t.Fatalf("ParseTLVHeader at offset %d: %v", off, err)
+		}
+		if typ == TLVTypeCommissioningData {
+			found = true
+			if stable {
+				t.Error("CommissioningData TLV has stable_bit=1, want 0 (unstable)")
+			}
+			if int(length) != len(meshCop) {
+				t.Errorf("TLV length = %d, want %d", length, len(meshCop))
+			}
+			break
+		}
+		off += TLVHeaderSize + int(length)
+	}
+	if !found {
+		t.Fatal("CommissioningData TLV not found in raw data")
+	}
+}
+
+func TestLeaderCommissioningDataCoexistsWithOtherTLVs(t *testing.T) {
+	t.Parallel()
+	rc := newMockRouterChecker(1)
+	l := NewLeader(rc)
+
+	// Register a HasRoute entry first.
+	prefix := testPrefix64(0x00, 0x01)
+	reg := buildRegistration(prefix, 0x0400, RoutePreferenceHigh, true)
+	if err := l.RegisterNetworkData(0x0400, reg); err != nil {
+		t.Fatalf("RegisterNetworkData: %v", err)
+	}
+	lenBefore := l.Len()
+
+	// Add commissioning data.
+	meshCop := []byte{0xCA, 0xFE}
+	if err := l.SetCommissioningData(meshCop); err != nil {
+		t.Fatalf("SetCommissioningData: %v", err)
+	}
+
+	// The network data should be larger now.
+	if l.Len() <= lenBefore {
+		t.Errorf("Len = %d, expected > %d after adding commissioning data", l.Len(), lenBefore)
+	}
+
+	// Both should be retrievable.
+	if l.GetCommissioningData() == nil {
+		t.Error("commissioning data nil after coexist test")
+	}
+
+	// Remove commissioning data; prefix data should remain.
+	l.RemoveCommissioningData()
+	if l.Len() == 0 {
+		t.Error("Len = 0, expected prefix data to remain")
+	}
+	if l.GetCommissioningData() != nil {
+		t.Error("commissioning data should be nil after removal")
+	}
+}

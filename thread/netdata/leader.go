@@ -1245,3 +1245,66 @@ func (l *Leader) setTLVStable(offset int, stable bool) {
 		l.data.Data()[offset] = typ << 1
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Commissioning Data
+// ---------------------------------------------------------------------------
+
+// SetCommissioningData stores the given MeshCoP TLV bytes as the
+// CommissioningData TLV in the network data. If a CommissioningData TLV
+// already exists it is replaced; otherwise a new one is appended.
+// CommissioningData is always unstable (stable_bit=0). An empty data slice
+// removes the existing CommissioningData TLV. Versions are bumped (full
+// version only, not stable).
+func (l *Leader) SetCommissioningData(data []byte) error {
+	// Remove any existing CommissioningData TLV.
+	off := l.data.FindTLV(TLVTypeCommissioningData, false)
+	if off >= 0 {
+		_ = l.data.RemoveTLV(off)
+	}
+
+	// If data is empty the caller wants to remove commissioning data.
+	if len(data) == 0 {
+		l.IncrementVersions(false)
+		return nil
+	}
+
+	// Append a new CommissioningData TLV: header(2) + MeshCoP TLV payload.
+	totalSize := TLVHeaderSize + len(data)
+	newOff, err := l.data.AppendTLVSpace(totalSize)
+	if err != nil {
+		return fmt.Errorf("append commissioning data: %w", goterrors.ErrNoBufs)
+	}
+	EncodeTLVHeader(l.data.Data()[newOff:], TLVTypeCommissioningData, false, uint8(len(data)))
+	copy(l.data.Data()[newOff+TLVHeaderSize:], data)
+
+	l.IncrementVersions(false)
+	return nil
+}
+
+// GetCommissioningData returns the raw MeshCoP TLV bytes stored in the
+// CommissioningData network data TLV, or nil if no such TLV exists.
+func (l *Leader) GetCommissioningData() []byte {
+	off := l.data.FindTLV(TLVTypeCommissioningData, false)
+	if off < 0 {
+		return nil
+	}
+	length, err := l.data.TLVLength(off)
+	if err != nil {
+		return nil
+	}
+	result := make([]byte, length)
+	copy(result, l.data.Data()[off+TLVHeaderSize:off+TLVHeaderSize+int(length)])
+	return result
+}
+
+// RemoveCommissioningData removes the CommissioningData TLV from network data
+// and bumps versions.
+func (l *Leader) RemoveCommissioningData() {
+	off := l.data.FindTLV(TLVTypeCommissioningData, false)
+	if off < 0 {
+		return
+	}
+	_ = l.data.RemoveTLV(off)
+	l.IncrementVersions(false)
+}

@@ -241,6 +241,71 @@ func SendServerData(
 }
 
 // ---------------------------------------------------------------------------
+// Commissioner Data Registration result callback
+// ---------------------------------------------------------------------------
+
+// CommissionerDataResult is passed to the callback when a Commissioner Data
+// Registration response is received (or the request times out / fails).
+type CommissionerDataResult struct {
+	// Accepted is true when the leader responded with 2.04 Changed,
+	// indicating the commissioning data was successfully stored.
+	Accepted bool
+	// Err is non-nil on timeout, abort, or transport failure.
+	Err error
+}
+
+// CommissionerDataCallback is invoked when the Commissioner Data Registration
+// transaction completes (successfully or not).
+type CommissionerDataCallback func(result CommissionerDataResult)
+
+// ---------------------------------------------------------------------------
+// Commissioner Data Registration client
+// ---------------------------------------------------------------------------
+
+// SendCommissionerData sends a CON POST to the leader's Commissioner Data URI
+// (a/cd), pushing the Commissioner's dataset (steering data, session ID, etc.)
+// into the Leader's network data. The result is delivered asynchronously via
+// the callback.
+//
+// Parameters:
+//   - agent: the TMF agent whose CoAP engine will send the message.
+//   - meshLocalPrefix: the mesh-local prefix for constructing RLOC addresses.
+//   - senderRLOC16: this device's current RLOC16 (used as source address).
+//   - leaderRLOC16: the leader's RLOC16.
+//   - commissioningData: the raw MeshCoP TLV bytes to store in network data.
+//   - cb: callback invoked when the response arrives or the request fails.
+func SendCommissionerData(
+	agent *Agent,
+	meshLocalPrefix ip6.NetworkPrefix,
+	senderRLOC16 uint16,
+	leaderRLOC16 uint16,
+	commissioningData []byte,
+	cb CommissionerDataCallback,
+) error {
+	msg, err := buildCONPost(URICommissionerData, commissioningData)
+	if err != nil {
+		return err
+	}
+
+	coapInfo := tmfCoapInfo(meshLocalPrefix, senderRLOC16, leaderRLOC16)
+
+	return agent.GetEngine().SendMessage(msg, coapInfo, nil, func(respMsg *coap.Message, _ coap.MessageInfo, respErr error) {
+		if respErr != nil {
+			if cb != nil {
+				cb(CommissionerDataResult{Err: respErr})
+			}
+			return
+		}
+		result := CommissionerDataResult{
+			Accepted: respMsg.GetCode() == coap.CodeChanged,
+		}
+		if cb != nil {
+			cb(result)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
