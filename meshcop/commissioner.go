@@ -318,11 +318,72 @@ func (c *Commissioner) SetID(id string) error {
 	return nil
 }
 
-// GetProvisioningURL returns the provisioning URL.
-func (c *Commissioner) GetProvisioningURL() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.provisioningURL
+// encodeExtendedTLV encodes a MeshCoP extended TLV: [type(1), 0xFF, length(2 big-endian), value...].
+// This format is used when the value exceeds 254 bytes (e.g., JoinerDTLSEncapsulation).
+func encodeExtendedTLV(typ TLVType, value []byte) []byte {
+	buf := make([]byte, 4+len(value))
+	buf[0] = uint8(typ)
+	buf[1] = 0xFF
+	buf[2] = byte(len(value) >> 8)
+	buf[3] = byte(len(value))
+	copy(buf[4:], value)
+	return buf
+}
+
+// findTLVInBytesExtended searches raw TLV bytes for a TLV of the given type,
+// supporting both short-form (length < 255) and extended-form (0xFF + 2-byte length).
+func findTLVInBytesExtended(data []byte, typ TLVType) []byte {
+	offset := 0
+	for offset+2 <= len(data) {
+		t := TLVType(data[offset])
+		lenByte := data[offset+1]
+		var l int
+		var hdrSize int
+		if lenByte == 0xFF {
+			// Extended TLV.
+			if offset+4 > len(data) {
+				return nil
+			}
+			l = int(data[offset+2])<<8 | int(data[offset+3])
+			hdrSize = 4
+		} else {
+			l = int(lenByte)
+			hdrSize = 2
+		}
+		if offset+hdrSize+l > len(data) {
+			return nil // Truncated.
+		}
+		if t == typ {
+			return data[offset+hdrSize : offset+hdrSize+l]
+		}
+		offset += hdrSize + l
+	}
+	return nil
+}
+
+// buildNONPost builds a Non-Confirmable POST message for the given URI path.
+func buildNONPost(uriPath string, payload []byte) *coap.Message {
+	msg := coap.NewMessage(coap.TypeNonConfirmable, coap.CodePost, 0)
+
+	// Set a 4-byte token.
+	token := []byte{0x05, 0x06, 0x07, 0x08}
+	_ = msg.SetToken(token)
+	_ = msg.AppendURIPathOptions(uriPath)
+
+	if len(payload) > 0 {
+		_ = msg.AppendPayloadMarker()
+		_ = msg.AppendPayload(payload)
+	}
+	return msg
+}
+
+// linkLocalFromIID constructs a link-local IPv6 address from an Interface Identifier.
+func linkLocalFromIID(iid [8]byte) [16]byte {
+	var addr [16]byte
+	addr[0] = 0xfe
+	addr[1] = 0x80
+	copy(addr[8:], iid[:])
+	return addr
 }
 
 // SetProvisioningURL sets the provisioning URL. Must be called while disabled.
@@ -337,6 +398,13 @@ func (c *Commissioner) SetProvisioningURL(url string) error {
 	}
 	c.provisioningURL = url
 	return nil
+}
+
+// GetProvisioningURL returns the configured provisioning URL.
+func (c *Commissioner) GetProvisioningURL() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.provisioningURL
 }
 
 // ---------------------------------------------------------------------------
