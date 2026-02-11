@@ -118,20 +118,21 @@ func (h *Header) UnmarshalBinary(data []byte) error {
 type OptionCode uint16
 
 const (
-	OptionCodeClientID    OptionCode = 1
-	OptionCodeServerID    OptionCode = 2
-	OptionCodeIaNa        OptionCode = 3
-	OptionCodeIaTa        OptionCode = 4
-	OptionCodeIaAddress   OptionCode = 5
-	OptionCodeOptionReq   OptionCode = 6
-	OptionCodePreference  OptionCode = 7
-	OptionCodeElapsedTime OptionCode = 8
-	OptionCodeRelayMsg    OptionCode = 9
-	OptionCodeStatusCode  OptionCode = 13
-	OptionCodeRapidCommit OptionCode = 14
-	OptionCodeIaPd        OptionCode = 25
-	OptionCodeIaPrefix    OptionCode = 26
-	OptionCodeSolMaxRt    OptionCode = 82
+	OptionCodeClientID      OptionCode = 1
+	OptionCodeServerID      OptionCode = 2
+	OptionCodeIaNa          OptionCode = 3
+	OptionCodeIaTa          OptionCode = 4
+	OptionCodeIaAddress     OptionCode = 5
+	OptionCodeOptionReq     OptionCode = 6
+	OptionCodePreference    OptionCode = 7
+	OptionCodeElapsedTime   OptionCode = 8
+	OptionCodeRelayMsg      OptionCode = 9
+	OptionCodeStatusCode    OptionCode = 13
+	OptionCodeRapidCommit   OptionCode = 14
+	OptionCodeServerUnicast OptionCode = 12
+	OptionCodeIaPd          OptionCode = 25
+	OptionCodeIaPrefix      OptionCode = 26
+	OptionCodeSolMaxRt      OptionCode = 82
 )
 
 // ---------------------------------------------------------------------------
@@ -613,6 +614,166 @@ func AppendIaAddressOption(buf []byte, ia *IaAddress) []byte {
 // ---------------------------------------------------------------------------
 // Address construction helper
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// IaPd (Identity Association for Prefix Delegation)
+// ---------------------------------------------------------------------------
+
+// IaPdSize is the fixed wire size of the IA_PD fields (excluding sub-options).
+const IaPdSize = 12
+
+// IaPd represents the IA_PD option data (RFC 8415 Section 21.21).
+// Wire format: 4 bytes IAID + 4 bytes T1 + 4 bytes T2, followed by
+// sub-options.
+type IaPd struct {
+	IAID       uint32
+	T1         uint32 // seconds
+	T2         uint32 // seconds
+	SubOptions []byte // raw sub-option bytes
+}
+
+// Marshal encodes the IA_PD fixed fields into a 12-byte array.
+func (ia *IaPd) Marshal() [IaPdSize]byte {
+	var buf [IaPdSize]byte
+	binary.BigEndian.PutUint32(buf[0:4], ia.IAID)
+	binary.BigEndian.PutUint32(buf[4:8], ia.T1)
+	binary.BigEndian.PutUint32(buf[8:12], ia.T2)
+	return buf
+}
+
+// Unmarshal decodes the IA_PD fixed fields from wire format.
+func (ia *IaPd) Unmarshal(data []byte) error {
+	if len(data) < IaPdSize {
+		return errors.ErrParse
+	}
+	ia.IAID = binary.BigEndian.Uint32(data[0:4])
+	ia.T1 = binary.BigEndian.Uint32(data[4:8])
+	ia.T2 = binary.BigEndian.Uint32(data[8:12])
+	if len(data) > IaPdSize {
+		ia.SubOptions = make([]byte, len(data)-IaPdSize)
+		copy(ia.SubOptions, data[IaPdSize:])
+	} else {
+		ia.SubOptions = nil
+	}
+	return nil
+}
+
+// MarshalBinary encodes the IA_PD into wire format (fixed fields + sub-options).
+func (ia *IaPd) MarshalBinary() ([]byte, error) {
+	buf := make([]byte, IaPdSize+len(ia.SubOptions))
+	binary.BigEndian.PutUint32(buf[0:4], ia.IAID)
+	binary.BigEndian.PutUint32(buf[4:8], ia.T1)
+	binary.BigEndian.PutUint32(buf[8:12], ia.T2)
+	copy(buf[12:], ia.SubOptions)
+	return buf, nil
+}
+
+// ---------------------------------------------------------------------------
+// IaPrefix (IA Prefix option)
+// ---------------------------------------------------------------------------
+
+// IaPrefixSize is the fixed wire size of the IA Prefix option data
+// (excluding sub-options).
+const IaPrefixSize = 25
+
+// IaPrefix represents the IA Prefix option data (RFC 8415 Section 21.22).
+// Wire format: 4 bytes PreferredLifetime + 4 bytes ValidLifetime +
+// 1 byte PrefixLength + 16 bytes Prefix.
+type IaPrefix struct {
+	PreferredLifetime uint32
+	ValidLifetime     uint32
+	PrefixLength      uint8
+	Prefix            [16]byte
+}
+
+// Marshal encodes the IA Prefix into a 25-byte array.
+func (iap *IaPrefix) Marshal() [IaPrefixSize]byte {
+	var buf [IaPrefixSize]byte
+	binary.BigEndian.PutUint32(buf[0:4], iap.PreferredLifetime)
+	binary.BigEndian.PutUint32(buf[4:8], iap.ValidLifetime)
+	buf[8] = iap.PrefixLength
+	copy(buf[9:25], iap.Prefix[:])
+	return buf
+}
+
+// Unmarshal decodes the IA Prefix from wire format.
+func (iap *IaPrefix) Unmarshal(data []byte) error {
+	if len(data) < IaPrefixSize {
+		return errors.ErrParse
+	}
+	iap.PreferredLifetime = binary.BigEndian.Uint32(data[0:4])
+	iap.ValidLifetime = binary.BigEndian.Uint32(data[4:8])
+	iap.PrefixLength = data[8]
+	copy(iap.Prefix[:], data[9:25])
+	return nil
+}
+
+// MarshalBinary encodes the IA Prefix into wire format.
+func (iap *IaPrefix) MarshalBinary() ([]byte, error) {
+	b := iap.Marshal()
+	return b[:], nil
+}
+
+// ---------------------------------------------------------------------------
+// SolMaxRt (SOL_MAX_RT option)
+// ---------------------------------------------------------------------------
+
+// SolMaxRt constants per RFC 8415.
+const (
+	MinSolMaxRt uint32 = 60
+	MaxSolMaxRt uint32 = 86400
+)
+
+// SolMaxRtSize is the wire size of the SOL_MAX_RT option data.
+const SolMaxRtSize = 4
+
+// SolMaxRt represents the SOL_MAX_RT option data (RFC 8415 Section 21.24).
+type SolMaxRt struct {
+	Value uint32 // seconds
+}
+
+// Marshal encodes the SOL_MAX_RT into a 4-byte array.
+func (s *SolMaxRt) Marshal() [SolMaxRtSize]byte {
+	var buf [SolMaxRtSize]byte
+	binary.BigEndian.PutUint32(buf[0:4], s.Value)
+	return buf
+}
+
+// Unmarshal decodes the SOL_MAX_RT from wire format.
+func (s *SolMaxRt) Unmarshal(data []byte) error {
+	if len(data) < SolMaxRtSize {
+		return errors.ErrParse
+	}
+	s.Value = binary.BigEndian.Uint32(data[0:4])
+	return nil
+}
+
+// IsValid returns true if the value is within the valid range [60, 86400].
+func (s *SolMaxRt) IsValid() bool {
+	return s.Value >= MinSolMaxRt && s.Value <= MaxSolMaxRt
+}
+
+// ---------------------------------------------------------------------------
+// Additional option building helpers for PD
+// ---------------------------------------------------------------------------
+
+// AppendServerIDOptionRaw appends a Server Identifier option with arbitrary
+// DUID bytes (not just EUI-64).
+func AppendServerIDOptionRaw(buf []byte, duid []byte) []byte {
+	return AppendOption(buf, OptionCodeServerID, duid)
+}
+
+// AppendIaPdOption appends an IA_PD option to a byte buffer.
+func AppendIaPdOption(buf []byte, iapd *IaPd) []byte {
+	data, _ := iapd.MarshalBinary()
+	return AppendOption(buf, OptionCodeIaPd, data)
+}
+
+// AppendIaPrefixOption appends an IA Prefix option to a byte buffer.
+func AppendIaPrefixOption(buf []byte, iap *IaPrefix) []byte {
+	data, _ := iap.MarshalBinary()
+	return AppendOption(buf, OptionCodeIaPrefix, data)
+}
 
 // MakeAddressFromPrefixEUI64 constructs an IPv6 address by combining a 64-bit
 // network prefix with an EUI-64 interface identifier derived from the given
