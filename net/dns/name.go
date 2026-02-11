@@ -62,7 +62,7 @@ func AppendName(buf []byte, name string) ([]byte, error) {
 		return buf, err
 	}
 
-	buf, err := appendMultipleLabels(buf, name)
+	buf, err := AppendMultipleLabels(buf, name)
 	if err != nil {
 		return buf, err
 	}
@@ -103,10 +103,10 @@ func AppendPointerLabel(buf []byte, offset uint16) ([]byte, error) {
 	return buf, nil
 }
 
-// appendMultipleLabels encodes a dot-separated label sequence without
+// AppendMultipleLabels encodes a dot-separated label sequence without
 // appending the null terminator. It mirrors OpenThread's
 // Name::AppendMultipleLabels.
-func appendMultipleLabels(buf []byte, labels string) ([]byte, error) {
+func AppendMultipleLabels(buf []byte, labels string) ([]byte, error) {
 	if labels == "" || labels == "." {
 		return buf, nil
 	}
