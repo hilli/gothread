@@ -406,6 +406,39 @@ func (inst *Instance) wireModules() {
 	inst.tmfAgent = tmf.NewAgent(inst.coapEngine)
 	inst.netdataLeader = netdata.NewLeader(&routerCheckerAdapter{rt: inst.routerTable})
 	inst.forwarder = mesh.NewForwarder()
+
+	// ---------------------------------------------------------------
+	// Tier 4 — UDP receiver registrations (RX path dispatch)
+	// ---------------------------------------------------------------
+
+	// MLE receiver intercepts UDP messages on the MLE port (19788).
+	mleReceiver := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		if mi.SockPort != mle.UDPPort {
+			return false
+		}
+		// MLE requires the source extended address and link margin.
+		// We pass a zero ExtAddress and zero link margin for now;
+		// MAC-layer address extraction will be added in a future phase.
+		var srcExt types.ExtAddress
+		_ = inst.mleService.HandleReceive(payload, srcExt, mi.PeerAddr, mi.SockAddr, 0)
+		return true
+	})
+	_ = inst.udpManager.AddReceiver(mleReceiver)
+
+	// CoAP/TMF receiver intercepts UDP messages on the TMF port (61631).
+	coapReceiver := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		if mi.SockPort != udp.TmfPort {
+			return false
+		}
+		coapInfo := coap.MessageInfo{
+			PeerAddr:  mi.PeerAddr,
+			PeerPort:  mi.PeerPort,
+			LocalAddr: mi.SockAddr,
+		}
+		inst.coapEngine.Receive(payload, coapInfo)
+		return true
+	})
+	_ = inst.udpManager.AddReceiver(coapReceiver)
 }
 
 // Start launches the event loop goroutine. It is an error to call Start

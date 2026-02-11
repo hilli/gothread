@@ -12,6 +12,7 @@ package instance
 import (
 	"time"
 
+	"github.com/hilli/gothread/encoding"
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/coap"
@@ -19,6 +20,7 @@ import (
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/key"
+	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
@@ -207,7 +209,8 @@ func (inst *Instance) HandleSentFrame(frame *radio.Frame, err error) {
 }
 
 // HandleReceivedFrame is called by the MAC layer when a frame is received.
-// It forwards the raw PSDU to the mesh forwarder for dispatch.
+// It processes the raw PSDU through the mesh forwarder, 6LoWPAN
+// decompression, and UDP demultiplexing pipeline.
 func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 	if inst.forwarder == nil || frame == nil || len(frame.PSDU) == 0 {
 		return
@@ -220,10 +223,81 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 		info.Lqi = frame.RxInfo.LQI
 		info.Timestamp = frame.RxInfo.Timestamp
 	}
-	// HandleReceivedFrame returns (payload, isMesh, err). The upper
-	// layers (6LoWPAN decompression, UDP demux) will be wired in a
-	// subsequent phase.
-	inst.forwarder.HandleReceivedFrame(frame.PSDU, info)
+
+	// Step 1: Mesh forwarder strips mesh headers and returns the payload.
+	payload, _, err := inst.forwarder.HandleReceivedFrame(frame.PSDU, info)
+	if err != nil || len(payload) == 0 {
+		return
+	}
+
+	// Step 2: Check for 6LoWPAN IPHC dispatch.
+	if !lowpan.IsLowpanHc(payload) {
+		return // not a 6LoWPAN-compressed frame; drop for now
+	}
+
+	// Step 3: Decompress the IPv6 header. Use a zero-value AddressContext
+	// for now — MAC address extraction from 802.15.4 frame headers will
+	// be added in a future phase. This means link-local addresses with
+	// elided IIDs won't decompress correctly, but fully-inline addresses
+	// work fine.
+	var macAddrs lowpan.AddressContext
+	ipv6Raw, consumed, err := lowpan.DecompressHeader(payload, macAddrs, nil)
+	if err != nil {
+		return
+	}
+
+	hdr := ip6.HeaderFromBytes(ipv6Raw)
+	remaining := payload[consumed:]
+
+	// Step 4: Determine if the next header is UDP.
+	// NextHeader == ProtoUDP (17) means UDP was carried inline.
+	// NextHeader == 0 means the NH was compressed (NHC); attempt UDP
+	// decompression from the remaining data.
+	nextHdr := hdr.GetNextHeader()
+	isUDP := nextHdr == ip6.ProtoUDP
+	isNhCompressed := nextHdr == 0
+
+	if !isUDP && !isNhCompressed {
+		return // not UDP — higher-layer dispatch TBD
+	}
+
+	// Step 5: For compressed NH or explicit UDP, decompress the UDP header.
+	var srcPort, dstPort uint16
+	var udpPayload []byte
+
+	if isNhCompressed || isUDP {
+		if isNhCompressed {
+			// NHC-compressed UDP header follows the IPv6 header.
+			udpHdr, udpConsumed, err := lowpan.DecompressUDPHeader(remaining)
+			if err != nil {
+				return
+			}
+			srcPort = encoding.BigEndianReadUint16(udpHdr[0:2])
+			dstPort = encoding.BigEndianReadUint16(udpHdr[2:4])
+			udpPayload = remaining[udpConsumed:]
+		} else {
+			// Uncompressed UDP: remaining starts with the 8-byte UDP header.
+			if len(remaining) < 8 {
+				return
+			}
+			srcPort = encoding.BigEndianReadUint16(remaining[0:2])
+			dstPort = encoding.BigEndianReadUint16(remaining[2:4])
+			udpPayload = remaining[8:]
+		}
+	}
+
+	// Step 6: Build MessageInfo and dispatch through UDP manager.
+	messageInfo := &ip6.MessageInfo{
+		PeerAddr: hdr.GetSource(),
+		PeerPort: srcPort,
+		SockAddr: hdr.GetDestination(),
+		SockPort: dstPort,
+		HopLimit: hdr.GetHopLimit(),
+	}
+
+	if inst.udpManager != nil {
+		inst.udpManager.HandleMessage(udpPayload, messageInfo)
+	}
 }
 
 // --------------------------------------------------------------------------

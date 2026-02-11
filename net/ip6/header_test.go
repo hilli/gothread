@@ -731,6 +731,87 @@ func TestSizeConstants(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// HeaderFromBytes and Bytes
+// ---------------------------------------------------------------------------
+
+func TestHeaderFromBytes(t *testing.T) {
+	// Build a valid IPv6 header: version=6, TC=0, flow=0, payload=0,
+	// next header=UDP(17), hop limit=64, src=::1, dst=::2.
+	var raw [40]byte
+	raw[0] = 0x60 // version=6
+	raw[6] = 17   // next header = UDP
+	raw[7] = 64   // hop limit
+	raw[23] = 1   // src = ::1
+	raw[39] = 2   // dst = ::2
+
+	h := ip6.HeaderFromBytes(raw)
+	if got := h.GetVersion(); got != 6 {
+		t.Errorf("GetVersion() = %d, want 6", got)
+	}
+	if got := h.GetNextHeader(); got != 17 {
+		t.Errorf("GetNextHeader() = %d, want 17", got)
+	}
+	if got := h.GetHopLimit(); got != 64 {
+		t.Errorf("GetHopLimit() = %d, want 64", got)
+	}
+	src := h.GetSource()
+	if src[15] != 1 {
+		t.Errorf("GetSource()[15] = %d, want 1", src[15])
+	}
+	dst := h.GetDestination()
+	if dst[15] != 2 {
+		t.Errorf("GetDestination()[15] = %d, want 2", dst[15])
+	}
+}
+
+func TestHeaderBytes(t *testing.T) {
+	var h ip6.Header
+	h.SetHopLimit(128)
+	h.SetNextHeader(58) // ICMPv6
+	raw := h.Bytes()
+	if raw[7] != 128 {
+		t.Errorf("Bytes()[7] = %d, want 128", raw[7])
+	}
+	if raw[6] != 58 {
+		t.Errorf("Bytes()[6] = %d, want 58", raw[6])
+	}
+}
+
+func TestHeaderFromBytesRoundtrip(t *testing.T) {
+	// Build header via setters, extract bytes, reconstruct, verify.
+	var h ip6.Header
+	h.SetTrafficClass(0xAB)
+	h.SetFlowLabel(0x12345)
+	h.SetPayloadLength(100)
+	h.SetNextHeader(17)
+	h.SetHopLimit(64)
+
+	var src, dst ip6.Address
+	src[15] = 0x01
+	dst[15] = 0x02
+	h.SetSource(src)
+	h.SetDestination(dst)
+
+	raw := h.Bytes()
+	h2 := ip6.HeaderFromBytes(raw)
+	if h2.GetTrafficClass() != 0xAB {
+		t.Errorf("TC roundtrip: got 0x%02X, want 0xAB", h2.GetTrafficClass())
+	}
+	if h2.GetFlowLabel() != 0x12345 {
+		t.Errorf("FlowLabel roundtrip: got 0x%05X, want 0x12345", h2.GetFlowLabel())
+	}
+	if h2.GetPayloadLength() != 100 {
+		t.Errorf("PayloadLength roundtrip: got %d, want 100", h2.GetPayloadLength())
+	}
+	if h2.GetSource() != src {
+		t.Errorf("Source roundtrip mismatch")
+	}
+	if h2.GetDestination() != dst {
+		t.Errorf("Destination roundtrip mismatch")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 

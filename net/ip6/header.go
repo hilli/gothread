@@ -116,6 +116,18 @@ const (
 	headerOffsetDest      = 24
 )
 
+// HeaderFromBytes creates a Header from a 40-byte array. This is the inverse
+// of the wire representation and can be used to wrap the output of
+// lowpan.DecompressHeader directly.
+func HeaderFromBytes(data [HeaderSize]byte) Header {
+	return Header{data: data}
+}
+
+// Bytes returns a copy of the raw 40-byte header.
+func (h *Header) Bytes() [HeaderSize]byte {
+	return h.data
+}
+
 // GetVersion returns the 4-bit IP version field (normally 6).
 func (h *Header) GetVersion() uint8 {
 	return h.data[0] >> 4

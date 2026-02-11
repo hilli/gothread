@@ -314,3 +314,28 @@ func (u *UDP) IsPortReserved(port uint16) bool {
 	}
 	return false
 }
+
+// HandleMessage dispatches an incoming UDP message to registered receivers
+// and sockets.
+//
+// Receivers are checked first in registration order. If a receiver's handler
+// returns true, the message is considered consumed and no further dispatch
+// occurs. If no receiver consumes the message, it is delivered to all
+// matching sockets.
+//
+// This method mirrors OpenThread's Udp::HandleMessage().
+func (u *UDP) HandleMessage(payload []byte, messageInfo *ip6.MessageInfo) {
+	// First pass: check receivers (interceptors).
+	for _, r := range u.receivers {
+		if r.handler != nil && r.handler(payload, messageInfo) {
+			return // consumed
+		}
+	}
+
+	// Second pass: deliver to matching sockets.
+	for _, s := range u.sockets {
+		if s.Matches(messageInfo) && s.handler != nil {
+			s.handler(payload, messageInfo)
+		}
+	}
+}

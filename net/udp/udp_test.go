@@ -627,3 +627,247 @@ func TestConnectAlreadyBound(t *testing.T) {
 		t.Errorf("peer mismatch: got %v, want %v", s.GetPeerName(), peer)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// HandleMessage tests
+// ---------------------------------------------------------------------------
+
+// helper: make an ip6.MessageInfo with the given src/dst ports and addresses.
+func makeMessageInfo(srcPort, dstPort uint16) *ip6.MessageInfo {
+	return &ip6.MessageInfo{
+		PeerAddr: ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		PeerPort: srcPort,
+		SockAddr: ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2},
+		SockPort: dstPort,
+	}
+}
+
+func TestHandleMessageReceiverConsumes(t *testing.T) {
+	u := New()
+	payload := []byte{0xCA, 0xFE}
+
+	var receiverGot []byte
+	r := NewReceiver(func(p []byte, mi *ip6.MessageInfo) bool {
+		receiverGot = p
+		return true // consumed
+	})
+	_ = u.AddReceiver(r)
+
+	// Also open a matching socket — it should NOT be called.
+	s := &Socket{}
+	socketCalled := false
+	_ = u.Open(s, NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		socketCalled = true
+	})
+	_ = u.Bind(s, ip6.SockAddr{Port: 5683})
+
+	u.HandleMessage(payload, makeMessageInfo(1234, 5683))
+
+	if receiverGot == nil {
+		t.Fatal("receiver was not called")
+	}
+	if socketCalled {
+		t.Error("socket handler should not be called when receiver consumed the message")
+	}
+}
+
+func TestHandleMessageReceiverDoesNotConsume(t *testing.T) {
+	u := New()
+	payload := []byte{0xDE, 0xAD}
+
+	r := NewReceiver(func(p []byte, mi *ip6.MessageInfo) bool {
+		return false // not consumed
+	})
+	_ = u.AddReceiver(r)
+
+	s := &Socket{}
+	var socketGot []byte
+	_ = u.Open(s, NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		socketGot = p
+	})
+	_ = u.Bind(s, ip6.SockAddr{Port: 5683})
+
+	u.HandleMessage(payload, makeMessageInfo(1234, 5683))
+
+	if socketGot == nil {
+		t.Fatal("socket handler should have been called when receiver did not consume")
+	}
+}
+
+func TestHandleMessageMultipleReceiversFirstConsumes(t *testing.T) {
+	u := New()
+
+	r1Called := false
+	r1 := NewReceiver(func(p []byte, mi *ip6.MessageInfo) bool {
+		r1Called = true
+		return true // consume
+	})
+	r2Called := false
+	r2 := NewReceiver(func(p []byte, mi *ip6.MessageInfo) bool {
+		r2Called = true
+		return false
+	})
+	_ = u.AddReceiver(r1)
+	_ = u.AddReceiver(r2)
+
+	u.HandleMessage([]byte{1}, makeMessageInfo(1000, 2000))
+
+	if !r1Called {
+		t.Error("first receiver should have been called")
+	}
+	if r2Called {
+		t.Error("second receiver should not be called after first consumed")
+	}
+}
+
+func TestHandleMessageNoReceiversMatchingSocket(t *testing.T) {
+	u := New()
+
+	s := &Socket{}
+	var got []byte
+	_ = u.Open(s, NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		got = p
+	})
+	_ = u.Bind(s, ip6.SockAddr{Port: 9999})
+
+	payload := []byte{0x01, 0x02, 0x03}
+	u.HandleMessage(payload, makeMessageInfo(4444, 9999))
+
+	if got == nil {
+		t.Fatal("matching socket should have received the message")
+	}
+	if len(got) != 3 {
+		t.Errorf("payload length = %d, want 3", len(got))
+	}
+}
+
+func TestHandleMessageMultipleSocketsOnlyMatchingReceive(t *testing.T) {
+	u := New()
+
+	s1 := &Socket{}
+	s1Called := false
+	_ = u.Open(s1, NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		s1Called = true
+	})
+	_ = u.Bind(s1, ip6.SockAddr{Port: 5683})
+
+	s2 := &Socket{}
+	s2Called := false
+	_ = u.Open(s2, NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		s2Called = true
+	})
+	_ = u.Bind(s2, ip6.SockAddr{Port: 7777})
+
+	s3 := &Socket{}
+	s3Called := false
+	_ = u.Open(s3, NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		s3Called = true
+	})
+	_ = u.Bind(s3, ip6.SockAddr{Port: 5683})
+
+	// Send to port 5683 — s1 and s3 should match, s2 should not.
+	u.HandleMessage([]byte{0xAB}, makeMessageInfo(1111, 5683))
+
+	if !s1Called {
+		t.Error("s1 (port 5683) should have been called")
+	}
+	if s2Called {
+		t.Error("s2 (port 7777) should not have been called")
+	}
+	if !s3Called {
+		t.Error("s3 (port 5683) should have been called")
+	}
+}
+
+func TestHandleMessageNoMatchingSockets(t *testing.T) {
+	u := New()
+
+	s := &Socket{}
+	called := false
+	_ = u.Open(s, NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		called = true
+	})
+	_ = u.Bind(s, ip6.SockAddr{Port: 8000})
+
+	// Send to a different port — should silently drop.
+	u.HandleMessage([]byte{0xFF}, makeMessageInfo(1111, 9000))
+
+	if called {
+		t.Error("socket on port 8000 should not receive message to port 9000")
+	}
+}
+
+func TestHandleMessageNilSocketHandler(t *testing.T) {
+	u := New()
+
+	// Open socket with nil handler — should not panic.
+	s := &Socket{}
+	_ = u.Open(s, NetifThreadHost, nil)
+	_ = u.Bind(s, ip6.SockAddr{Port: 5555})
+
+	// Should not panic.
+	u.HandleMessage([]byte{0x00}, makeMessageInfo(2222, 5555))
+}
+
+func TestHandleMessageNilReceiverHandler(t *testing.T) {
+	u := New()
+
+	// Receiver with nil handler — should be skipped, not panic.
+	r := &Receiver{handler: nil}
+	_ = u.AddReceiver(r)
+
+	s := &Socket{}
+	called := false
+	_ = u.Open(s, NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		called = true
+	})
+	_ = u.Bind(s, ip6.SockAddr{Port: 3333})
+
+	u.HandleMessage([]byte{0xBB}, makeMessageInfo(4444, 3333))
+
+	if !called {
+		t.Error("socket should receive message when receiver has nil handler")
+	}
+}
+
+func TestHandleMessageEmptyPayloadHandlerCalled(t *testing.T) {
+	u := New()
+
+	s := &Socket{}
+	handlerCalled := false
+	_ = u.Open(s, NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		handlerCalled = true
+	})
+	_ = u.Bind(s, ip6.SockAddr{Port: 6000})
+
+	u.HandleMessage(nil, makeMessageInfo(1000, 6000))
+
+	if !handlerCalled {
+		t.Error("handler should be called even with nil payload")
+	}
+}
+
+func TestHandleMessageVerifiesMessageInfoPassthrough(t *testing.T) {
+	u := New()
+
+	s := &Socket{}
+	var gotInfo *ip6.MessageInfo
+	_ = u.Open(s, NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		gotInfo = mi
+	})
+	_ = u.Bind(s, ip6.SockAddr{Port: 7000})
+
+	info := makeMessageInfo(2000, 7000)
+	info.HopLimit = 42
+	u.HandleMessage([]byte{1}, info)
+
+	if gotInfo == nil {
+		t.Fatal("handler not called")
+	}
+	if gotInfo.HopLimit != 42 {
+		t.Errorf("HopLimit = %d, want 42", gotInfo.HopLimit)
+	}
+	if gotInfo != info {
+		t.Error("messageInfo pointer should be passed through directly")
+	}
+}

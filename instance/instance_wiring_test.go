@@ -12,6 +12,7 @@ import (
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/key"
@@ -978,3 +979,247 @@ func (ms *mockSettings) Wipe() error {
 }
 
 var errNotFound = &instanceError{msg: "not found"}
+
+// --------------------------------------------------------------------------
+// Phase 29 — Full RX path integration tests
+// --------------------------------------------------------------------------
+
+// build6LoWPANFrameInlineUDP builds a 6LoWPAN IPHC frame with fully inline
+// addresses, inline NH=UDP, hop limit=64, and an uncompressed 8-byte UDP
+// header followed by the given payload.
+//
+// IPHC = 0x6000: TF=00, NH=inline, HLIM=inline, SAC=0, SAM=00, M=0, DAC=0, DAM=00
+func build6LoWPANFrameInlineUDP(srcIP, dstIP ip6.Address, srcPort, dstPort uint16, payload []byte) []byte {
+	d := []byte{0x60, 0x00}               // IPHC dispatch
+	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00: ECN=0, DSCP=0, Flow=0
+	d = append(d, 0x11)                   // NH = UDP (17)
+	d = append(d, 0x40)                   // HL = 64
+	d = append(d, srcIP[:]...)            // 16 bytes source
+	d = append(d, dstIP[:]...)            // 16 bytes destination
+	// 8-byte UDP header: src port, dst port, length, checksum (all big-endian)
+	udpLen := uint16(8 + len(payload))
+	d = append(d, byte(srcPort>>8), byte(srcPort))
+	d = append(d, byte(dstPort>>8), byte(dstPort))
+	d = append(d, byte(udpLen>>8), byte(udpLen))
+	d = append(d, 0x00, 0x00) // checksum = 0
+	d = append(d, payload...)
+	return d
+}
+
+// build6LoWPANFrameNHCUDP builds a 6LoWPAN IPHC frame with fully inline
+// addresses, NHC-compressed UDP header (PP=00, both ports full, checksum
+// inline), followed by the given payload.
+//
+// IPHC = 0x6400: TF=00, NH=compressed(1), HLIM=inline, SAC=0, SAM=00, M=0, DAC=0, DAM=00
+func build6LoWPANFrameNHCUDP(srcIP, dstIP ip6.Address, srcPort, dstPort uint16, payload []byte) []byte {
+	d := []byte{0x64, 0x00}               // IPHC dispatch with NH=compressed
+	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00: ECN=0, DSCP=0, Flow=0
+	d = append(d, 0x40)                   // HL = 64  (no NH byte since compressed)
+	d = append(d, srcIP[:]...)            // 16 bytes source
+	d = append(d, dstIP[:]...)            // 16 bytes destination
+	// NHC UDP: dispatch=0xF0 (PP=00 both full, C=0 checksum inline)
+	d = append(d, 0xF0)
+	d = append(d, byte(srcPort>>8), byte(srcPort))
+	d = append(d, byte(dstPort>>8), byte(dstPort))
+	d = append(d, 0x00, 0x00) // checksum
+	d = append(d, payload...)
+	return d
+}
+
+func TestFullRxPath_InlineUDP_ToSocket(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// Register a socket on port 9999.
+	s := &udp.Socket{}
+	var gotPayload []byte
+	var gotInfo *ip6.MessageInfo
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		gotPayload = p
+		gotInfo = mi
+	})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: 9999})
+
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc}
+	appData := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+
+	frame := &radio.Frame{
+		PSDU:    build6LoWPANFrameInlineUDP(srcIP, dstIP, 4444, 9999, appData),
+		Channel: 15,
+	}
+	inst.HandleReceivedFrame(frame)
+
+	if gotPayload == nil {
+		t.Fatal("socket handler was not called")
+	}
+	if len(gotPayload) != len(appData) {
+		t.Errorf("payload length = %d, want %d", len(gotPayload), len(appData))
+	}
+	for i, b := range appData {
+		if gotPayload[i] != b {
+			t.Errorf("payload[%d] = %02x, want %02x", i, gotPayload[i], b)
+		}
+	}
+	if gotInfo.PeerAddr != srcIP {
+		t.Errorf("PeerAddr = %v, want %v", gotInfo.PeerAddr, srcIP)
+	}
+	if gotInfo.SockAddr != dstIP {
+		t.Errorf("SockAddr = %v, want %v", gotInfo.SockAddr, dstIP)
+	}
+	if gotInfo.PeerPort != 4444 {
+		t.Errorf("PeerPort = %d, want 4444", gotInfo.PeerPort)
+	}
+	if gotInfo.SockPort != 9999 {
+		t.Errorf("SockPort = %d, want 9999", gotInfo.SockPort)
+	}
+	if gotInfo.HopLimit != 64 {
+		t.Errorf("HopLimit = %d, want 64", gotInfo.HopLimit)
+	}
+}
+
+func TestFullRxPath_NHCUDP_ToSocket(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	s := &udp.Socket{}
+	var gotPayload []byte
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		gotPayload = p
+	})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: 5683})
+
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	appData := []byte{0x40, 0x01, 0x00, 0x01} // CoAP-like payload
+
+	frame := &radio.Frame{
+		PSDU:    build6LoWPANFrameNHCUDP(srcIP, dstIP, 12345, 5683, appData),
+		Channel: 11,
+	}
+	inst.HandleReceivedFrame(frame)
+
+	if gotPayload == nil {
+		t.Fatal("socket handler was not called for NHC-compressed UDP")
+	}
+	if len(gotPayload) != len(appData) {
+		t.Errorf("payload length = %d, want %d", len(gotPayload), len(appData))
+	}
+}
+
+func TestFullRxPath_MLEReceiver(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc}
+	// MLE port = 19788, src port arbitrary
+	mlePayload := []byte{0x00, 0x01, 0x02, 0x03} // fake MLE data
+
+	frame := &radio.Frame{
+		PSDU:    build6LoWPANFrameInlineUDP(srcIP, dstIP, 19788, mle.UDPPort, mlePayload),
+		Channel: 15,
+	}
+
+	// A socket on port 19788 should NOT receive the message because the
+	// MLE receiver is registered and consumes it first.
+	s := &udp.Socket{}
+	socketCalled := false
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		socketCalled = true
+	})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: mle.UDPPort})
+
+	inst.HandleReceivedFrame(frame)
+
+	// The MLE receiver should have consumed the message.
+	// We can't easily observe that MLE.HandleReceive was called (it
+	// returns an error for invalid MLE data), but we CAN verify the
+	// socket was NOT called.
+	if socketCalled {
+		t.Error("socket on MLE port should not receive message — MLE receiver should consume it")
+	}
+}
+
+func TestFullRxPath_CoAPReceiver(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	// TMF port = 61631
+	coapPayload := []byte{0x40, 0x01, 0x00, 0x01} // CON GET, MID=1
+
+	frame := &radio.Frame{
+		PSDU: build6LoWPANFrameInlineUDP(srcIP, dstIP, 49200, udp.TmfPort, coapPayload),
+	}
+
+	// A socket on the TMF port should NOT receive — CoAP receiver consumes.
+	s := &udp.Socket{}
+	socketCalled := false
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		socketCalled = true
+	})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: udp.TmfPort})
+
+	inst.HandleReceivedFrame(frame)
+
+	if socketCalled {
+		t.Error("socket on TMF port should not receive message — CoAP receiver should consume it")
+	}
+}
+
+func TestFullRxPath_NonLowpanDropped(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// Non-IPHC data (doesn't start with 011... dispatch).
+	frame := &radio.Frame{
+		PSDU: []byte{0x41, 0x88, 0x01, 0x02, 0x03, 0x04, 0x05},
+	}
+
+	s := &udp.Socket{}
+	called := false
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		called = true
+	})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: 9999})
+
+	// Should not panic, and should not dispatch.
+	inst.HandleReceivedFrame(frame)
+
+	if called {
+		t.Error("non-6LoWPAN frame should not reach UDP sockets")
+	}
+}
+
+func TestFullRxPath_NonUDPProtocolDropped(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// Build a 6LoWPAN frame with NH=ICMPv6 (58) instead of UDP.
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	d := []byte{0x60, 0x00}               // IPHC
+	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00
+	d = append(d, 0x3A)                   // NH = ICMPv6 (58)
+	d = append(d, 0x40)                   // HL = 64
+	d = append(d, srcIP[:]...)
+	d = append(d, dstIP[:]...)
+	d = append(d, 0x80, 0x00, 0x00, 0x00) // ICMPv6 echo request (fake)
+
+	frame := &radio.Frame{PSDU: d}
+
+	s := &udp.Socket{}
+	called := false
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		called = true
+	})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: 9999})
+
+	inst.HandleReceivedFrame(frame)
+
+	if called {
+		t.Error("ICMPv6 frame should not reach UDP sockets")
+	}
+}
