@@ -19,6 +19,7 @@ import (
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/key"
+	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
 )
@@ -175,36 +176,80 @@ func routingStateToMLE(s routing.State) mle.NeighborState {
 // --------------------------------------------------------------------------
 
 // HandleFrameRequest is called by the MAC layer when it needs a frame to
-// transmit. Returns true if a frame was provided.
+// transmit. It dequeues the next message from the mesh forwarder's direct
+// queue and copies the payload into the radio frame. Returns true if a
+// frame was provided.
 func (inst *Instance) HandleFrameRequest(frame *radio.Frame) bool {
-	// TODO(Phase 28b): Wire to MLE/mesh forwarding for frame production.
-	_ = frame
-	return false
+	if inst.forwarder == nil {
+		return false
+	}
+	msg := inst.forwarder.HandleFrameRequest()
+	if msg == nil {
+		return false
+	}
+	// Copy the message data into the radio frame's PSDU buffer.
+	frame.PSDU = make([]byte, len(msg.Data))
+	copy(frame.PSDU, msg.Data)
+	// Remember the in-flight message so HandleSentFrame can report back.
+	inst.pendingTxMsg = msg
+	return true
 }
 
 // HandleSentFrame is called by the MAC layer after a frame has been sent.
+// It reports the transmission result to the mesh forwarder.
 func (inst *Instance) HandleSentFrame(frame *radio.Frame, err error) {
-	// TODO(Phase 28b): Wire to MLE for acknowledgement processing.
-	_ = frame
-	_ = err
+	if inst.forwarder == nil || inst.pendingTxMsg == nil {
+		return
+	}
+	msg := inst.pendingTxMsg
+	inst.pendingTxMsg = nil
+	inst.forwarder.HandleSentFrame(msg, err == nil)
 }
 
 // HandleReceivedFrame is called by the MAC layer when a frame is received.
+// It forwards the raw PSDU to the mesh forwarder for dispatch.
 func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
-	// TODO(Phase 28b): Wire to MLE/mesh forwarding for frame dispatch.
-	_ = frame
+	if inst.forwarder == nil || frame == nil || len(frame.PSDU) == 0 {
+		return
+	}
+	info := &mesh.ReceivedFrameInfo{
+		Channel: frame.Channel,
+	}
+	if frame.RxInfo != nil {
+		info.Rssi = frame.RxInfo.RSSI
+		info.Lqi = frame.RxInfo.LQI
+		info.Timestamp = frame.RxInfo.Timestamp
+	}
+	// HandleReceivedFrame returns (payload, isMesh, err). The upper
+	// layers (6LoWPAN decompression, UDP demux) will be wired in a
+	// subsequent phase.
+	inst.forwarder.HandleReceivedFrame(frame.PSDU, info)
 }
 
 // --------------------------------------------------------------------------
 // Instance implements mle.Transport
 // --------------------------------------------------------------------------
 
-// SendMLE sends an MLE message to the given IPv6 destination.
+// SendMLE sends an MLE message to the given IPv6 destination. The message
+// is wrapped in a TxMessage and enqueued to the mesh forwarder for
+// transmission. If the destination is a mesh-local RLOC, the destination
+// RLOC16 is extracted from the address; otherwise the message is sent as
+// a broadcast.
 func (inst *Instance) SendMLE(msg []byte, dst ip6.Address) error {
-	// TODO(Phase 28b): Wire through UDP/IPv6 stack.
-	_ = msg
-	_ = dst
-	return nil
+	if inst.forwarder == nil {
+		return nil
+	}
+	// Determine the destination RLOC16. Mesh-local RLOC addresses carry
+	// the RLOC16 in the last two bytes of the IID:
+	//   [prefix]:0000:00FF:FE00:[RLOC16]
+	var dstRLOC uint16 = 0xFFFF // broadcast default
+	if dst.IsRoutingLocator() {
+		iid := dst.GetIid()
+		dstRLOC = iid.GetLocator()
+	}
+	txMsg := mesh.NewTxMessage(msg, dstRLOC, inst.rloc16)
+	txMsg.Priority = uint8(mesh.PriorityNet)
+	return inst.forwarder.SendMessage(txMsg)
 }
 
 // GetExtAddress returns the extended MAC address of this device.
@@ -215,16 +260,33 @@ func (inst *Instance) GetExtAddress() types.ExtAddress {
 	return types.ExtAddress{}
 }
 
-// GetLinkLocalAddress returns the IPv6 link-local address.
+// GetLinkLocalAddress returns the IPv6 link-local address derived from
+// the device's extended MAC address. The address is fe80:: followed by a
+// Modified EUI-64 identifier (the extended address with the Universal/Local
+// bit toggled, per RFC 4291 Appendix A).
 func (inst *Instance) GetLinkLocalAddress() ip6.Address {
-	// TODO(Phase 28b): Derive from MAC extended address.
-	return ip6.Address{}
+	var addr ip6.Address
+	addr[0] = 0xfe
+	addr[1] = 0x80
+	// Bytes 2-7 are zero (link-local prefix is fe80::/64).
+	ext := inst.mac.GetExtAddress()
+	copy(addr[8:], ext[:])
+	addr[8] ^= 0x02 // toggle Universal/Local bit
+	return addr
 }
 
-// GetMeshLocalAddress returns the IPv6 mesh-local address.
+// GetMeshLocalAddress returns the IPv6 mesh-local RLOC address. The address
+// is formed as [mesh-local-prefix]:0000:00ff:fe00:[RLOC16] per the Thread
+// specification.
 func (inst *Instance) GetMeshLocalAddress() ip6.Address {
-	// TODO(Phase 28b): Derive from mesh-local prefix + RLOC16.
-	return ip6.Address{}
+	var addr ip6.Address
+	copy(addr[0:8], inst.meshLocalPrefix[:])
+	// IID: 0000:00FF:FE00:RLOC16
+	addr[11] = 0xff
+	addr[12] = 0xfe
+	addr[14] = byte(inst.rloc16 >> 8)
+	addr[15] = byte(inst.rloc16)
+	return addr
 }
 
 // GetLinkLocalAllRoutersMulticast returns the link-local all-routers
@@ -476,10 +538,21 @@ func (inst *Instance) postTask(fn func()) {
 // --------------------------------------------------------------------------
 
 // sendCoAP is a function satisfying coap.Sender that transmits CoAP
-// data through the Instance's UDP/IPv6 stack.
+// data through the Instance's mesh forwarder. The peer address from the
+// MessageInfo is used to determine the destination RLOC16.
 func (inst *Instance) sendCoAP(data []byte, info coap.MessageInfo) error {
-	// TODO(Phase 28b): Wire through UDP socket to IPv6 stack.
-	_ = data
-	_ = info
-	return nil
+	if inst.forwarder == nil {
+		return nil
+	}
+	// Derive destination RLOC16 from the peer address.
+	var peerAddr ip6.Address
+	copy(peerAddr[:], info.PeerAddr[:])
+	var dstRLOC uint16 = 0xFFFF // broadcast default
+	if peerAddr.IsRoutingLocator() {
+		iid := peerAddr.GetIid()
+		dstRLOC = iid.GetLocator()
+	}
+	txMsg := mesh.NewTxMessage(data, dstRLOC, inst.rloc16)
+	txMsg.Priority = uint8(mesh.PriorityNormal)
+	return inst.forwarder.SendMessage(txMsg)
 }

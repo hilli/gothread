@@ -295,6 +295,17 @@ type Instance struct {
 
 	// nativeCommissioner indicates whether native commissioning is enabled.
 	nativeCommissioner bool
+
+	// meshLocalPrefix is the 64-bit mesh-local prefix (e.g. fd-prefixed ULA).
+	meshLocalPrefix [8]byte
+
+	// rloc16 is the 16-bit Routing Locator of this device.
+	rloc16 uint16
+
+	// pendingTxMsg holds the TxMessage currently being transmitted by the
+	// MAC layer, so HandleSentFrame can report completion back to the
+	// mesh forwarder.
+	pendingTxMsg *mesh.TxMessage
 }
 
 // New creates a new Instance with the given platform configuration.
@@ -522,6 +533,19 @@ func (inst *Instance) NetdataLeader() *netdata.Leader { return inst.netdataLeade
 
 // Forwarder returns the mesh forwarder.
 func (inst *Instance) Forwarder() *mesh.Forwarder { return inst.forwarder }
+
+// SetMeshLocalPrefix sets the 64-bit mesh-local prefix used for RLOC
+// and other mesh-local addresses.
+func (inst *Instance) SetMeshLocalPrefix(prefix [8]byte) { inst.meshLocalPrefix = prefix }
+
+// MeshLocalPrefix returns the 64-bit mesh-local prefix.
+func (inst *Instance) MeshLocalPrefix() [8]byte { return inst.meshLocalPrefix }
+
+// SetRLOC16 sets the 16-bit Routing Locator of this device.
+func (inst *Instance) SetRLOC16(rloc16 uint16) { inst.rloc16 = rloc16 }
+
+// RLOC16 returns the 16-bit Routing Locator of this device.
+func (inst *Instance) RLOC16() uint16 { return inst.rloc16 }
 
 // --------------------------------------------------------------------------
 // Event loop
