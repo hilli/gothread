@@ -15,8 +15,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hilli/gothread/common/message"
+	cnotifier "github.com/hilli/gothread/common/notifier"
+	csettings "github.com/hilli/gothread/common/settings"
+	"github.com/hilli/gothread/mac"
+	"github.com/hilli/gothread/mac/submac"
+	"github.com/hilli/gothread/mac/types"
+	"github.com/hilli/gothread/net/coap"
+	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
+	"github.com/hilli/gothread/thread/key"
+	"github.com/hilli/gothread/thread/mesh"
+	"github.com/hilli/gothread/thread/mle"
+	"github.com/hilli/gothread/thread/netdata"
+	"github.com/hilli/gothread/thread/routing"
+	"github.com/hilli/gothread/thread/tmf"
 )
 
 // --------------------------------------------------------------------------
@@ -180,11 +195,11 @@ type Config struct {
 // the need for locks within individual modules.
 type Instance struct {
 	// Platform interfaces
-	alarm    platform.Alarm
-	entropy  platform.Entropy
-	settings platform.Settings
-	logger   platform.Logger
-	radio    radio.Radio
+	alarm        platform.Alarm
+	entropy      platform.Entropy
+	platSettings platform.Settings
+	logger       platform.Logger
+	platRadio    radio.Radio
 
 	// Event loop
 	taskCh chan func()
@@ -200,23 +215,186 @@ type Instance struct {
 	// running tracks whether the event loop is active.
 	running   bool
 	runningMu sync.Mutex
+
+	// ---------------------------------------------------------------
+	// Tier 1 — Radio / MAC / Key core
+	// ---------------------------------------------------------------
+
+	// messagePool is the shared message buffer pool.
+	messagePool *message.Pool
+
+	// stackSettings wraps the platform.Settings driver for use by
+	// protocol modules.
+	stackSettings *csettings.Settings
+
+	// stackNotifier is the protocol-level event bus (distinct from
+	// the instance-level notifier above which drives the event loop).
+	stackNotifier *cnotifier.Notifier
+
+	// keyManager owns MLE/MAC key material, frame counters, and
+	// key rotation.
+	keyManager *key.Manager
+
+	// subMac implements CSMA-CA, retransmissions, and energy scanning.
+	subMac *submac.SubMac
+
+	// mac implements the IEEE 802.15.4 MAC layer.
+	mac *mac.Mac
+
+	// ---------------------------------------------------------------
+	// Tier 2 — Routing / MLE / Network
+	// ---------------------------------------------------------------
+
+	// routerTable manages the set of known routers.
+	routerTable *routing.RouterTable
+
+	// childTable manages the set of known children.
+	childTable *routing.ChildTable
+
+	// neighborTable provides unified neighbor lookup across router
+	// and child tables.
+	neighborTable *routing.NeighborTable
+
+	// mleService is the top-level MLE protocol service.
+	mleService *mle.Service
+
+	// netif is the IPv6 network interface.
+	netif *ip6.Netif
+
+	// udpManager manages UDP sockets.
+	udpManager *udp.UDP
+
+	// ---------------------------------------------------------------
+	// Tier 3 — Application layer (CoAP, TMF, Mesh forwarding)
+	// ---------------------------------------------------------------
+
+	// coapEngine handles CoAP message exchange.
+	coapEngine *coap.Engine
+
+	// tmfAgent is the TMF CoAP agent for Thread management messages.
+	tmfAgent *tmf.Agent
+
+	// netdataLeader manages the Thread Network Data.
+	netdataLeader *netdata.Leader
+
+	// forwarder handles mesh frame forwarding.
+	forwarder *mesh.Forwarder
+
+	// ---------------------------------------------------------------
+	// Configuration
+	// ---------------------------------------------------------------
+
+	// networkName is the Thread network name.
+	networkName string
+
+	// extendedPanID is the 8-byte extended PAN ID.
+	extendedPanID [8]byte
+
+	// steeringData is the Bloom-filter steering data for joiners.
+	steeringData []byte
+
+	// nativeCommissioner indicates whether native commissioning is enabled.
+	nativeCommissioner bool
 }
 
 // New creates a new Instance with the given platform configuration.
-// Call Start() to begin the event loop.
+// All Thread stack modules are created and wired together during
+// construction. Call Start() to begin the event loop.
 func New(config Config) *Instance {
-	return &Instance{
-		alarm:    config.Alarm,
-		entropy:  config.Entropy,
-		settings: config.Settings,
-		logger:   config.Logger,
-		radio:    config.Radio,
-		taskCh:   make(chan func(), 256),
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
-		timers:   &timerScheduler{},
-		notifier: &notifier{},
+	inst := &Instance{
+		alarm:        config.Alarm,
+		entropy:      config.Entropy,
+		platSettings: config.Settings,
+		logger:       config.Logger,
+		platRadio:    config.Radio,
+		taskCh:       make(chan func(), 256),
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
+		timers:       &timerScheduler{},
+		notifier:     &notifier{},
 	}
+
+	inst.wireModules()
+	return inst
+}
+
+// wireModules creates and connects all Thread stack modules.
+// This is called from New() and runs in the constructor goroutine.
+func (inst *Instance) wireModules() {
+	// ---------------------------------------------------------------
+	// Tier 1 — Radio / MAC / Key core
+	// ---------------------------------------------------------------
+
+	inst.messagePool = message.NewPool(256)
+	inst.stackNotifier = cnotifier.New()
+	inst.keyManager = key.NewManager()
+
+	if inst.platSettings != nil {
+		inst.stackSettings = csettings.New(&settingsDriverAdapter{ps: inst.platSettings})
+	}
+
+	// SubMac wraps the radio with CSMA-CA and retransmission logic.
+	// Mac serves as the SubMac's Callbacks (it implements the interface).
+	// We use a callbackBridge to break the circular dependency:
+	// SubMac needs Callbacks at construction, Mac needs SubMac at
+	// construction. The bridge starts empty and gets populated after
+	// both are created.
+	bridge := &submacCallbackBridge{}
+
+	inst.subMac = submac.New(submac.Config{
+		Radio:         inst.platRadio,
+		Callbacks:     bridge,
+		ScheduleTimer: inst.scheduleTimerDirect,
+		StopTimer:     func() {}, // no-op; timers expire naturally
+	})
+
+	inst.mac = mac.New(mac.Config{
+		SubMac:        inst.subMac,
+		Callbacks:     inst, // Instance implements mac.Callbacks
+		ScheduleTimer: inst.scheduleTimerDirect,
+		StopTimer:     func() {},
+		PostOperation: inst.postTask,
+	})
+
+	// Now wire Mac as the SubMac's callback receiver.
+	bridge.target = inst.mac
+
+	// ---------------------------------------------------------------
+	// Tier 2 — Routing / MLE / Network
+	// ---------------------------------------------------------------
+
+	inst.routerTable = routing.NewRouterTable()
+	inst.childTable = routing.NewChildTable()
+	inst.neighborTable = routing.NewNeighborTable(inst.routerTable, inst.childTable)
+
+	inst.netif = ip6.NewNetif()
+	inst.udpManager = udp.New()
+
+	inst.mleService = mle.NewService(mle.ServiceConfig{
+		Transport:    inst, // Instance implements mle.Transport
+		KeyProvider:  inst, // Instance delegates to keyManager
+		RouterLookup: inst, // Instance delegates to routerTable
+		RouteData:    inst, // Instance delegates to routerTable
+		RouterOps:    inst, // Instance delegates to routerTable
+		Connectivity: inst, // Instance provides connectivity data
+		NetworkInfo:  inst, // Instance provides network identity
+		NeighborLookup: func(addr types.ExtAddress) *mle.Neighbor {
+			n := inst.neighborTable.FindNeighborByExtAddress(addr, routing.FilterValid)
+			if n == nil {
+				return nil
+			}
+			return neighborToMLE(n)
+		},
+	})
+
+	// ---------------------------------------------------------------
+	// Tier 3 — Application layer
+	// ---------------------------------------------------------------
+
+	inst.coapEngine = coap.NewEngine(inst.sendCoAP)
+	inst.tmfAgent = tmf.NewAgent(inst.coapEngine)
+	inst.netdataLeader = netdata.NewLeader(&routerCheckerAdapter{rt: inst.routerTable})
+	inst.forwarder = mesh.NewForwarder()
 }
 
 // Start launches the event loop goroutine. It is an error to call Start
@@ -295,13 +473,55 @@ func (inst *Instance) Alarm() platform.Alarm { return inst.alarm }
 func (inst *Instance) Entropy() platform.Entropy { return inst.entropy }
 
 // Settings returns the platform Settings interface.
-func (inst *Instance) Settings() platform.Settings { return inst.settings }
+func (inst *Instance) Settings() platform.Settings { return inst.platSettings }
 
 // Logger returns the platform Logger interface.
 func (inst *Instance) Logger() platform.Logger { return inst.logger }
 
 // Radio returns the platform Radio interface.
-func (inst *Instance) Radio() radio.Radio { return inst.radio }
+func (inst *Instance) Radio() radio.Radio { return inst.platRadio }
+
+// Mac returns the MAC layer.
+func (inst *Instance) Mac() *mac.Mac { return inst.mac }
+
+// SubMac returns the Sub-MAC layer.
+func (inst *Instance) SubMac() *submac.SubMac { return inst.subMac }
+
+// KeyManager returns the key manager.
+func (inst *Instance) KeyManager() *key.Manager { return inst.keyManager }
+
+// MessagePool returns the message buffer pool.
+func (inst *Instance) MessagePool() *message.Pool { return inst.messagePool }
+
+// RouterTable returns the router table.
+func (inst *Instance) RouterTable() *routing.RouterTable { return inst.routerTable }
+
+// ChildTable returns the child table.
+func (inst *Instance) ChildTable() *routing.ChildTable { return inst.childTable }
+
+// NeighborTable returns the neighbor table.
+func (inst *Instance) NeighborTable() *routing.NeighborTable { return inst.neighborTable }
+
+// MleService returns the MLE protocol service.
+func (inst *Instance) MleService() *mle.Service { return inst.mleService }
+
+// Netif returns the IPv6 network interface.
+func (inst *Instance) Netif() *ip6.Netif { return inst.netif }
+
+// UDPManager returns the UDP manager.
+func (inst *Instance) UDPManager() *udp.UDP { return inst.udpManager }
+
+// CoapEngine returns the CoAP engine.
+func (inst *Instance) CoapEngine() *coap.Engine { return inst.coapEngine }
+
+// TmfAgent returns the TMF agent.
+func (inst *Instance) TmfAgent() *tmf.Agent { return inst.tmfAgent }
+
+// NetdataLeader returns the network data leader.
+func (inst *Instance) NetdataLeader() *netdata.Leader { return inst.netdataLeader }
+
+// Forwarder returns the mesh forwarder.
+func (inst *Instance) Forwarder() *mesh.Forwarder { return inst.forwarder }
 
 // --------------------------------------------------------------------------
 // Event loop
