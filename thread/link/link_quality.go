@@ -396,3 +396,13 @@ func (q *QualityInfo) GetFrameErrorRate() uint16 {
 func (q *QualityInfo) GetMessageErrorRate() uint16 {
 	return q.MessageErrorRate.GetFailureRate()
 }
+
+// SetQualityIn directly overrides the incoming link quality level (0-3).
+// This is useful for testing or for explicitly setting a quality value
+// without going through the RSS-based calculation path.
+func (q *QualityInfo) SetQualityIn(quality uint8) {
+	if quality > Quality3 {
+		quality = Quality3
+	}
+	q.qualityIn = quality
+}

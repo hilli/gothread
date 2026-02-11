@@ -315,6 +315,11 @@ type Child struct {
 	RequestTLVs [MaxRequestTLVs]uint8
 	// RequestTLVCount is the number of valid entries in RequestTLVs.
 	RequestTLVCount uint8
+	// CSLPeriod is the CSL (Coordinated Sampled Listening) period in units
+	// of 10 symbols.
+	CSLPeriod uint16
+	// CSLPhase is the CSL phase in units of 10 symbols.
+	CSLPhase uint16
 }
 
 // AddIP6Address adds an IPv6 address to the child's registration list.
