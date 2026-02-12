@@ -217,6 +217,8 @@ type Mac struct {
 	// Transmit state
 	transmitPending bool
 	beaconSequence  uint8
+	pollSequence    uint8
+	parentShortAddr types.ShortAddress
 
 	// Transmission counters
 	txTotal    uint32
@@ -344,6 +346,21 @@ func (m *Mac) SetExtAddress(addr types.ExtAddress) {
 	defer m.mu.Unlock()
 	m.extAddress = addr
 	m.subMac.SetExtAddress(addr)
+}
+
+// SetParentShortAddress sets the parent's short address, used for data
+// poll (MAC Data Request) frames.
+func (m *Mac) SetParentShortAddress(addr types.ShortAddress) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.parentShortAddr = addr
+}
+
+// GetParentShortAddress returns the parent's short address.
+func (m *Mac) GetParentShortAddress() types.ShortAddress {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.parentShortAddr
 }
 
 // GetPanID returns the PAN ID.
@@ -580,6 +597,14 @@ func (m *Mac) RequestBeaconTransmission() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startOperation(OperationTransmitBeacon)
+}
+
+// RequestIndirectFrameTransmission signals that the upper layer has an
+// indirect data frame to send (FTD only — for sleepy children).
+func (m *Mac) RequestIndirectFrameTransmission() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.startOperation(OperationTransmitDataIndirect)
 }
 
 // --------------------------------------------------------------------------
@@ -874,17 +899,127 @@ func (m *Mac) performTransmitData() {
 }
 
 func (m *Mac) performTransmitPoll() {
-	// Data poll is a MAC command frame. In a full implementation
-	// the upper layer (DataPollSender) would prepare the frame.
-	// For now we signal completion.
-	m.finishOperation()
-	m.scheduleNextOperation()
+	// A data poll is an IEEE 802.15.4 MAC Command frame with
+	// Command ID = 0x04 (Data Request), addressed to the parent.
+	if m.parentShortAddr == 0 {
+		// No parent set — cannot poll.
+		m.finishOperation()
+		m.scheduleNextOperation()
+		return
+	}
+
+	frame := m.subMac.GetTransmitFrame()
+	if frame == nil {
+		m.finishOperation()
+		m.scheduleNextOperation()
+		return
+	}
+
+	// Build the MAC Command frame (Data Request).
+	//
+	// FCF (2 bytes LE):
+	//   bits 0-2:   Frame Type    = 011 (MAC Command)
+	//   bit 5:      ACK Request   = 1
+	//   bit 6:      PAN ID Compr  = 1
+	//   bits 10-11: Dst Addr Mode = 10 (Short)
+	//   bits 14-15: Src Addr Mode = 10 (Short)
+	//   Low byte  = 0x63, High byte = 0x88
+	//
+	// Layout: FCF(2) + Seq(1) + DstPanID(2) + DstShort(2) + SrcShort(2)
+	//         + CmdID(1) + FCS(2) = 12 bytes total.
+	const pollFrameLen = 12
+	var d [pollFrameLen]byte
+
+	// FCF.
+	d[0] = 0x63
+	d[1] = 0x88
+
+	// Sequence number.
+	d[2] = m.pollSequence
+	m.pollSequence++
+
+	// Destination PAN ID (little-endian).
+	panID := uint16(m.panID)
+	d[3] = byte(panID)
+	d[4] = byte(panID >> 8)
+
+	// Destination Short Address — parent (little-endian).
+	parentAddr := uint16(m.parentShortAddr)
+	d[5] = byte(parentAddr)
+	d[6] = byte(parentAddr >> 8)
+
+	// Source Short Address — us (little-endian).
+	srcAddr := uint16(m.shortAddress)
+	d[7] = byte(srcAddr)
+	d[8] = byte(srcAddr >> 8)
+
+	// MAC Command ID: Data Request = 0x04.
+	d[9] = 0x04
+
+	// FCS placeholder (2 bytes — hardware/radio appends real CRC).
+	d[10] = 0x00
+	d[11] = 0x00
+
+	frame.PSDU = make([]byte, pollFrameLen)
+	copy(frame.PSDU, d[:])
+	frame.Channel = m.radioChannel
+
+	// Data polls require ACK, use CSMA-CA, with direct retry parameters.
+	m.transmitPending = true
+	err := m.subMac.Send(submac.TxRequest{
+		Channel:         m.radioChannel,
+		CsmaCaEnabled:   true,
+		AckRequest:      true,
+		MaxCsmaBackoffs: uint8(submac.DefaultMaxCsmaBackoffsDirect),
+		MaxFrameRetries: uint8(submac.DefaultMaxFrameRetriesDirect),
+	})
+	if err != nil {
+		m.transmitPending = false
+		if m.callbacks != nil {
+			m.callbacks.HandleSentFrame(frame, err)
+		}
+		m.finishOperation()
+		m.scheduleNextOperation()
+	}
 }
 
 func (m *Mac) performTransmitIndirect() {
-	// Indirect transmission (FTD only). Placeholder for now.
-	m.finishOperation()
-	m.scheduleNextOperation()
+	// Indirect transmission (FTD only) — same flow as direct TX but
+	// uses indirect CSMA backoff and retry parameters.
+	if m.callbacks == nil {
+		m.finishOperation()
+		m.scheduleNextOperation()
+		return
+	}
+
+	frame := m.subMac.GetTransmitFrame()
+	if frame == nil {
+		m.finishOperation()
+		m.scheduleNextOperation()
+		return
+	}
+
+	if !m.callbacks.HandleFrameRequest(frame) {
+		// Nothing to send.
+		m.finishOperation()
+		m.scheduleNextOperation()
+		return
+	}
+
+	m.transmitPending = true
+	err := m.subMac.Send(submac.TxRequest{
+		Channel:         m.radioChannel,
+		CsmaCaEnabled:   true,
+		AckRequest:      true,
+		MaxCsmaBackoffs: uint8(submac.DefaultMaxCsmaBackoffsIndirect),
+		MaxFrameRetries: uint8(submac.DefaultMaxFrameRetriesIndirect),
+	})
+	if err != nil {
+		m.transmitPending = false
+		m.callbacks.HandleSentFrame(frame, err)
+		m.finishOperation()
+		m.scheduleNextOperation()
+	}
 }
 
 // --------------------------------------------------------------------------

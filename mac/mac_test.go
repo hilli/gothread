@@ -1359,3 +1359,205 @@ func TestParseBeacon_NoRxInfo(t *testing.T) {
 		t.Errorf("NetworkName = %q, want %q", result.NetworkName, "Test")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Transmit poll (Data Request MAC Command)
+// --------------------------------------------------------------------------
+
+func TestTransmitPollBuildFrame(t *testing.T) {
+	m, _, _, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+
+	m.SetPanID(0xABCD)
+	m.SetShortAddress(0x1234)
+	m.SetParentShortAddress(0x5678)
+	m.SetPanChannel(15)
+
+	m.RequestDataPollTransmission()
+	runner.run()
+
+	frame := m.subMac.GetTransmitFrame()
+	if frame == nil {
+		t.Fatal("transmit frame is nil")
+	}
+	if len(frame.PSDU) != 12 {
+		t.Fatalf("PSDU length = %d, want 12", len(frame.PSDU))
+	}
+
+	psdu := frame.PSDU
+
+	// FCF: 0x63, 0x88 (MAC Command, ACK request, PAN ID compression,
+	// short dst + short src).
+	if psdu[0] != 0x63 || psdu[1] != 0x88 {
+		t.Errorf("FCF = [%#x, %#x], want [0x63, 0x88]", psdu[0], psdu[1])
+	}
+
+	// Sequence number = 0 (first poll).
+	if psdu[2] != 0x00 {
+		t.Errorf("Sequence = %d, want 0", psdu[2])
+	}
+
+	// Dst PAN ID = 0xABCD (little-endian).
+	if psdu[3] != 0xCD || psdu[4] != 0xAB {
+		t.Errorf("DstPanID = [%#x, %#x], want [0xCD, 0xAB]", psdu[3], psdu[4])
+	}
+
+	// Dst Short Addr = 0x5678 (parent, little-endian).
+	if psdu[5] != 0x78 || psdu[6] != 0x56 {
+		t.Errorf("DstAddr = [%#x, %#x], want [0x78, 0x56]", psdu[5], psdu[6])
+	}
+
+	// Src Short Addr = 0x1234 (us, little-endian).
+	if psdu[7] != 0x34 || psdu[8] != 0x12 {
+		t.Errorf("SrcAddr = [%#x, %#x], want [0x34, 0x12]", psdu[7], psdu[8])
+	}
+
+	// MAC Command ID = 0x04 (Data Request).
+	if psdu[9] != 0x04 {
+		t.Errorf("CmdID = %#x, want 0x04", psdu[9])
+	}
+
+	// FCS placeholder.
+	if psdu[10] != 0x00 || psdu[11] != 0x00 {
+		t.Errorf("FCS = [%#x, %#x], want [0x00, 0x00]", psdu[10], psdu[11])
+	}
+}
+
+func TestTransmitPollSequenceIncrements(t *testing.T) {
+	m, _, _, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+
+	m.SetPanID(0x1111)
+	m.SetShortAddress(0x2222)
+	m.SetParentShortAddress(0x3333)
+	m.SetPanChannel(11)
+
+	for i := 0; i < 3; i++ {
+		m.RequestDataPollTransmission()
+		runner.run()
+
+		frame := m.subMac.GetTransmitFrame()
+		if frame == nil {
+			t.Fatalf("iteration %d: transmit frame is nil", i)
+		}
+
+		wantSeq := byte(i)
+		if frame.PSDU[2] != wantSeq {
+			t.Errorf("iteration %d: sequence = %d, want %d", i, frame.PSDU[2], wantSeq)
+		}
+
+		// Complete the TX so the next poll can proceed.
+		m.TransmitDone(frame, nil, nil)
+		runner.run()
+	}
+}
+
+func TestTransmitPollNoParent(t *testing.T) {
+	m, _, _, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+
+	// Don't set parent address — should be 0.
+	m.SetPanID(0x1111)
+	m.SetShortAddress(0x2222)
+
+	m.RequestDataPollTransmission()
+	runner.run()
+
+	// Should finish without sending — back to idle.
+	if m.GetCurrentOperation() != OperationIdle {
+		t.Errorf("current op = %v, want Idle", m.GetCurrentOperation())
+	}
+}
+
+func TestTransmitPollDoneCallsSentFrame(t *testing.T) {
+	m, _, cb, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+
+	m.SetPanID(0x1111)
+	m.SetShortAddress(0x2222)
+	m.SetParentShortAddress(0x3333)
+
+	m.RequestDataPollTransmission()
+	runner.run()
+
+	frame := m.subMac.GetTransmitFrame()
+	m.TransmitDone(frame, nil, nil)
+	runner.run()
+
+	if cb.sentFrameCount != 1 {
+		t.Errorf("HandleSentFrame count = %d, want 1", cb.sentFrameCount)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Transmit indirect (FTD indirect TX)
+// --------------------------------------------------------------------------
+
+func TestTransmitIndirectCallsFrameRequest(t *testing.T) {
+	m, _, cb, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+	cb.frameRequestReturn = true
+
+	m.RequestIndirectFrameTransmission()
+	runner.run()
+
+	if cb.frameRequestCalled < 1 {
+		t.Error("HandleFrameRequest should be called for indirect TX")
+	}
+}
+
+func TestTransmitIndirectNoFrame(t *testing.T) {
+	m, _, cb, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+	cb.frameRequestReturn = false
+
+	m.RequestIndirectFrameTransmission()
+	runner.run()
+
+	if cb.frameRequestCalled < 1 {
+		t.Error("HandleFrameRequest should be called")
+	}
+	// Should finish and return to idle since nothing to send.
+	if m.GetCurrentOperation() != OperationIdle {
+		t.Errorf("current op = %v, want Idle", m.GetCurrentOperation())
+	}
+}
+
+func TestTransmitIndirectDoneCallsSentFrame(t *testing.T) {
+	m, _, cb, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+	cb.frameRequestReturn = true
+
+	m.RequestIndirectFrameTransmission()
+	runner.run()
+
+	// Simulate SubMac completing transmission.
+	frame := &radio.Frame{PSDU: []byte{0xAA, 0xBB}}
+	m.TransmitDone(frame, nil, nil)
+	runner.run()
+
+	if cb.sentFrameCount != 1 {
+		t.Errorf("HandleSentFrame count = %d, want 1", cb.sentFrameCount)
+	}
+	if cb.sentFrameErr != nil {
+		t.Errorf("HandleSentFrame err = %v, want nil", cb.sentFrameErr)
+	}
+}
+
+func TestTransmitIndirectPriorityOverDirect(t *testing.T) {
+	// Indirect TX has higher priority than direct TX (bit 4 vs bit 6).
+	m, _, cb, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+	cb.frameRequestReturn = true
+
+	// Request both direct and indirect in same cycle.
+	m.RequestDirectFrameTransmission()
+	m.RequestIndirectFrameTransmission()
+
+	// Run one operation — should pick indirect first (higher priority).
+	runner.runOne()
+
+	if m.GetCurrentOperation() != OperationTransmitDataIndirect {
+		t.Errorf("current op = %v, want TransmitDataIndirect", m.GetCurrentOperation())
+	}
+}
