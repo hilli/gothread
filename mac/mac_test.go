@@ -905,3 +905,213 @@ func TestConstants(t *testing.T) {
 		t.Errorf("TxNumBcast = %d, want 1", TxNumBcast)
 	}
 }
+
+// --------------------------------------------------------------------------
+// parseBeacon tests
+// --------------------------------------------------------------------------
+
+// buildBeaconFrame builds a valid IEEE 802.15.4 beacon frame with a Thread
+// beacon payload. The frame has no destination address, a source extended
+// address, and the 802.15.4-2003 version.
+//
+// Layout:
+//
+//	FCF (2 LE)  | Seq (1) | SrcPanID (2 LE) | SrcExtAddr (8) |
+//	SuperframeSpec (2) | GTSSpec (1) | PendingAddrSpec (1) |
+//	ProtocolID (1) | Flags (1) | NetworkName (16) | ExtPanID (8) |
+//	FCS (2)
+func buildBeaconFrame(srcExt types.ExtAddress, panID uint16, networkName string, extPanID [8]byte, isNative, isJoinable bool, channel uint8, rssi int8) *radio.Frame {
+	var d []byte
+
+	// FCF: beacon(0) | SrcAddrExt(0xC000) | Version2003(0) = 0xC000
+	// Little-endian: [0x00, 0xC0]
+	d = append(d, 0x00, 0xC0)
+
+	// Sequence number
+	d = append(d, 0x01)
+
+	// Source PAN ID (little-endian) — present because src addr present, no compression
+	d = append(d, byte(panID), byte(panID>>8))
+
+	// Source Extended Address (8 bytes, little-endian on the wire —
+	// the frame parser reverses it back to big-endian).
+	for i := 7; i >= 0; i-- {
+		d = append(d, srcExt[i])
+	}
+
+	// Superframe Specification (2 bytes)
+	d = append(d, 0xFF, 0xCF) // typical non-PAN-coordinator values
+
+	// GTS Specification (1 byte)
+	d = append(d, 0x00)
+
+	// Pending Address Specification (1 byte)
+	d = append(d, 0x00)
+
+	// Thread beacon payload
+	d = append(d, 0x03) // Protocol ID = 3 (Thread)
+
+	var flags byte
+	if isNative {
+		flags |= 0x08
+	}
+	if isJoinable {
+		flags |= 0x01
+	}
+	d = append(d, flags)
+
+	// Network name (16 bytes, null-padded)
+	var nameBytes [16]byte
+	copy(nameBytes[:], networkName)
+	d = append(d, nameBytes[:]...)
+
+	// Extended PAN ID (8 bytes)
+	d = append(d, extPanID[:]...)
+
+	// FCS (2 bytes — not validated by the parser, just needs to be present)
+	d = append(d, 0x00, 0x00)
+
+	return &radio.Frame{
+		PSDU:    d,
+		Channel: channel,
+		RxInfo:  &radio.RxInfo{RSSI: rssi, LQI: 200},
+	}
+}
+
+func TestParseBeacon_ValidThreadBeacon(t *testing.T) {
+	m := New(Config{})
+	srcExt := types.ExtAddress{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77}
+	extPanID := [8]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11}
+
+	frame := buildBeaconFrame(srcExt, 0x1234, "MyThread", extPanID, true, true, 15, -65)
+	result := m.parseBeacon(frame)
+
+	if result == nil {
+		t.Fatal("parseBeacon returned nil for valid beacon")
+	}
+	if result.Channel != 15 {
+		t.Errorf("Channel = %d, want 15", result.Channel)
+	}
+	if result.RSSI != -65 {
+		t.Errorf("RSSI = %d, want -65", result.RSSI)
+	}
+	if result.LQI != 200 {
+		t.Errorf("LQI = %d, want 200", result.LQI)
+	}
+	if result.PanID != 0x1234 {
+		t.Errorf("PanID = 0x%04X, want 0x1234", result.PanID)
+	}
+	if result.ExtAddress != srcExt {
+		t.Errorf("ExtAddress = %v, want %v", result.ExtAddress, srcExt)
+	}
+	if result.NetworkName != "MyThread" {
+		t.Errorf("NetworkName = %q, want %q", result.NetworkName, "MyThread")
+	}
+	if result.ExtendedPanID != extPanID {
+		t.Errorf("ExtendedPanID = %v, want %v", result.ExtendedPanID, extPanID)
+	}
+	if !result.IsNative {
+		t.Error("IsNative = false, want true")
+	}
+	if !result.IsJoinable {
+		t.Error("IsJoinable = false, want true")
+	}
+}
+
+func TestParseBeacon_NotJoinable(t *testing.T) {
+	m := New(Config{})
+	srcExt := types.ExtAddress{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	extPanID := [8]byte{0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80}
+
+	frame := buildBeaconFrame(srcExt, 0xABCD, "TestNet", extPanID, false, false, 25, -90)
+	result := m.parseBeacon(frame)
+
+	if result == nil {
+		t.Fatal("parseBeacon returned nil")
+	}
+	if result.IsNative {
+		t.Error("IsNative = true, want false")
+	}
+	if result.IsJoinable {
+		t.Error("IsJoinable = true, want false")
+	}
+	if result.NetworkName != "TestNet" {
+		t.Errorf("NetworkName = %q, want %q", result.NetworkName, "TestNet")
+	}
+	if result.PanID != 0xABCD {
+		t.Errorf("PanID = 0x%04X, want 0xABCD", result.PanID)
+	}
+}
+
+func TestParseBeacon_NilFrame(t *testing.T) {
+	m := New(Config{})
+	if result := m.parseBeacon(nil); result != nil {
+		t.Error("expected nil for nil frame")
+	}
+}
+
+func TestParseBeacon_TooShort(t *testing.T) {
+	m := New(Config{})
+	frame := &radio.Frame{PSDU: []byte{0x00, 0x01, 0x02}}
+	if result := m.parseBeacon(frame); result != nil {
+		t.Error("expected nil for frame shorter than 4 bytes")
+	}
+}
+
+func TestParseBeacon_NotBeaconType(t *testing.T) {
+	m := New(Config{})
+	// Build a data frame (type=1) — FCF = 0xC001 (data + src ext)
+	d := []byte{0x01, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00}
+	frame := &radio.Frame{PSDU: d, Channel: 11}
+	result := m.parseBeacon(frame)
+	if result != nil {
+		t.Error("expected nil for non-beacon frame type")
+	}
+}
+
+func TestParseBeacon_WrongProtocolID(t *testing.T) {
+	m := New(Config{})
+	srcExt := types.ExtAddress{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	extPanID := [8]byte{}
+	frame := buildBeaconFrame(srcExt, 0x1111, "Test", extPanID, false, false, 11, -50)
+
+	// Corrupt the protocol ID (should be at byte after 4-byte beacon preamble)
+	// FCF(2) + Seq(1) + SrcPanID(2) + SrcExtAddr(8) + SuperframeSpec(2) + GTS(1) + Pending(1) = 17
+	// Thread payload starts at offset 17
+	frame.PSDU[17] = 0xFF // wrong protocol ID
+
+	result := m.parseBeacon(frame)
+	if result == nil {
+		t.Fatal("expected non-nil result (MAC header parsed OK)")
+	}
+	// With wrong protocol ID, Thread fields should NOT be populated
+	if result.NetworkName != "" {
+		t.Errorf("NetworkName = %q, want empty (wrong protocol ID)", result.NetworkName)
+	}
+	if result.IsNative {
+		t.Error("IsNative should be false for wrong protocol ID")
+	}
+}
+
+func TestParseBeacon_NoRxInfo(t *testing.T) {
+	m := New(Config{})
+	srcExt := types.ExtAddress{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	extPanID := [8]byte{}
+	frame := buildBeaconFrame(srcExt, 0x1234, "Test", extPanID, true, false, 20, -30)
+	frame.RxInfo = nil // remove RxInfo
+
+	result := m.parseBeacon(frame)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.RSSI != 0 {
+		t.Errorf("RSSI = %d, want 0 (no RxInfo)", result.RSSI)
+	}
+	if result.LQI != 0 {
+		t.Errorf("LQI = %d, want 0 (no RxInfo)", result.LQI)
+	}
+	// Other fields should still parse
+	if result.NetworkName != "Test" {
+		t.Errorf("NetworkName = %q, want %q", result.NetworkName, "Test")
+	}
+}

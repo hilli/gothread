@@ -11,9 +11,11 @@
 package mac
 
 import (
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/hilli/gothread/mac/frame"
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/radio"
@@ -921,19 +923,76 @@ func (m *Mac) stopTimer() {
 }
 
 // parseBeacon extracts beacon information from a received frame.
-// This is a simplified implementation — a full version would parse
-// the IEEE 802.15.4 beacon frame format and the Thread beacon payload.
-func (m *Mac) parseBeacon(frame *radio.Frame) *ActiveScanResult {
-	if frame == nil || len(frame.PSDU) < 4 {
+// It parses the IEEE 802.15.4 beacon frame header and the Thread
+// beacon payload to populate the ActiveScanResult fields.
+//
+// Thread beacon payload layout (after the 4-byte 802.15.4 beacon
+// superframe/GTS/pending-address fields):
+//
+//	Offset  Size  Field
+//	0       1     Protocol ID (must be 3 for Thread)
+//	1       1     Flags: bit3=Native, bit0=Joinable
+//	2       16    Network Name (null-padded UTF-8)
+//	18      8     Extended PAN ID
+//
+// Total Thread beacon payload: 26 bytes minimum.
+func (m *Mac) parseBeacon(f *radio.Frame) *ActiveScanResult {
+	if f == nil || len(f.PSDU) < 4 {
+		return nil
+	}
+
+	mf := frame.NewFrame(f.PSDU)
+	if mf.GetType() != frame.TypeBeacon {
 		return nil
 	}
 
 	result := &ActiveScanResult{
-		Channel: frame.Channel,
+		Channel: f.Channel,
 	}
-	if frame.RxInfo != nil {
-		result.RSSI = frame.RxInfo.RSSI
-		result.LQI = frame.RxInfo.LQI
+	if f.RxInfo != nil {
+		result.RSSI = f.RxInfo.RSSI
+		result.LQI = f.RxInfo.LQI
 	}
+
+	// Extract PAN ID from the MAC header (try destination first, then source).
+	if panID, err := mf.GetDstPanID(); err == nil {
+		result.PanID = uint16(panID)
+	} else if panID, err := mf.GetSrcPanID(); err == nil {
+		result.PanID = uint16(panID)
+	}
+
+	// Extract source extended address from the MAC header.
+	if srcAddr, err := mf.GetSrcAddr(); err == nil && srcAddr.IsExtended() {
+		result.ExtAddress = srcAddr.GetExtended()
+	}
+
+	// Parse the MAC payload: superframe spec (2) + GTS spec (1) +
+	// pending address spec (1) = 4 bytes before the Thread beacon payload.
+	payload, err := mf.GetPayload()
+	if err != nil || len(payload) < 4 {
+		return result
+	}
+
+	threadPayload := payload[4:]
+	const threadBeaconMinLen = 26 // 1 + 1 + 16 + 8
+	if len(threadPayload) < threadBeaconMinLen {
+		return result
+	}
+
+	// Protocol ID must be 3 for Thread.
+	if threadPayload[0] != 3 {
+		return result
+	}
+
+	flags := threadPayload[1]
+	result.IsNative = (flags & 0x08) != 0
+	result.IsJoinable = (flags & 0x01) != 0
+
+	// Network name: 16 bytes, null-padded.
+	result.NetworkName = strings.TrimRight(string(threadPayload[2:18]), "\x00")
+
+	// Extended PAN ID: 8 bytes.
+	copy(result.ExtendedPanID[:], threadPayload[18:26])
+
 	return result
 }
