@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hilli/gothread/mac"
+	"github.com/hilli/gothread/meshcop"
 
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/coap"
@@ -1317,4 +1318,266 @@ type testFrameSender struct{}
 
 func (f *testFrameSender) SendIndirectFrame(_ indirect.ChildInfo, _ []byte) error {
 	return nil
+}
+
+// --------------------------------------------------------------------------
+// Priority 1: applyActiveDataset tests
+// --------------------------------------------------------------------------
+
+func TestApplyActiveDataset_SetsChannel(t *testing.T) {
+	inst := New(Config{})
+	info := &meshcop.Info{
+		Channel: 15,
+	}
+	info.Components.Channel = true
+	inst.activeDataset.SaveLocalFromInfo(info)
+
+	inst.applyActiveDataset()
+
+	if got := inst.mac.GetPanChannel(); got != 15 {
+		t.Errorf("PanChannel = %d, want 15", got)
+	}
+}
+
+func TestApplyActiveDataset_SetsPanID(t *testing.T) {
+	inst := New(Config{})
+	info := &meshcop.Info{
+		PanID: 0x1234,
+	}
+	info.Components.PanID = true
+	inst.activeDataset.SaveLocalFromInfo(info)
+
+	inst.applyActiveDataset()
+
+	if got := inst.mac.GetPanID(); got != 0x1234 {
+		t.Errorf("PanID = 0x%04x, want 0x1234", got)
+	}
+}
+
+func TestApplyActiveDataset_SetsNetworkKey(t *testing.T) {
+	inst := New(Config{})
+	var nk [16]byte
+	for i := range nk {
+		nk[i] = byte(i + 1)
+	}
+	info := &meshcop.Info{
+		NetworkKey: nk,
+	}
+	info.Components.NetworkKey = true
+	inst.activeDataset.SaveLocalFromInfo(info)
+
+	inst.applyActiveDataset()
+
+	got := inst.keyManager.GetNetworkKey()
+	if [16]byte(got) != nk {
+		t.Errorf("NetworkKey mismatch")
+	}
+}
+
+func TestApplyActiveDataset_SetsPSKc(t *testing.T) {
+	inst := New(Config{})
+	var pskc [16]byte
+	pskc[0] = 0xAA
+	info := &meshcop.Info{
+		PSKc: pskc,
+	}
+	info.Components.PSKc = true
+	inst.activeDataset.SaveLocalFromInfo(info)
+
+	inst.applyActiveDataset()
+
+	got := inst.keyManager.GetPskc()
+	if [16]byte(got) != pskc {
+		t.Errorf("PSKc mismatch")
+	}
+}
+
+func TestApplyActiveDataset_SetsNetworkName(t *testing.T) {
+	inst := New(Config{})
+	info := &meshcop.Info{
+		NetworkName: "TestNet",
+	}
+	info.Components.NetworkName = true
+	inst.activeDataset.SaveLocalFromInfo(info)
+
+	inst.applyActiveDataset()
+
+	if inst.networkName != "TestNet" {
+		t.Errorf("networkName = %q, want %q", inst.networkName, "TestNet")
+	}
+	if got := inst.mac.GetNetworkName(); got != "TestNet" {
+		t.Errorf("MAC NetworkName = %q, want %q", got, "TestNet")
+	}
+}
+
+func TestApplyActiveDataset_SetsExtendedPanID(t *testing.T) {
+	inst := New(Config{})
+	var extPan [8]byte
+	extPan[0] = 0xBB
+	info := &meshcop.Info{
+		ExtendedPanID: extPan,
+	}
+	info.Components.ExtendedPanID = true
+	inst.activeDataset.SaveLocalFromInfo(info)
+
+	inst.applyActiveDataset()
+
+	if inst.extendedPanID != extPan {
+		t.Errorf("extendedPanID mismatch")
+	}
+}
+
+func TestApplyActiveDataset_SetsMeshLocalPrefix(t *testing.T) {
+	inst := New(Config{})
+	var mlp [8]byte
+	mlp[0] = 0xFD
+	mlp[1] = 0x01
+	info := &meshcop.Info{
+		MeshLocalPrefix: mlp,
+	}
+	info.Components.MeshLocalPrefix = true
+	inst.activeDataset.SaveLocalFromInfo(info)
+
+	inst.applyActiveDataset()
+
+	if inst.meshLocalPrefix != mlp {
+		t.Errorf("meshLocalPrefix mismatch")
+	}
+}
+
+func TestApplyActiveDataset_NilDataset(t *testing.T) {
+	inst := New(Config{})
+	// No dataset saved — applyActiveDataset should not panic.
+	inst.applyActiveDataset()
+}
+
+func TestApplyActiveDataset_NilManager(t *testing.T) {
+	inst := New(Config{})
+	inst.activeDataset = nil
+	// Should not panic.
+	inst.applyActiveDataset()
+}
+
+func TestThreadStart_AppliesDatasetBeforeMLE(t *testing.T) {
+	inst := New(Config{})
+	info := &meshcop.Info{
+		Channel: 20,
+		PanID:   0xABCD,
+	}
+	info.Components.Channel = true
+	info.Components.PanID = true
+	inst.activeDataset.SaveLocalFromInfo(info)
+
+	_ = inst.IfConfigUp()
+	if err := inst.ThreadStart(); err != nil {
+		t.Fatalf("ThreadStart() error: %v", err)
+	}
+
+	if got := inst.mac.GetPanChannel(); got != 20 {
+		t.Errorf("PanChannel = %d, want 20", got)
+	}
+	if got := inst.mac.GetPanID(); got != 0xABCD {
+		t.Errorf("PanID = 0x%04x, want 0xABCD", got)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Priority 2: key rotation timer tests
+// --------------------------------------------------------------------------
+
+func TestKeyRotationTickCounter_Increments(t *testing.T) {
+	inst := New(Config{})
+	if inst.keyRotationTickCounter != 0 {
+		t.Fatal("initial counter should be 0")
+	}
+
+	// Simulate a few ticks worth of periodic ticks by calling directly.
+	inst.handlePeriodicTick()
+	inst.handlePeriodicTick()
+	inst.handlePeriodicTick()
+
+	if inst.keyRotationTickCounter != 3 {
+		t.Errorf("counter = %d, want 3", inst.keyRotationTickCounter)
+	}
+}
+
+func TestKeyRotationTickCounter_ResetsAt3600(t *testing.T) {
+	inst := New(Config{})
+
+	// Set counter to just below threshold.
+	inst.keyRotationTickCounter = 3599
+
+	seq := inst.keyManager.GetCurrentKeySequence()
+
+	inst.handlePeriodicTick()
+
+	// Counter should have reset.
+	if inst.keyRotationTickCounter != 0 {
+		t.Errorf("counter = %d, want 0 after reset", inst.keyRotationTickCounter)
+	}
+
+	// Key rotation tick was called — whether the sequence actually
+	// changed depends on the security policy's rotation time, but the
+	// hoursSinceRotation in the key manager should have advanced.
+	_ = seq // key sequence may or may not change depending on policy
+}
+
+// --------------------------------------------------------------------------
+// Priority 3: TMF service wiring tests
+// --------------------------------------------------------------------------
+
+func TestWireModules_TmfLeaderServiceCreated(t *testing.T) {
+	inst := New(Config{})
+	if inst.tmfLeaderService == nil {
+		t.Error("tmfLeaderService should not be nil after wireModules")
+	}
+	if inst.TmfLeaderService() == nil {
+		t.Error("TmfLeaderService() accessor returned nil")
+	}
+}
+
+func TestWireModules_TmfServerDataServiceCreated(t *testing.T) {
+	inst := New(Config{})
+	if inst.tmfServerDataService == nil {
+		t.Error("tmfServerDataService should not be nil after wireModules")
+	}
+	if inst.TmfServerDataService() == nil {
+		t.Error("TmfServerDataService() accessor returned nil")
+	}
+}
+
+func TestWireModules_TmfCommissionerDataServiceCreated(t *testing.T) {
+	inst := New(Config{})
+	if inst.tmfCommissionerDataService == nil {
+		t.Error("tmfCommissionerDataService should not be nil after wireModules")
+	}
+	if inst.TmfCommissionerDataService() == nil {
+		t.Error("TmfCommissionerDataService() accessor returned nil")
+	}
+}
+
+// --------------------------------------------------------------------------
+// Priority 4: childInfoAdapter.IsIndirectMessagePending tests
+// --------------------------------------------------------------------------
+
+func TestChildInfoAdapter_IsIndirectMessagePending_NilSender(t *testing.T) {
+	child := &mle.Child{}
+	child.RLOC16 = 0x1001
+	adapter := &childInfoAdapter{child: child, sender: nil}
+
+	if adapter.IsIndirectMessagePending() {
+		t.Error("should return false with nil sender")
+	}
+}
+
+func TestChildInfoAdapter_IsIndirectMessagePending_NoMessages(t *testing.T) {
+	child := &mle.Child{}
+	child.RLOC16 = 0x1001
+
+	sender := indirect.NewSender(&testFrameSender{}, nil)
+	adapter := &childInfoAdapter{child: child, sender: sender}
+
+	if adapter.IsIndirectMessagePending() {
+		t.Error("should return false with no queued messages")
+	}
 }

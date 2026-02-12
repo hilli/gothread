@@ -357,7 +357,8 @@ var _ indirect.RadioSourceMatch = (*radioSourceMatchAdapter)(nil)
 
 // childInfoAdapter wraps an *mle.Child to implement indirect.ChildInfo.
 type childInfoAdapter struct {
-	child *mle.Child
+	child  *mle.Child
+	sender *indirect.Sender
 }
 
 func (a *childInfoAdapter) GetShortAddress() uint16 {
@@ -373,8 +374,10 @@ func (a *childInfoAdapter) IsRxOnWhenIdle() bool {
 }
 
 func (a *childInfoAdapter) IsIndirectMessagePending() bool {
-	// TODO: integrate with indirect.Sender state when full TX pipeline is wired.
-	return false
+	if a.sender == nil {
+		return false
+	}
+	return a.sender.GetMessageCount(a.child.RLOC16) > 0
 }
 
 // Compile-time assertion.

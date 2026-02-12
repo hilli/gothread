@@ -317,6 +317,18 @@ type Instance struct {
 	// tmfAgent is the TMF CoAP agent for Thread management messages.
 	tmfAgent *tmf.Agent
 
+	// tmfLeaderService handles Address Solicit/Release requests when
+	// this device is the Leader.
+	tmfLeaderService *tmf.LeaderService
+
+	// tmfServerDataService handles Server Data Register/Unregister
+	// requests from border routers and service servers.
+	tmfServerDataService *tmf.ServerDataService
+
+	// tmfCommissionerDataService handles Commissioner Petition/KeepAlive
+	// and dataset set requests.
+	tmfCommissionerDataService *tmf.CommissionerDataService
+
 	// netdataLeader manages the Thread Network Data.
 	netdataLeader *netdata.Leader
 
@@ -397,6 +409,11 @@ type Instance struct {
 	// indirectSender manages buffering and transmission of indirect
 	// frames to sleepy end devices.
 	indirectSender *indirect.Sender
+
+	// keyRotationTickCounter counts 1-second ticks toward the hourly
+	// key rotation check. When it reaches 3600 the key manager's
+	// HandleKeyRotationTick is called and the counter resets.
+	keyRotationTickCounter uint32
 
 	// droppedNonIPHC counts received frames that were not 6LoWPAN IPHC
 	// compressed and were silently dropped during RX processing.
@@ -621,6 +638,14 @@ func (inst *Instance) wireModules() {
 	})
 	inst.forwarder = mesh.NewForwarder()
 
+	// TMF services — register handlers with the TMF agent for
+	// Address Solicit/Release (Leader), Server Data (network data
+	// registration), and Commissioner Data (commissioning).
+	routerTableAdapter := tmf.NewRouterTableAdapter(inst.routerTable)
+	inst.tmfLeaderService = tmf.NewLeaderService(inst.tmfAgent, routerTableAdapter, 16)
+	inst.tmfServerDataService = tmf.NewServerDataService(inst.tmfAgent, inst.netdataLeader)
+	inst.tmfCommissionerDataService = tmf.NewCommissionerDataService(inst.tmfAgent, inst.netdataLeader)
+
 	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
@@ -769,6 +794,12 @@ func (inst *Instance) ThreadStart() error {
 	if !inst.ifConfigUp {
 		return errInterfaceDown
 	}
+
+	// Apply the Active Operational Dataset (channel, PAN ID, network key,
+	// etc.) before enabling MLE so the device attaches with the correct
+	// credentials and radio parameters.
+	inst.applyActiveDataset()
+
 	m := inst.mleService.Mle()
 	if err := m.Enable(); err != nil {
 		return err
@@ -779,6 +810,49 @@ func (inst *Instance) ThreadStart() error {
 	inst.mleService.Attacher.Start(mle.AttachAnyPartition)
 	inst.scheduleAttachTimer()
 	return nil
+}
+
+// applyActiveDataset reads the Active Operational Dataset and applies its
+// parameters to the MAC, key manager, and network identity fields. This
+// ensures the device starts on the correct channel, PAN ID, and network
+// key before MLE is enabled.
+func (inst *Instance) applyActiveDataset() {
+	if inst.activeDataset == nil {
+		return
+	}
+	ds, err := inst.activeDataset.Read()
+	if err != nil || ds == nil {
+		return
+	}
+	info := ds.ConvertToInfo()
+
+	if info.Components.Channel {
+		inst.mac.SetPanChannel(uint8(info.Channel))
+	}
+	if info.Components.PanID {
+		inst.mac.SetPanID(types.PanID(info.PanID))
+	}
+	if info.Components.NetworkKey {
+		inst.keyManager.SetNetworkKey(key.NetworkKey(info.NetworkKey))
+	}
+	if info.Components.PSKc {
+		inst.keyManager.SetPskc(key.Pskc(info.PSKc))
+	}
+	if info.Components.SecurityPolicy {
+		inst.keyManager.SetSecurityPolicy(info.SecurityPolicy)
+	}
+	if info.Components.MeshLocalPrefix {
+		inst.SetMeshLocalPrefix(info.MeshLocalPrefix)
+	}
+	if info.Components.NetworkName {
+		inst.networkName = info.NetworkName
+		inst.mac.SetNetworkName(info.NetworkName)
+	}
+	if info.Components.ExtendedPanID {
+		inst.extendedPanID = info.ExtendedPanID
+		inst.mac.SetExtendedPanID(info.ExtendedPanID)
+	}
+	inst.updateMacKeys()
 }
 
 // ThreadStop disables the Thread protocol: MLE returns to Disabled,
@@ -884,6 +958,17 @@ func (inst *Instance) CoapEngine() *coap.Engine { return inst.coapEngine }
 
 // TmfAgent returns the TMF agent.
 func (inst *Instance) TmfAgent() *tmf.Agent { return inst.tmfAgent }
+
+// TmfLeaderService returns the TMF Leader service (Address Solicit/Release).
+func (inst *Instance) TmfLeaderService() *tmf.LeaderService { return inst.tmfLeaderService }
+
+// TmfServerDataService returns the TMF Server Data service.
+func (inst *Instance) TmfServerDataService() *tmf.ServerDataService { return inst.tmfServerDataService }
+
+// TmfCommissionerDataService returns the TMF Commissioner Data service.
+func (inst *Instance) TmfCommissionerDataService() *tmf.CommissionerDataService {
+	return inst.tmfCommissionerDataService
+}
 
 // NetdataLeader returns the network data leader.
 func (inst *Instance) NetdataLeader() *netdata.Leader { return inst.netdataLeader }
@@ -1095,6 +1180,15 @@ func (inst *Instance) handlePeriodicTick() {
 	// forwarder's reassembly table so incomplete fragments don't leak memory.
 	if inst.forwarder != nil {
 		inst.forwarder.CleanupExpiredReassemblies()
+	}
+
+	// Key rotation — once per hour, advance the key manager's rotation
+	// timer and push any updated keys to the radio.
+	inst.keyRotationTickCounter++
+	if inst.keyRotationTickCounter >= 3600 {
+		inst.keyRotationTickCounter = 0
+		inst.keyManager.HandleKeyRotationTick()
+		inst.updateMacKeys()
 	}
 
 	// Re-arm for the next tick.
