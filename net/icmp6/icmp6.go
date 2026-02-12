@@ -239,6 +239,20 @@ func (m *Icmp) RegisterHandler(h *Handler) error {
 	return nil
 }
 
+// HandleMessage dispatches an incoming ICMPv6 message to all registered
+// handlers. The payload must start with the 8-byte ICMPv6 header.
+func (m *Icmp) HandleMessage(payload []byte, messageInfo *ip6.MessageInfo) {
+	var hdr Header
+	if err := hdr.UnmarshalBinary(payload); err != nil {
+		return
+	}
+	for _, h := range m.handlers {
+		if h != nil && h.callback != nil {
+			h.callback(messageInfo, &hdr)
+		}
+	}
+}
+
 // GetEchoMode returns the current echo mode.
 func (m *Icmp) GetEchoMode() EchoMode {
 	return m.echoMode

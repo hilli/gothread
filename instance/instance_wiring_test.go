@@ -11,6 +11,7 @@ import (
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/coap"
+	"github.com/hilli/gothread/net/icmp6"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
@@ -1221,5 +1222,146 @@ func TestFullRxPath_NonUDPProtocolDropped(t *testing.T) {
 
 	if called {
 		t.Error("ICMPv6 frame should not reach UDP sockets")
+	}
+}
+
+func TestFullRxPath_MACAddressParsing(t *testing.T) {
+	// Verify that HandleReceivedFrame correctly parses MAC addresses
+	// from an 802.15.4 frame header. Since the mesh forwarder returns
+	// the full PSDU for direct frames (no MAC header stripping yet),
+	// a real MAC-framed packet won't reach 6LoWPAN decompression.
+	// This test verifies that the MAC parsing code runs without error
+	// on a valid 802.15.4 data frame and that the existing inline
+	// address pipeline remains unaffected.
+
+	t.Run("ValidMACFrame_NoPanic", func(t *testing.T) {
+		inst := New(Config{})
+		inst.forwarder.SetEnabled(true)
+
+		// Build a proper 802.15.4 data frame with extended addresses.
+		srcExt := [8]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77}
+		dstExt := [8]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11}
+
+		ctx := &mesh.FrameContext{
+			SrcExtAddr:  srcExt,
+			DstExtAddr:  dstExt,
+			UseSrcShort: false,
+			UseDstShort: false,
+			PanId:       0x1234,
+		}
+		framer := mesh.NewFramer()
+
+		// Use dummy payload (not valid IPHC — the frame will be dropped
+		// after the forwarder returns it, since the first byte of the
+		// full PSDU is the FCF, not an IPHC dispatch).
+		macFrame, err := framer.BuildDataFrame(ctx, []byte{0xDE, 0xAD})
+		if err != nil {
+			t.Fatalf("BuildDataFrame failed: %v", err)
+		}
+
+		frame := &radio.Frame{
+			PSDU:    macFrame,
+			Channel: 15,
+		}
+
+		// This should not panic — the MAC parsing runs, then the
+		// forwarder returns the data, and it gets dropped because
+		// byte[0] is the FCF (not IPHC).
+		inst.HandleReceivedFrame(frame)
+	})
+
+	t.Run("InlineAddresses_StillWork", func(t *testing.T) {
+		// Verify the existing inline-address pipeline is unaffected
+		// by the MAC address extraction code. When the PSDU starts
+		// with IPHC bytes (no real MAC header), the mac/frame parser
+		// will fail to extract addresses (which is fine — macAddrs
+		// stays zero-valued) and the pipeline proceeds as before.
+		inst := New(Config{})
+		inst.forwarder.SetEnabled(true)
+
+		s := &udp.Socket{}
+		var gotPayload []byte
+		inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+			gotPayload = p
+		})
+		inst.udpManager.Bind(s, ip6.SockAddr{Port: 9999})
+
+		srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
+		dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc}
+		appData := []byte{0xCA, 0xFE}
+
+		frame := &radio.Frame{
+			PSDU:    build6LoWPANFrameInlineUDP(srcIP, dstIP, 4444, 9999, appData),
+			Channel: 15,
+		}
+		inst.HandleReceivedFrame(frame)
+
+		if gotPayload == nil {
+			t.Fatal("socket handler was not called — MAC parsing broke inline pipeline")
+		}
+		if len(gotPayload) != len(appData) {
+			t.Errorf("payload length = %d, want %d", len(gotPayload), len(appData))
+		}
+	})
+}
+
+func TestFullRxPath_ICMPv6Dispatched(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// Register an ICMPv6 handler.
+	var gotType icmp6.Type
+	var gotCode icmp6.Code
+	var gotInfo *ip6.MessageInfo
+	handlerCalled := false
+
+	h := icmp6.NewHandler(func(mi *ip6.MessageInfo, hdr *icmp6.Header) {
+		handlerCalled = true
+		gotType = hdr.GetType()
+		gotCode = hdr.GetCode()
+		gotInfo = mi
+	})
+	inst.icmpManager.RegisterHandler(h)
+
+	// Build a 6LoWPAN frame with NH=58 (ICMPv6), fully inline addresses.
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc}
+
+	d := []byte{0x60, 0x00}               // IPHC dispatch: TF=00, NH=inline, HLIM=inline
+	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00: 4 bytes
+	d = append(d, 0x3A)                   // NH = ICMPv6 (58)
+	d = append(d, 0x40)                   // HL = 64
+	d = append(d, srcIP[:]...)            // 16 bytes source
+	d = append(d, dstIP[:]...)            // 16 bytes destination
+	// 8-byte ICMPv6 header: Echo Request
+	d = append(d, 0x80)       // type: Echo Request (128)
+	d = append(d, 0x00)       // code: 0
+	d = append(d, 0x00, 0x00) // checksum
+	d = append(d, 0x00, 0x01) // ID
+	d = append(d, 0x00, 0x01) // Sequence
+
+	frame := &radio.Frame{
+		PSDU:    d,
+		Channel: 15,
+	}
+	inst.HandleReceivedFrame(frame)
+
+	if !handlerCalled {
+		t.Fatal("ICMPv6 handler was not called")
+	}
+	if gotType != icmp6.TypeEchoRequest {
+		t.Errorf("ICMPv6 type = %d, want %d (EchoRequest)", gotType, icmp6.TypeEchoRequest)
+	}
+	if gotCode != 0 {
+		t.Errorf("ICMPv6 code = %d, want 0", gotCode)
+	}
+	if gotInfo.PeerAddr != srcIP {
+		t.Errorf("PeerAddr = %v, want %v", gotInfo.PeerAddr, srcIP)
+	}
+	if gotInfo.SockAddr != dstIP {
+		t.Errorf("SockAddr = %v, want %v", gotInfo.SockAddr, dstIP)
+	}
+	if gotInfo.HopLimit != 64 {
+		t.Errorf("HopLimit = %d, want 64", gotInfo.HopLimit)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hilli/gothread/encoding"
+	macframe "github.com/hilli/gothread/mac/frame"
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/coap"
@@ -224,6 +225,27 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 		info.Timestamp = frame.RxInfo.Timestamp
 	}
 
+	// Extract MAC source and destination addresses from the 802.15.4
+	// frame header. These are needed for 6LoWPAN IPHC decompression
+	// when the IPv6 addresses are elided (SAM=11 or DAM=11) and the
+	// IID must be derived from the MAC extended address.
+	var macAddrs lowpan.AddressContext
+	mf := macframe.NewFrame(frame.PSDU)
+	if srcAddr, err := mf.GetSrcAddr(); err == nil {
+		if srcAddr.IsExtended() {
+			macAddrs.SrcExtAddr = srcAddr.GetExtended()
+		} else if srcAddr.IsShort() {
+			macAddrs.SrcShort = srcAddr.GetShort()
+		}
+	}
+	if dstAddr, err := mf.GetDstAddr(); err == nil {
+		if dstAddr.IsExtended() {
+			macAddrs.DstExtAddr = dstAddr.GetExtended()
+		} else if dstAddr.IsShort() {
+			macAddrs.DstShort = dstAddr.GetShort()
+		}
+	}
+
 	// Step 1: Mesh forwarder strips mesh headers and returns the payload.
 	payload, _, err := inst.forwarder.HandleReceivedFrame(frame.PSDU, info)
 	if err != nil || len(payload) == 0 {
@@ -235,12 +257,10 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 		return // not a 6LoWPAN-compressed frame; drop for now
 	}
 
-	// Step 3: Decompress the IPv6 header. Use a zero-value AddressContext
-	// for now — MAC address extraction from 802.15.4 frame headers will
-	// be added in a future phase. This means link-local addresses with
-	// elided IIDs won't decompress correctly, but fully-inline addresses
-	// work fine.
-	var macAddrs lowpan.AddressContext
+	// Step 3: Decompress the IPv6 header using the MAC addresses
+	// extracted above. When addresses are fully inline (SAM=00,
+	// DAM=00) the AddressContext is unused; when elided (SAM=11,
+	// DAM=11) the IID is derived from the extended MAC address.
 	ipv6Raw, consumed, err := lowpan.DecompressHeader(payload, macAddrs, nil)
 	if err != nil {
 		return
@@ -257,17 +277,17 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 	isUDP := nextHdr == ip6.ProtoUDP
 	isNhCompressed := nextHdr == 0
 
-	if !isUDP && !isNhCompressed {
-		return // not UDP — higher-layer dispatch TBD
+	if !isUDP && !isNhCompressed && nextHdr != ip6.ProtoICMPv6 {
+		return // unsupported protocol
 	}
 
-	// Step 5: For compressed NH or explicit UDP, decompress the UDP header.
-	var srcPort, dstPort uint16
-	var udpPayload []byte
-
-	if isNhCompressed || isUDP {
+	// Dispatch based on next header protocol.
+	switch {
+	case isUDP || isNhCompressed:
+		// UDP path (existing code, unchanged)
+		var srcPort, dstPort uint16
+		var udpPayload []byte
 		if isNhCompressed {
-			// NHC-compressed UDP header follows the IPv6 header.
 			udpHdr, udpConsumed, err := lowpan.DecompressUDPHeader(remaining)
 			if err != nil {
 				return
@@ -276,7 +296,6 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 			dstPort = encoding.BigEndianReadUint16(udpHdr[2:4])
 			udpPayload = remaining[udpConsumed:]
 		} else {
-			// Uncompressed UDP: remaining starts with the 8-byte UDP header.
 			if len(remaining) < 8 {
 				return
 			}
@@ -284,19 +303,29 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 			dstPort = encoding.BigEndianReadUint16(remaining[2:4])
 			udpPayload = remaining[8:]
 		}
-	}
+		messageInfo := &ip6.MessageInfo{
+			PeerAddr: hdr.GetSource(),
+			PeerPort: srcPort,
+			SockAddr: hdr.GetDestination(),
+			SockPort: dstPort,
+			HopLimit: hdr.GetHopLimit(),
+		}
+		if inst.udpManager != nil {
+			inst.udpManager.HandleMessage(udpPayload, messageInfo)
+		}
 
-	// Step 6: Build MessageInfo and dispatch through UDP manager.
-	messageInfo := &ip6.MessageInfo{
-		PeerAddr: hdr.GetSource(),
-		PeerPort: srcPort,
-		SockAddr: hdr.GetDestination(),
-		SockPort: dstPort,
-		HopLimit: hdr.GetHopLimit(),
-	}
+	case nextHdr == ip6.ProtoICMPv6:
+		messageInfo := &ip6.MessageInfo{
+			PeerAddr: hdr.GetSource(),
+			SockAddr: hdr.GetDestination(),
+			HopLimit: hdr.GetHopLimit(),
+		}
+		if inst.icmpManager != nil {
+			inst.icmpManager.HandleMessage(remaining, messageInfo)
+		}
 
-	if inst.udpManager != nil {
-		inst.udpManager.HandleMessage(udpPayload, messageInfo)
+	default:
+		return // unsupported protocol
 	}
 }
 

@@ -339,3 +339,102 @@ func TestGetSetEchoSequence(t *testing.T) {
 		t.Fatalf("echo sequence after second mode change: got %d, want 1", got)
 	}
 }
+
+func TestHandleMessageDispatchesAll(t *testing.T) {
+	m := New()
+
+	var called1, called2 bool
+	var gotType1 Type
+	var gotCode1 Code
+	var gotInfo1 *ip6.MessageInfo
+
+	h1 := NewHandler(func(mi *ip6.MessageInfo, hdr *Header) {
+		called1 = true
+		gotType1 = hdr.GetType()
+		gotCode1 = hdr.GetCode()
+		gotInfo1 = mi
+	})
+	h2 := NewHandler(func(mi *ip6.MessageInfo, hdr *Header) {
+		called2 = true
+	})
+
+	m.RegisterHandler(h1)
+	m.RegisterHandler(h2)
+
+	// Build a valid ICMPv6 echo request payload (8 bytes).
+	var echoHdr Header
+	echoHdr.SetType(TypeEchoRequest)
+	echoHdr.SetCode(0)
+	echoHdr.SetChecksum(0)
+	echoHdr.SetID(0x0001)
+	echoHdr.SetSequence(0x0001)
+	payload := echoHdr.MarshalBinary()
+
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	mi := &ip6.MessageInfo{
+		PeerAddr: srcIP,
+		SockAddr: dstIP,
+		HopLimit: 64,
+	}
+
+	m.HandleMessage(payload, mi)
+
+	if !called1 {
+		t.Error("handler 1 should have been called")
+	}
+	if !called2 {
+		t.Error("handler 2 should have been called")
+	}
+	if gotType1 != TypeEchoRequest {
+		t.Errorf("handler 1 got type %d, want %d", gotType1, TypeEchoRequest)
+	}
+	if gotCode1 != 0 {
+		t.Errorf("handler 1 got code %d, want 0", gotCode1)
+	}
+	if gotInfo1.PeerAddr != srcIP {
+		t.Errorf("handler 1 PeerAddr = %v, want %v", gotInfo1.PeerAddr, srcIP)
+	}
+	if gotInfo1.SockAddr != dstIP {
+		t.Errorf("handler 1 SockAddr = %v, want %v", gotInfo1.SockAddr, dstIP)
+	}
+	if gotInfo1.HopLimit != 64 {
+		t.Errorf("handler 1 HopLimit = %d, want 64", gotInfo1.HopLimit)
+	}
+}
+
+func TestHandleMessageTooShort(t *testing.T) {
+	m := New()
+
+	called := false
+	h := NewHandler(func(mi *ip6.MessageInfo, hdr *Header) {
+		called = true
+	})
+	m.RegisterHandler(h)
+
+	// Payload shorter than 8 bytes — handler should not be called.
+	mi := &ip6.MessageInfo{}
+	m.HandleMessage([]byte{0x80, 0x00, 0x00}, mi)
+
+	if called {
+		t.Error("handler should not be called for payload shorter than 8 bytes")
+	}
+}
+
+func TestHandleMessageNilHandler(t *testing.T) {
+	m := New()
+
+	// Manually append a nil handler and a handler with nil callback.
+	m.handlers = append(m.handlers, nil)
+	m.handlers = append(m.handlers, &Handler{callback: nil})
+
+	// Build a valid 8-byte ICMPv6 payload.
+	var echoHdr Header
+	echoHdr.SetType(TypeEchoRequest)
+	payload := echoHdr.MarshalBinary()
+
+	mi := &ip6.MessageInfo{}
+
+	// Should not panic.
+	m.HandleMessage(payload, mi)
+}

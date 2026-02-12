@@ -22,6 +22,7 @@ import (
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/coap"
+	"github.com/hilli/gothread/net/icmp6"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
@@ -264,6 +265,9 @@ type Instance struct {
 	// udpManager manages UDP sockets.
 	udpManager *udp.UDP
 
+	// icmpManager manages ICMPv6 handlers.
+	icmpManager *icmp6.Icmp
+
 	// ---------------------------------------------------------------
 	// Tier 3 — Application layer (CoAP, TMF, Mesh forwarding)
 	// ---------------------------------------------------------------
@@ -380,6 +384,7 @@ func (inst *Instance) wireModules() {
 
 	inst.netif = ip6.NewNetif()
 	inst.udpManager = udp.New()
+	inst.icmpManager = icmp6.New()
 
 	inst.mleService = mle.NewService(mle.ServiceConfig{
 		Transport:    inst, // Instance implements mle.Transport
@@ -417,8 +422,12 @@ func (inst *Instance) wireModules() {
 			return false
 		}
 		// MLE requires the source extended address and link margin.
-		// We pass a zero ExtAddress and zero link margin for now;
-		// MAC-layer address extraction will be added in a future phase.
+		// TODO: The zero ExtAddress and zero link margin are a limitation.
+		// MAC addresses are extracted from the 802.15.4 header in
+		// HandleReceivedFrame, but they are not currently threaded
+		// through the UDP dispatch path to reach this receiver.
+		// A future phase should propagate the MAC source address via
+		// MessageInfo or a side channel so MLE can authenticate peers.
 		var srcExt types.ExtAddress
 		_ = inst.mleService.HandleReceive(payload, srcExt, mi.PeerAddr, mi.SockAddr, 0)
 		return true
@@ -554,6 +563,9 @@ func (inst *Instance) Netif() *ip6.Netif { return inst.netif }
 
 // UDPManager returns the UDP manager.
 func (inst *Instance) UDPManager() *udp.UDP { return inst.udpManager }
+
+// IcmpManager returns the ICMPv6 manager.
+func (inst *Instance) IcmpManager() *icmp6.Icmp { return inst.icmpManager }
 
 // CoapEngine returns the CoAP engine.
 func (inst *Instance) CoapEngine() *coap.Engine { return inst.coapEngine }
