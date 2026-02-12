@@ -1475,7 +1475,7 @@ func TestTxFrameDecompressesBackToOriginal(t *testing.T) {
 	// Decompress IPv6 header.
 	var macAddrs lowpan.AddressContext
 	// For decompression with fully inline addresses, empty context is fine.
-	ipv6Raw, consumed, err := lowpan.DecompressHeader(lpPayload, macAddrs, nil)
+	ipv6Raw, consumed, _, err := lowpan.DecompressHeader(lpPayload, macAddrs, nil)
 	if err != nil {
 		t.Fatalf("DecompressHeader() error: %v", err)
 	}
@@ -1864,6 +1864,49 @@ func TestFullRxPath_NHCUDP_ToSocket(t *testing.T) {
 	}
 	if len(gotPayload) != len(appData) {
 		t.Errorf("payload length = %d, want %d", len(gotPayload), len(appData))
+	}
+}
+
+// TestFullRxPath_ProtoHopOpts_NotMisidentifiedAsNHC verifies that a frame
+// whose inline NextHeader is 0 (ProtoHopOpts / Hop-by-Hop Options) is NOT
+// misidentified as NHC-compressed. Before the INST-8 fix, the RX path
+// checked `nextHdr == 0` which collides with ProtoHopOpts. The fix uses
+// the IPHC NH flag returned by DecompressHeader.
+func TestFullRxPath_ProtoHopOpts_NotMisidentifiedAsNHC(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// Register a socket on a port — should NOT be called because HopByHop
+	// frames are dropped as unsupported protocol.
+	s := &udp.Socket{}
+	socketCalled := false
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		socketCalled = true
+	})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: 9999})
+
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+
+	// Build a 6LoWPAN frame with NH=0 (HopByHop) inline, NOT NHC-compressed.
+	// IPHC = 0x6000: TF=00, NH=0 (inline), HLIM=inline, SAC=0, SAM=00, M=0, DAC=0, DAM=00
+	d := []byte{0x60, 0x00}               // IPHC dispatch, NH flag NOT set
+	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00: ECN=0, DSCP=0, Flow=0
+	d = append(d, 0x00)                   // NH = 0 (ProtoHopOpts, inline)
+	d = append(d, 0x40)                   // HL = 64
+	d = append(d, srcIP[:]...)            // 16 bytes source
+	d = append(d, dstIP[:]...)            // 16 bytes destination
+	// Some trailing bytes that should NOT be interpreted as NHC UDP.
+	d = append(d, 0xF0, 0x00, 0x00, 0x27, 0x0F, 0x00, 0x00, 0xAA, 0xBB)
+
+	frame := &radio.Frame{
+		PSDU:    d,
+		Channel: 11,
+	}
+	inst.HandleReceivedFrame(frame)
+
+	if socketCalled {
+		t.Error("socket was called for ProtoHopOpts frame — should be dropped as unsupported protocol, not misidentified as NHC-compressed UDP")
 	}
 }
 

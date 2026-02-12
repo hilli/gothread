@@ -189,15 +189,16 @@ func IsLowpanHc(data []byte) bool {
 // network contexts for stateful compression.
 //
 // Returns the decompressed 40-byte IPv6 header, the number of compressed
-// bytes consumed, and any error.
-func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) (header [ipv6HeaderSize]byte, consumed int, err error) {
+// bytes consumed, whether the IPHC NH flag was set (meaning the next
+// header is NHC-compressed and header[6] should be ignored), and any error.
+func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) (header [ipv6HeaderSize]byte, consumed int, nhCompressed bool, err error) {
 	if len(data) < 2 {
-		return header, 0, errors.ErrParse
+		return header, 0, false, errors.ErrParse
 	}
 
 	iphc := encoding.BigEndianReadUint16(data[:2])
 	if (iphc & HcDispatchMask) != HcDispatch {
-		return header, 0, errors.ErrParse
+		return header, 0, false, errors.ErrParse
 	}
 
 	pos := 2
@@ -206,7 +207,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 	var sci, dci uint8
 	if iphc&HcContextID != 0 {
 		if pos >= len(data) {
-			return header, 0, errors.ErrParse
+			return header, 0, false, errors.ErrParse
 		}
 		sci = data[pos] >> 4
 		dci = data[pos] & 0x0F
@@ -220,7 +221,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 	switch iphc & HcTfMask {
 	case HcTfFullInline: // TF=00: 4 bytes inline
 		if pos+4 > len(data) {
-			return header, 0, errors.ErrParse
+			return header, 0, false, errors.ErrParse
 		}
 		// inline[0] = (ecn << 6) | dscp
 		// inline[1] = 0000_FlowHi(4)
@@ -233,7 +234,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 
 	case HcTfEcnFlowInline: // TF=01: 3 bytes inline (ECN + 2-byte flow, DSCP=0)
 		if pos+3 > len(data) {
-			return header, 0, errors.ErrParse
+			return header, 0, false, errors.ErrParse
 		}
 		// inline[0] = (ecn << 6) | 00_FlowHi(4)
 		// inline[1] = Flow(8)
@@ -245,7 +246,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 
 	case HcTfEcnInline: // TF=10: 1 byte inline (ECN + DSCP, flow=0)
 		if pos+1 > len(data) {
-			return header, 0, errors.ErrParse
+			return header, 0, false, errors.ErrParse
 		}
 		ecn = data[pos] >> 6
 		dscp = data[pos] & 0x3F
@@ -271,10 +272,10 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 	header[3] = uint8(flow)
 
 	// --- Next Header ---
-	nhCompressed := (iphc & HcNextHeader) != 0
+	nhCompressed = (iphc & HcNextHeader) != 0
 	if !nhCompressed {
 		if pos >= len(data) {
-			return header, 0, errors.ErrParse
+			return header, 0, false, errors.ErrParse
 		}
 		header[6] = data[pos]
 		pos++
@@ -286,7 +287,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 	switch iphc & HcHopLimitMask {
 	case HcHopLimitInline:
 		if pos >= len(data) {
-			return header, 0, errors.ErrParse
+			return header, 0, false, errors.ErrParse
 		}
 		header[7] = data[pos]
 		pos++
@@ -307,7 +308,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 		switch sam {
 		case HcSrcAddr128: // 128-bit inline
 			if pos+16 > len(data) {
-				return header, 0, errors.ErrParse
+				return header, 0, false, errors.ErrParse
 			}
 			copy(header[ipv6OffsetSrc:], data[pos:pos+16])
 			pos += 16
@@ -315,7 +316,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 		case HcSrcAddr64: // 64-bit IID inline, link-local prefix
 			copy(header[ipv6OffsetSrc:], linkLocalPrefix[:])
 			if pos+8 > len(data) {
-				return header, 0, errors.ErrParse
+				return header, 0, false, errors.ErrParse
 			}
 			copy(header[ipv6OffsetSrc+8:], data[pos:pos+8])
 			pos += 8
@@ -323,7 +324,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 		case HcSrcAddr16: // 16-bit inline
 			copy(header[ipv6OffsetSrc:], linkLocalPrefix[:])
 			if pos+2 > len(data) {
-				return header, 0, errors.ErrParse
+				return header, 0, false, errors.ErrParse
 			}
 			writeIIDFromShort(header[ipv6OffsetSrc+8:], encoding.BigEndianReadUint16(data[pos:pos+2]))
 			pos += 2
@@ -342,7 +343,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 			ctx := lookupContext(contexts, sci)
 			copyContextPrefix(header[ipv6OffsetSrc:], ctx)
 			if pos+8 > len(data) {
-				return header, 0, errors.ErrParse
+				return header, 0, false, errors.ErrParse
 			}
 			copy(header[ipv6OffsetSrc+8:], data[pos:pos+8])
 			pos += 8
@@ -351,7 +352,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 			ctx := lookupContext(contexts, sci)
 			copyContextPrefix(header[ipv6OffsetSrc:], ctx)
 			if pos+2 > len(data) {
-				return header, 0, errors.ErrParse
+				return header, 0, false, errors.ErrParse
 			}
 			writeIIDFromShort(header[ipv6OffsetSrc+8:], encoding.BigEndianReadUint16(data[pos:pos+2]))
 			pos += 2
@@ -375,7 +376,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 			switch dam {
 			case HcDstAddr128:
 				if pos+16 > len(data) {
-					return header, 0, errors.ErrParse
+					return header, 0, false, errors.ErrParse
 				}
 				copy(header[ipv6OffsetDst:], data[pos:pos+16])
 				pos += 16
@@ -383,7 +384,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 			case HcDstAddr64:
 				copy(header[ipv6OffsetDst:], linkLocalPrefix[:])
 				if pos+8 > len(data) {
-					return header, 0, errors.ErrParse
+					return header, 0, false, errors.ErrParse
 				}
 				copy(header[ipv6OffsetDst+8:], data[pos:pos+8])
 				pos += 8
@@ -391,7 +392,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 			case HcDstAddr16:
 				copy(header[ipv6OffsetDst:], linkLocalPrefix[:])
 				if pos+2 > len(data) {
-					return header, 0, errors.ErrParse
+					return header, 0, false, errors.ErrParse
 				}
 				writeIIDFromShort(header[ipv6OffsetDst+8:], encoding.BigEndianReadUint16(data[pos:pos+2]))
 				pos += 2
@@ -405,13 +406,13 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 			switch dam {
 			case HcDstAddr128:
 				// DAC=1, DAM=00 is reserved per RFC 6282.
-				return header, 0, errors.ErrParse
+				return header, 0, false, errors.ErrParse
 
 			case HcDstAddr64:
 				ctx := lookupContext(contexts, dci)
 				copyContextPrefix(header[ipv6OffsetDst:], ctx)
 				if pos+8 > len(data) {
-					return header, 0, errors.ErrParse
+					return header, 0, false, errors.ErrParse
 				}
 				copy(header[ipv6OffsetDst+8:], data[pos:pos+8])
 				pos += 8
@@ -420,7 +421,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 				ctx := lookupContext(contexts, dci)
 				copyContextPrefix(header[ipv6OffsetDst:], ctx)
 				if pos+2 > len(data) {
-					return header, 0, errors.ErrParse
+					return header, 0, false, errors.ErrParse
 				}
 				writeIIDFromShort(header[ipv6OffsetDst+8:], encoding.BigEndianReadUint16(data[pos:pos+2]))
 				pos += 2
@@ -437,14 +438,14 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 			switch dam {
 			case HcDstAddr128: // M=1, DAC=0, DAM=00: 128-bit inline
 				if pos+16 > len(data) {
-					return header, 0, errors.ErrParse
+					return header, 0, false, errors.ErrParse
 				}
 				copy(header[ipv6OffsetDst:], data[pos:pos+16])
 				pos += 16
 
 			case HcDstAddr64: // M=1, DAC=0, DAM=01: 48-bit → ffXX::00XX:XXXX:XXXX
 				if pos+6 > len(data) {
-					return header, 0, errors.ErrParse
+					return header, 0, false, errors.ErrParse
 				}
 				header[ipv6OffsetDst+0] = 0xFF
 				header[ipv6OffsetDst+1] = data[pos]
@@ -457,7 +458,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 
 			case HcDstAddr16: // M=1, DAC=0, DAM=10: 32-bit → ffXX::00XX:XXXX
 				if pos+4 > len(data) {
-					return header, 0, errors.ErrParse
+					return header, 0, false, errors.ErrParse
 				}
 				header[ipv6OffsetDst+0] = 0xFF
 				header[ipv6OffsetDst+1] = data[pos]
@@ -468,7 +469,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 
 			case HcDstAddrElided: // M=1, DAC=0, DAM=11: 8-bit → ff02::00XX
 				if pos+1 > len(data) {
-					return header, 0, errors.ErrParse
+					return header, 0, false, errors.ErrParse
 				}
 				header[ipv6OffsetDst+0] = 0xFF
 				header[ipv6OffsetDst+1] = 0x02
@@ -480,7 +481,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 			switch dam {
 			case HcDstAddr128: // M=1, DAC=1, DAM=00: 48-bit unicast-prefix-based
 				if pos+6 > len(data) {
-					return header, 0, errors.ErrParse
+					return header, 0, false, errors.ErrParse
 				}
 				// ffXX:XXLL:PPPP:PPPP:PPPP:PPPP:XXXX:XXXX
 				// where P comes from context prefix, L = prefix length.
@@ -500,12 +501,12 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 
 			default:
 				// Other DAC=1 multicast modes are not defined in RFC 6282.
-				return header, 0, errors.ErrParse
+				return header, 0, false, errors.ErrParse
 			}
 		}
 	}
 
-	return header, pos, nil
+	return header, pos, nhCompressed, nil
 }
 
 // DecompressUDPHeader decompresses an NHC-compressed UDP header.

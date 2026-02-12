@@ -116,7 +116,7 @@ func TestBuildTxFrame_UDP(t *testing.T) {
 		SrcExtAddr: srcExt,
 		DstExtAddr: dstExt,
 	}
-	ipv6Raw, consumed, err := lowpan.DecompressHeader(macPayload, macAddrs, nil)
+	ipv6Raw, consumed, _, err := lowpan.DecompressHeader(macPayload, macAddrs, nil)
 	if err != nil {
 		t.Fatalf("DecompressHeader() error: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestBuildTxFrame_ICMPv6(t *testing.T) {
 
 	// Decompress.
 	macAddrs := lowpan.AddressContext{}
-	ipv6Raw, consumed, err := lowpan.DecompressHeader(macPayload, macAddrs, nil)
+	ipv6Raw, consumed, _, err := lowpan.DecompressHeader(macPayload, macAddrs, nil)
 	if err != nil {
 		t.Fatalf("DecompressHeader() error: %v", err)
 	}

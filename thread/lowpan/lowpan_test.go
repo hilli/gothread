@@ -530,7 +530,7 @@ func TestDecompressHeader(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			header, consumed, err := DecompressHeader(tt.data, tt.macAddrs, tt.contexts)
+			header, consumed, _, err := DecompressHeader(tt.data, tt.macAddrs, tt.contexts)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -606,12 +606,58 @@ func TestDecompressHeaderErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := DecompressHeader(tt.data, testMacAddrs(), nil)
+			_, _, _, err := DecompressHeader(tt.data, testMacAddrs(), nil)
 			if err == nil {
 				t.Error("expected error, got nil")
 			}
 		})
 	}
+}
+
+// TestDecompressHeader_NhCompressedFlag verifies that DecompressHeader returns
+// the correct nhCompressed boolean, distinguishing between NH-compressed frames
+// (IPHC NH flag set, header[6]==0) and frames that explicitly carry
+// ProtoHopOpts (0) as the inline next header.
+func TestDecompressHeader_NhCompressedFlag(t *testing.T) {
+	mac := testMacAddrs()
+
+	t.Run("NH flag set returns nhCompressed=true", func(t *testing.T) {
+		// IPHC: TF=11, NH=1 (compressed), HLIM=01(=1), SAC=0, SAM=11, M=0, DAC=0, DAM=11
+		// 011 11_1_01 0_11_0_0_11 = 0x7D33
+		data := []byte{0x7D, 0x33}
+		_, _, nhc, err := DecompressHeader(data, mac, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nhc {
+			t.Error("nhCompressed = false, want true (NH flag is set)")
+		}
+	})
+
+	t.Run("NH flag clear with ProtoHopOpts returns nhCompressed=false", func(t *testing.T) {
+		// IPHC: TF=11, NH=0 (inline), HLIM=01(=1), SAC=0, SAM=11, M=0, DAC=0, DAM=11
+		// 011 11_0_01 0_11_0_0_11 = 0x7933
+		data := []byte{0x79, 0x33, 0x00} // NH=0 (ProtoHopOpts) inline
+		_, _, nhc, err := DecompressHeader(data, mac, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nhc {
+			t.Error("nhCompressed = true, want false (NH flag is clear, next header is HopByHop inline)")
+		}
+	})
+
+	t.Run("NH flag clear with ProtoUDP returns nhCompressed=false", func(t *testing.T) {
+		// Same IPHC but NH=17 (UDP) inline.
+		data := []byte{0x79, 0x33, 0x11} // NH=17 inline
+		_, _, nhc, err := DecompressHeader(data, mac, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nhc {
+			t.Error("nhCompressed = true, want false")
+		}
+	})
 }
 
 func TestDecompressUDPHeader(t *testing.T) {
@@ -779,7 +825,7 @@ func TestCompressDecompressRoundTrip(t *testing.T) {
 				t.Fatalf("compress: %v", err)
 			}
 
-			decompressed, consumed, err := DecompressHeader(compressed, mac, nil)
+			decompressed, consumed, _, err := DecompressHeader(compressed, mac, nil)
 			if err != nil {
 				t.Fatalf("decompress: %v", err)
 			}
@@ -880,7 +926,7 @@ func FuzzDecompressHeader(f *testing.F) {
 	macAddrs := testMacAddrs()
 	f.Fuzz(func(_ *testing.T, data []byte) {
 		// Must not panic.
-		_, _, _ = DecompressHeader(data, macAddrs, nil)
+		_, _, _, _ = DecompressHeader(data, macAddrs, nil)
 	})
 }
 

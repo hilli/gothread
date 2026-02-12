@@ -456,7 +456,7 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 	// extracted above. When addresses are fully inline (SAM=00,
 	// DAM=00) the AddressContext is unused; when elided (SAM=11,
 	// DAM=11) the IID is derived from the extended MAC address.
-	ipv6Raw, consumed, err := lowpan.DecompressHeader(payload, macAddrs, nil)
+	ipv6Raw, consumed, nhCompressed, err := lowpan.DecompressHeader(payload, macAddrs, nil)
 	if err != nil {
 		return
 	}
@@ -466,11 +466,12 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 
 	// Step 4: Determine if the next header is UDP.
 	// NextHeader == ProtoUDP (17) means UDP was carried inline.
-	// NextHeader == 0 means the NH was compressed (NHC); attempt UDP
-	// decompression from the remaining data.
+	// nhCompressed (from IPHC NH flag) means the next header was
+	// compressed using NHC; attempt UDP decompression from the
+	// remaining data.
 	nextHdr := hdr.GetNextHeader()
 	isUDP := nextHdr == ip6.ProtoUDP
-	isNhCompressed := nextHdr == 0
+	isNhCompressed := nhCompressed
 
 	if !isUDP && !isNhCompressed && nextHdr != ip6.ProtoICMPv6 {
 		return // unsupported protocol
