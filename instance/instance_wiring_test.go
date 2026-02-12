@@ -5,9 +5,12 @@
 package instance
 
 import (
+	"bytes"
 	"testing"
 
+	"github.com/hilli/gothread/encoding"
 	"github.com/hilli/gothread/mac"
+	macframe "github.com/hilli/gothread/mac/frame"
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/coap"
@@ -17,6 +20,7 @@ import (
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/key"
+	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
@@ -935,6 +939,492 @@ func TestFullTxPath_SendMLE_Through_HandleFrameRequest(t *testing.T) {
 	direct, _ := inst.forwarder.GetQueueLength()
 	if direct != 0 {
 		t.Errorf("queue should be empty after TX, got %d", direct)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Phase 30d — TX→RX round-trip integration tests
+// --------------------------------------------------------------------------
+
+// TestFullTxRxRoundtrip_MLE verifies the complete TX→RX loop:
+// SendMLE builds a frame, HandleFrameRequest constructs it, then we feed
+// the resulting 802.15.4 frame back through HandleReceivedFrame and verify
+// the MLE payload arrives at the MLE receiver.
+func TestFullTxRxRoundtrip_MLE(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	// Replace the UDP manager with a fresh one so the built-in MLE
+	// receiver (which would consume the message) is not present.
+	inst.udpManager = udp.New()
+	sock := &udp.Socket{}
+	var gotPayload []byte
+	var gotInfo *ip6.MessageInfo
+	inst.udpManager.Open(sock, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		gotPayload = make([]byte, len(p))
+		copy(gotPayload, p)
+		gotInfo = mi
+	})
+	inst.udpManager.Bind(sock, ip6.SockAddr{Port: mle.UDPPort})
+
+	// Step 1: Send MLE to link-local all-nodes (broadcast).
+	mleData := []byte{0x0A, 0x01, 0x02, 0x03, 0x04}
+	dst := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02}
+	err := inst.SendMLE(mleData, dst)
+	if err != nil {
+		t.Fatalf("SendMLE() error: %v", err)
+	}
+
+	// Step 2: HandleFrameRequest builds the frame.
+	frame := &radio.Frame{}
+	if !inst.HandleFrameRequest(frame) {
+		t.Fatal("HandleFrameRequest should return true")
+	}
+	if len(frame.PSDU) == 0 {
+		t.Fatal("frame PSDU is empty")
+	}
+	inst.HandleSentFrame(frame, nil) // report success
+
+	// Step 3: Parse the built frame to extract the 6LoWPAN payload.
+	mf := macframe.NewFrame(frame.PSDU)
+	hdrLen, pErr := mf.GetHeaderLength()
+	if pErr != nil {
+		t.Fatalf("GetHeaderLength() error: %v", pErr)
+	}
+	lowpanData := frame.PSDU[int(hdrLen):]
+
+	// Step 4: Feed the 6LoWPAN payload back through the RX path.
+	// We construct a minimal frame that HandleReceivedFrame can process.
+	// The RX path starts with forwarder.HandleReceivedFrame which checks
+	// for mesh headers, then does 6LoWPAN decompression.
+	rxFrame := &radio.Frame{
+		PSDU:    lowpanData,
+		Channel: 11,
+	}
+	inst.HandleReceivedFrame(rxFrame)
+
+	// Step 5: Verify the MLE data arrived at the UDP socket.
+	if gotPayload == nil {
+		t.Fatal("UDP socket on MLE port did not receive the payload")
+	}
+	if !bytes.Equal(gotPayload, mleData) {
+		t.Errorf("received payload = %x, want %x", gotPayload, mleData)
+	}
+	if gotInfo.SockPort != mle.UDPPort {
+		t.Errorf("SockPort = %d, want %d", gotInfo.SockPort, mle.UDPPort)
+	}
+	if gotInfo.PeerPort != mle.UDPPort {
+		t.Errorf("PeerPort = %d, want %d", gotInfo.PeerPort, mle.UDPPort)
+	}
+
+}
+
+// TestFullTxRxRoundtrip_CoAP verifies the sendCoAP→HandleFrameRequest→
+// HandleReceivedFrame round-trip for CoAP/TMF messages.
+func TestFullTxRxRoundtrip_CoAP(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	// Replace the UDP manager with a fresh one so the built-in CoAP
+	// receiver (which would consume the message) is not present.
+	inst.udpManager = udp.New()
+	sock := &udp.Socket{}
+	var gotPayload []byte
+	var gotInfo *ip6.MessageInfo
+	inst.udpManager.Open(sock, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		gotPayload = make([]byte, len(p))
+		copy(gotPayload, p)
+		gotInfo = mi
+	})
+	inst.udpManager.Bind(sock, ip6.SockAddr{Port: udp.TmfPort})
+
+	// Build a mesh-local peer address with RLOC16=0x0800.
+	var peerAddr [16]byte
+	copy(peerAddr[0:8], inst.meshLocalPrefix[:])
+	peerAddr[11] = 0xff
+	peerAddr[12] = 0xfe
+	peerAddr[14] = 0x08
+	peerAddr[15] = 0x00
+
+	localAddr := inst.GetMeshLocalAddress()
+	coapData := []byte{0x40, 0x01, 0x00, 0x01, 0xBB} // CoAP-like payload
+	err := inst.sendCoAP(coapData, coap.MessageInfo{
+		PeerAddr:  peerAddr,
+		PeerPort:  udp.TmfPort,
+		LocalAddr: localAddr,
+	})
+	if err != nil {
+		t.Fatalf("sendCoAP() error: %v", err)
+	}
+
+	// Build the frame.
+	frame := &radio.Frame{}
+	if !inst.HandleFrameRequest(frame) {
+		t.Fatal("HandleFrameRequest should return true")
+	}
+	inst.HandleSentFrame(frame, nil)
+
+	// Parse and feed through RX.
+	mf := macframe.NewFrame(frame.PSDU)
+	hdrLen, pErr := mf.GetHeaderLength()
+	if pErr != nil {
+		t.Fatalf("GetHeaderLength() error: %v", pErr)
+	}
+	rxFrame := &radio.Frame{
+		PSDU:    frame.PSDU[int(hdrLen):],
+		Channel: 11,
+	}
+	inst.HandleReceivedFrame(rxFrame)
+
+	// Verify.
+	if gotPayload == nil {
+		t.Fatal("UDP socket on TMF port did not receive the payload")
+	}
+	if !bytes.Equal(gotPayload, coapData) {
+		t.Errorf("received payload = %x, want %x", gotPayload, coapData)
+	}
+	if gotInfo.SockPort != udp.TmfPort {
+		t.Errorf("SockPort = %d, want %d", gotInfo.SockPort, udp.TmfPort)
+	}
+}
+
+// TestTxMacSeqNumIncrement verifies that the MAC sequence number increments
+// with each transmitted frame.
+func TestTxMacSeqNumIncrement(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+
+	if inst.macSeqNum != 0 {
+		t.Fatalf("initial macSeqNum = %d, want 0", inst.macSeqNum)
+	}
+
+	// Send 3 MLE messages and verify sequence number increments.
+	for i := 0; i < 3; i++ {
+		err := inst.SendMLE([]byte{byte(i)}, ip6.Address{})
+		if err != nil {
+			t.Fatalf("SendMLE #%d error: %v", i, err)
+		}
+		frame := &radio.Frame{}
+		if !inst.HandleFrameRequest(frame) {
+			t.Fatalf("HandleFrameRequest #%d should return true", i)
+		}
+		inst.HandleSentFrame(frame, nil)
+	}
+
+	if inst.macSeqNum != 3 {
+		t.Errorf("macSeqNum = %d, want 3 after 3 frames", inst.macSeqNum)
+	}
+}
+
+// TestTxMacSeqNumWraparound verifies that the MAC sequence number wraps
+// from 255 to 0.
+func TestTxMacSeqNumWraparound(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.macSeqNum = 255
+
+	err := inst.SendMLE([]byte{0x01}, ip6.Address{})
+	if err != nil {
+		t.Fatalf("SendMLE() error: %v", err)
+	}
+	frame := &radio.Frame{}
+	if !inst.HandleFrameRequest(frame) {
+		t.Fatal("HandleFrameRequest should return true")
+	}
+	inst.HandleSentFrame(frame, nil)
+
+	if inst.macSeqNum != 0 {
+		t.Errorf("macSeqNum = %d, want 0 after wrap", inst.macSeqNum)
+	}
+}
+
+// TestTxFrameContainsValidMACHeader verifies that frames built by the TX
+// path contain a parseable IEEE 802.15.4 MAC header with correct fields.
+func TestTxFrameContainsValidMACHeader(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	// Set a PAN ID on the MAC.
+	if inst.mac != nil {
+		inst.mac.SetPanID(0xFACE)
+	}
+
+	// Send to a specific RLOC (unicast, short addresses).
+	dst := inst.GetMeshLocalAddress()
+	dst[14] = 0x08
+	dst[15] = 0x00
+
+	err := inst.SendMLE([]byte{0xAA, 0xBB}, dst)
+	if err != nil {
+		t.Fatalf("SendMLE() error: %v", err)
+	}
+
+	frame := &radio.Frame{}
+	if !inst.HandleFrameRequest(frame) {
+		t.Fatal("HandleFrameRequest should return true")
+	}
+
+	// Parse the MAC header.
+	mf := macframe.NewFrame(frame.PSDU)
+
+	// Verify it's a Data frame.
+	if mf.GetType() != macframe.TypeData {
+		t.Errorf("expected Data frame type, got %d", mf.GetType())
+	}
+
+	// Verify PAN ID.
+	panID, err := mf.GetDstPanID()
+	if err != nil {
+		t.Fatalf("GetDstPanID() error: %v", err)
+	}
+	if panID != 0xFACE {
+		t.Errorf("PAN ID = 0x%04X, want 0xFACE", panID)
+	}
+
+	// Verify payload can be found.
+	off, err := mf.GetHeaderLength()
+	if err != nil {
+		t.Fatalf("GetHeaderLength() error: %v", err)
+	}
+	if int(off) >= len(frame.PSDU) {
+		t.Fatal("payload offset beyond PSDU length")
+	}
+
+	// Verify the 6LoWPAN payload starts with IPHC dispatch.
+	lpPayload := frame.PSDU[int(off):]
+	if !lowpan.IsLowpanHc(lpPayload) {
+		t.Errorf("6LoWPAN payload does not start with IPHC dispatch: first byte = 0x%02x", lpPayload[0])
+	}
+}
+
+// TestTxFrameDecompressesBackToOriginal verifies that a TX frame's 6LoWPAN
+// payload can be decompressed back to the original IPv6/UDP headers and
+// application payload.
+func TestTxFrameDecompressesBackToOriginal(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	srcAddr := inst.GetLinkLocalAddress()
+	dstAddr := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02}
+	payload := []byte("round-trip-test")
+
+	err := inst.SendMLE(payload, dstAddr)
+	if err != nil {
+		t.Fatalf("SendMLE() error: %v", err)
+	}
+
+	frame := &radio.Frame{}
+	if !inst.HandleFrameRequest(frame) {
+		t.Fatal("HandleFrameRequest should return true")
+	}
+
+	// Extract 6LoWPAN payload from MAC frame.
+	mf := macframe.NewFrame(frame.PSDU)
+	off, err := mf.GetHeaderLength()
+	if err != nil {
+		t.Fatalf("GetHeaderLength() error: %v", err)
+	}
+	lpPayload := frame.PSDU[int(off):]
+
+	// Decompress IPv6 header.
+	var macAddrs lowpan.AddressContext
+	// For decompression with fully inline addresses, empty context is fine.
+	ipv6Raw, consumed, err := lowpan.DecompressHeader(lpPayload, macAddrs, nil)
+	if err != nil {
+		t.Fatalf("DecompressHeader() error: %v", err)
+	}
+
+	hdr := ip6.HeaderFromBytes(ipv6Raw)
+
+	// Verify IPv6 header fields.
+	if hdr.GetSource() != srcAddr {
+		t.Errorf("IPv6 src = %v, want %v", hdr.GetSource(), srcAddr)
+	}
+	if hdr.GetDestination() != dstAddr {
+		t.Errorf("IPv6 dst = %v, want %v", hdr.GetDestination(), dstAddr)
+	}
+	if hdr.GetHopLimit() != 64 {
+		t.Errorf("HopLimit = %d, want 64", hdr.GetHopLimit())
+	}
+
+	// Decompress NHC UDP header.
+	remaining := lpPayload[consumed:]
+	udpHdr, udpConsumed, err := lowpan.DecompressUDPHeader(remaining)
+	if err != nil {
+		t.Fatalf("DecompressUDPHeader() error: %v", err)
+	}
+
+	srcPort := encoding.BigEndianReadUint16(udpHdr[0:2])
+	dstPort := encoding.BigEndianReadUint16(udpHdr[2:4])
+	if srcPort != mle.UDPPort {
+		t.Errorf("UDP src port = %d, want %d", srcPort, mle.UDPPort)
+	}
+	if dstPort != mle.UDPPort {
+		t.Errorf("UDP dst port = %d, want %d", dstPort, mle.UDPPort)
+	}
+
+	// Verify application payload.
+	appPayload := remaining[udpConsumed:]
+	if !bytes.Equal(appPayload, payload) {
+		t.Errorf("app payload = %x, want %x", appPayload, payload)
+	}
+}
+
+// TestSendMLE_MetadataPopulated verifies that SendMLE now creates a
+// TxMessage with properly populated TxMetadata.
+func TestSendMLE_MetadataPopulated(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	// RLOC destination — should use mesh-local source.
+	dst := inst.GetMeshLocalAddress()
+	dst[14] = 0x08
+	dst[15] = 0x00
+
+	err := inst.SendMLE([]byte{0x01}, dst)
+	if err != nil {
+		t.Fatalf("SendMLE() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+
+	if !msg.HasMetadata() {
+		t.Fatal("TxMessage should have metadata after SendMLE")
+	}
+	meta := msg.Metadata
+
+	// Verify IPv6 source is the mesh-local RLOC.
+	expectedSrc := inst.GetMeshLocalAddress()
+	if meta.SrcAddr != [16]byte(expectedSrc) {
+		t.Errorf("SrcAddr = %x, want %x", meta.SrcAddr, expectedSrc)
+	}
+
+	// Verify IPv6 destination.
+	if meta.DstAddr != [16]byte(dst) {
+		t.Errorf("DstAddr = %x, want %x", meta.DstAddr, dst)
+	}
+
+	// Verify UDP ports.
+	if meta.SrcPort != mle.UDPPort {
+		t.Errorf("SrcPort = %d, want %d", meta.SrcPort, mle.UDPPort)
+	}
+	if meta.DstPort != mle.UDPPort {
+		t.Errorf("DstPort = %d, want %d", meta.DstPort, mle.UDPPort)
+	}
+
+	// Verify next header.
+	if meta.NextHeader != ip6.ProtoUDP {
+		t.Errorf("NextHeader = %d, want %d", meta.NextHeader, ip6.ProtoUDP)
+	}
+
+	// Verify hop limit.
+	if meta.HopLimit != 64 {
+		t.Errorf("HopLimit = %d, want 64", meta.HopLimit)
+	}
+
+	// Verify short addressing for unicast.
+	if !meta.UseSrcShort {
+		t.Error("UseSrcShort should be true")
+	}
+	if !meta.UseDstShort {
+		t.Error("UseDstShort should be true for unicast RLOC dest")
+	}
+}
+
+// TestSendMLE_BroadcastUsesExtendedDst verifies that broadcast MLE
+// messages use extended addressing for the destination.
+func TestSendMLE_BroadcastUsesExtendedDst(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+
+	// Non-RLOC destination → broadcast → UseDstShort should be false.
+	dst := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02}
+	err := inst.SendMLE([]byte{0x01}, dst)
+	if err != nil {
+		t.Fatalf("SendMLE() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+
+	if !msg.HasMetadata() {
+		t.Fatal("expected metadata")
+	}
+	if msg.Metadata.UseDstShort {
+		t.Error("UseDstShort should be false for non-RLOC broadcast destination")
+	}
+	if msg.MeshDest != 0xFFFF {
+		t.Errorf("MeshDest = 0x%04X, want 0xFFFF for broadcast", msg.MeshDest)
+	}
+}
+
+// TestSendCoAP_MetadataPopulated verifies that sendCoAP creates a
+// TxMessage with properly populated TxMetadata.
+func TestSendCoAP_MetadataPopulated(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	var peerAddr [16]byte
+	copy(peerAddr[0:8], inst.meshLocalPrefix[:])
+	peerAddr[11] = 0xff
+	peerAddr[12] = 0xfe
+	peerAddr[14] = 0x08
+	peerAddr[15] = 0x00
+
+	localAddr := inst.GetMeshLocalAddress()
+	err := inst.sendCoAP([]byte{0x40}, coap.MessageInfo{
+		PeerAddr:  peerAddr,
+		PeerPort:  udp.TmfPort,
+		LocalAddr: localAddr,
+	})
+	if err != nil {
+		t.Fatalf("sendCoAP() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+
+	if !msg.HasMetadata() {
+		t.Fatal("expected metadata from sendCoAP")
+	}
+	meta := msg.Metadata
+
+	if meta.SrcPort != udp.TmfPort {
+		t.Errorf("SrcPort = %d, want %d", meta.SrcPort, udp.TmfPort)
+	}
+	if meta.DstPort != udp.TmfPort {
+		t.Errorf("DstPort = %d, want %d", meta.DstPort, udp.TmfPort)
+	}
+	if meta.NextHeader != ip6.ProtoUDP {
+		t.Errorf("NextHeader = %d, want %d", meta.NextHeader, ip6.ProtoUDP)
+	}
+	if !meta.UseDstShort {
+		t.Error("UseDstShort should be true for unicast RLOC peer")
 	}
 }
 
