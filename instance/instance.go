@@ -34,6 +34,7 @@ import (
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/netdata"
 	"github.com/hilli/gothread/thread/routing"
+	"github.com/hilli/gothread/thread/supervision"
 	"github.com/hilli/gothread/thread/tmf"
 )
 
@@ -360,6 +361,10 @@ type Instance struct {
 	// macTimerCancel cancels the currently pending Mac timer
 	// (if any). Used to implement Mac.StopTimer.
 	macTimerCancel func()
+
+	// dataPollSender manages periodic 802.15.4 data poll requests
+	// when this device is operating as a sleepy end device (SED).
+	dataPollSender *supervision.DataPollSender
 }
 
 // New creates a new Instance with the given platform configuration.
@@ -499,6 +504,13 @@ func (inst *Instance) wireModules() {
 	// Announce is received, the instance switches channel/PAN and
 	// initiates a fresh attach.
 	inst.mleService.AnnounceHandler.OnSignal = inst.processAnnounce
+
+	// DataPollSender manages periodic data poll requests when this device
+	// operates as a sleepy end device (SED). The macPollTransmitter
+	// adapter bridges to Mac.RequestDataPollTransmission().
+	inst.dataPollSender = supervision.NewDataPollSender(
+		supervision.WithPollTransmitter(&macPollTransmitter{inst: inst}),
+	)
 
 	// ---------------------------------------------------------------
 	// Tier 3 — Application layer
@@ -701,6 +713,9 @@ func (inst *Instance) NetdataLeader() *netdata.Leader { return inst.netdataLeade
 // Forwarder returns the mesh forwarder.
 func (inst *Instance) Forwarder() *mesh.Forwarder { return inst.forwarder }
 
+// DataPollSender returns the data poll sender (SED polling manager).
+func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }
+
 // SetMeshLocalPrefix sets the 64-bit mesh-local prefix used for RLOC
 // and other mesh-local addresses.
 func (inst *Instance) SetMeshLocalPrefix(prefix [8]byte) { inst.meshLocalPrefix = prefix }
@@ -723,12 +738,21 @@ func (inst *Instance) RLOC16() uint16 { return inst.rloc16 }
 func (inst *Instance) scheduleAttachTimer() {
 	a := inst.mleService.Attacher
 	if a.NextTimerDelay > 0 {
+		// Enable fast polling during attach.
+		if inst.dataPollSender != nil {
+			inst.dataPollSender.SetAttachMode(true)
+		}
 		delay := a.NextTimerDelay
 		inst.timers.schedule(delay, func() {
 			_ = a.HandleTimer()
 			inst.syncParentAddress()
 			inst.scheduleAttachTimer() // re-arm if needed
 		})
+	} else {
+		// Attach sequence complete — disable attach-mode polling.
+		if inst.dataPollSender != nil {
+			inst.dataPollSender.SetAttachMode(false)
+		}
 	}
 }
 
@@ -742,6 +766,25 @@ func (inst *Instance) syncParentAddress() {
 		inst.mac.SetParentShortAddress(types.ShortAddress(parent.RLOC16))
 	} else {
 		inst.mac.SetParentShortAddress(0)
+	}
+	inst.syncDataPolling()
+}
+
+// syncDataPolling starts the DataPollSender when the device becomes a
+// child (SED) and stops it otherwise (detached, router, leader).
+func (inst *Instance) syncDataPolling() {
+	if inst.dataPollSender == nil {
+		return
+	}
+	m := inst.mleService.Mle()
+	if m.IsChild() {
+		if !inst.dataPollSender.IsEnabled() {
+			inst.dataPollSender.Start()
+		}
+	} else {
+		if inst.dataPollSender.IsEnabled() {
+			inst.dataPollSender.Stop()
+		}
 	}
 }
 

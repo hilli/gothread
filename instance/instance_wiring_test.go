@@ -2413,3 +2413,114 @@ func TestProcessAnnounce_SwitchesChannelAndPanID(t *testing.T) {
 		t.Errorf("MLE role should be Detached after processAnnounce")
 	}
 }
+
+// --------------------------------------------------------------------------
+// DataPollSender wiring
+// --------------------------------------------------------------------------
+
+func TestDataPollSender_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.DataPollSender() == nil {
+		t.Fatal("DataPollSender should be created during wireModules")
+	}
+}
+
+func TestDataPollSender_StartsWhenChild(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+
+	// Initially detached — polling should not be enabled.
+	if inst.dataPollSender.IsEnabled() {
+		t.Error("data poll sender should not be enabled when detached")
+	}
+
+	// Become Child — syncDataPolling should start it.
+	_ = m.SetStateChild(0x4401)
+	inst.syncDataPolling()
+
+	if !inst.dataPollSender.IsEnabled() {
+		t.Error("data poll sender should be enabled after becoming child")
+	}
+}
+
+func TestDataPollSender_StopsWhenDetached(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+
+	// Start as child.
+	_ = m.SetStateChild(0x4401)
+	inst.syncDataPolling()
+	if !inst.dataPollSender.IsEnabled() {
+		t.Fatal("expected data polling to be enabled as child")
+	}
+
+	// Detach — should stop polling.
+	_ = m.BecomeDetached()
+	inst.syncDataPolling()
+
+	if inst.dataPollSender.IsEnabled() {
+		t.Error("data poll sender should be disabled after detaching")
+	}
+}
+
+func TestDataPollSender_StopsWhenRouter(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+
+	// Start as child.
+	_ = m.SetStateChild(0x4401)
+	inst.syncDataPolling()
+	if !inst.dataPollSender.IsEnabled() {
+		t.Fatal("expected data polling to be enabled as child")
+	}
+
+	// Become Router — should stop polling.
+	_ = m.SetStateRouter(0x4400)
+	inst.syncDataPolling()
+
+	if inst.dataPollSender.IsEnabled() {
+		t.Error("data poll sender should be disabled after becoming router")
+	}
+}
+
+func TestSyncParentAddress_AlsoSyncsDataPolling(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateChild(0x4401)
+	parent := m.GetParent()
+	parent.RLOC16 = 0x4400
+
+	// syncParentAddress calls syncDataPolling internally.
+	inst.syncParentAddress()
+
+	if !inst.dataPollSender.IsEnabled() {
+		t.Error("syncParentAddress should start data polling when child")
+	}
+
+	// Transition away.
+	_ = m.BecomeDetached()
+	inst.syncParentAddress()
+
+	if inst.dataPollSender.IsEnabled() {
+		t.Error("syncParentAddress should stop data polling when detached")
+	}
+}
+
+func TestDataPollSender_AttachModeViaScheduleAttachTimer(t *testing.T) {
+	inst := New(Config{})
+
+	// With no pending attach timer, attach mode should be cleared.
+	inst.mleService.Attacher.NextTimerDelay = 0
+	inst.scheduleAttachTimer()
+
+	// Polling should not be in attach mode (no running poll anyway,
+	// but verify the call doesn't panic and the period is default).
+	period := inst.dataPollSender.GetPollPeriod()
+	if period == 100 {
+		t.Error("poll period should not be attach period (100ms) when no attach in progress")
+	}
+}

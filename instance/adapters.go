@@ -790,3 +790,21 @@ func (inst *Instance) sendCoAP(data []byte, info coap.MessageInfo) error {
 	txMsg.Priority = uint8(mesh.PriorityNormal)
 	return inst.forwarder.SendMessage(txMsg)
 }
+
+// --------------------------------------------------------------------------
+// PollTransmitter adapter — bridges supervision.DataPollSender to mac.Mac
+// --------------------------------------------------------------------------
+
+// macPollTransmitter implements supervision.PollTransmitter by delegating
+// to the Mac layer's RequestDataPollTransmission method.
+type macPollTransmitter struct {
+	inst *Instance
+}
+
+// TransmitDataPoll triggers a MAC-layer data poll (802.15.4 Data Request).
+func (t *macPollTransmitter) TransmitDataPoll() error {
+	if t.inst.mac != nil {
+		t.inst.mac.RequestDataPollTransmission()
+	}
+	return nil
+}
