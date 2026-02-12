@@ -41,6 +41,7 @@ type Manager struct {
 
 	keySequence uint32
 	mleKey      MleKey
+	macKey      MacKey
 	tempMleKey  MleKey
 	tempMacKey  MacKey
 
@@ -134,6 +135,18 @@ func (m *Manager) GetCurrentMleKey() MleKey {
 	return m.mleKey
 }
 
+// GetCurrentMacKey returns the current MAC key derived from the current key sequence.
+func (m *Manager) GetCurrentMacKey() MacKey {
+	return m.macKey
+}
+
+// GetMacKeyId returns the key ID byte derived from the current key sequence.
+// Thread uses the low 7 bits of the key sequence as the Key ID (mod 128),
+// matching OpenThread's GetCurrentKeyId().
+func (m *Manager) GetMacKeyId() uint8 {
+	return uint8(m.keySequence & 0x7F)
+}
+
 // GetTemporaryMleKey computes and returns the MLE key for the given key sequence.
 func (m *Manager) GetTemporaryMleKey(seq uint32) MleKey {
 	dk := m.ComputeKeys(seq)
@@ -176,6 +189,7 @@ func (m *Manager) ComputeKeys(seq uint32) DerivedKeys {
 func (m *Manager) UpdateKeyMaterial() {
 	dk := m.ComputeKeys(m.keySequence)
 	m.mleKey = dk.MleKey
+	m.macKey = dk.MacKey
 }
 
 // --- Frame counters ---

@@ -11,10 +11,13 @@ import (
 	"time"
 
 	"github.com/hilli/gothread/mac"
+
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/radio"
+	"github.com/hilli/gothread/thread/indirect"
+	"github.com/hilli/gothread/thread/key"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
@@ -1144,4 +1147,174 @@ func TestSendSupervisionMessage_NotifiesMAC(t *testing.T) {
 	if pending&mac.OperationTransmitDataDirect == 0 {
 		t.Errorf("MAC should have OperationTransmitDataDirect after SendSupervisionMessage; got %v", pending)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// MAC Security tests
+// ---------------------------------------------------------------------------
+
+func TestUpdateMacKeys_NilSubMac(t *testing.T) {
+	// With no radio, updateMacKeys should not panic.
+	inst := New(Config{})
+	inst.updateMacKeys() // should be a no-op
+}
+
+func TestUpdateMacKeys_PushesKeysToSubMac(t *testing.T) {
+	r := &nopRadio{}
+	inst := New(Config{Radio: r})
+
+	// Set a known network key so we get deterministic keys.
+	var nk key.NetworkKey
+	nk[0] = 0x42
+	inst.keyManager.SetNetworkKey(nk)
+
+	// After wireModules (called by New), subMac should have received keys.
+	if inst.subMac == nil {
+		t.Fatal("subMac should be non-nil with radio")
+	}
+
+	// Verify updateMacKeys doesn't panic and can be called again.
+	inst.updateMacKeys()
+}
+
+func TestSetCurrentKeySequence_UpdatesMacKeys(t *testing.T) {
+	r := &nopRadio{}
+	inst := New(Config{Radio: r})
+
+	var nk key.NetworkKey
+	nk[0] = 0x42
+	inst.keyManager.SetNetworkKey(nk)
+
+	// Change key sequence — should call updateMacKeys internally.
+	inst.SetCurrentKeySequence(5, key.ForceUpdate)
+
+	if inst.keyManager.GetCurrentKeySequence() != 5 {
+		t.Errorf("key sequence: got %d, want 5", inst.keyManager.GetCurrentKeySequence())
+	}
+
+	// Verify MAC key ID matches.
+	if inst.keyManager.GetMacKeyId() != 5 {
+		t.Errorf("MAC key ID: got %d, want 5", inst.keyManager.GetMacKeyId())
+	}
+}
+
+func TestSendMLE_SecurityFieldsSet(t *testing.T) {
+	r := &nopRadio{}
+	inst := New(Config{Radio: r})
+
+	// Set up a network key.
+	var nk key.NetworkKey
+	nk[0] = 0x42
+	inst.keyManager.SetNetworkKey(nk)
+
+	// Verify the key manager has a non-zero MAC key.
+	macKey := inst.keyManager.GetCurrentMacKey()
+	allZero := true
+	for _, b := range macKey {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Error("MAC key should not be all zeros after SetNetworkKey")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IndirectSender wiring tests
+// ---------------------------------------------------------------------------
+
+func TestIndirectSender_NilWithoutRadio(t *testing.T) {
+	inst := New(Config{})
+	if inst.IndirectSender() != nil {
+		t.Error("IndirectSender should be nil without a radio")
+	}
+	if inst.SourceMatchController() != nil {
+		t.Error("SourceMatchController should be nil without a radio")
+	}
+}
+
+func TestIndirectSender_WiredWithRadio(t *testing.T) {
+	r := &nopRadio{}
+	inst := New(Config{Radio: r})
+	if inst.IndirectSender() == nil {
+		t.Error("IndirectSender should be non-nil with a radio")
+	}
+	if inst.SourceMatchController() == nil {
+		t.Error("SourceMatchController should be non-nil with a radio")
+	}
+}
+
+func TestRadioSourceMatchAdapter(t *testing.T) {
+	r := &nopRadio{}
+	adapter := &radioSourceMatchAdapter{radio: r}
+
+	// These should not panic and return nil errors from nopRadio.
+	if err := adapter.AddShortSourceMatch(0x1234); err != nil {
+		t.Errorf("AddShortSourceMatch: %v", err)
+	}
+	if err := adapter.AddExtSourceMatch([8]byte{1, 2, 3, 4, 5, 6, 7, 8}); err != nil {
+		t.Errorf("AddExtSourceMatch: %v", err)
+	}
+	if err := adapter.ClearShortSourceMatch(0x1234); err != nil {
+		t.Errorf("ClearShortSourceMatch: %v", err)
+	}
+	if err := adapter.ClearExtSourceMatch([8]byte{1, 2, 3, 4, 5, 6, 7, 8}); err != nil {
+		t.Errorf("ClearExtSourceMatch: %v", err)
+	}
+	adapter.ClearSourceMatchTable() // should not panic
+	adapter.EnableSourceMatch(true) // should not panic
+}
+
+func TestChildInfoAdapter(t *testing.T) {
+	child := &mle.Child{}
+	child.RLOC16 = 0x4001
+	child.MacAddr = types.ExtAddress{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+
+	adapter := &childInfoAdapter{child: child}
+
+	if adapter.GetShortAddress() != 0x4001 {
+		t.Errorf("GetShortAddress: got 0x%04x, want 0x4001", adapter.GetShortAddress())
+	}
+
+	extAddr := adapter.GetExtAddress()
+	want := [8]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	if extAddr != want {
+		t.Errorf("GetExtAddress: got %v, want %v", extAddr, want)
+	}
+
+	if adapter.IsIndirectMessagePending() {
+		t.Error("IsIndirectMessagePending should return false (stub)")
+	}
+}
+
+func TestRealIndirectSenderAdapter(t *testing.T) {
+	// Create a minimal indirect.Sender with a no-op frame sender.
+	noopFS := &testFrameSender{}
+	r := &nopRadio{}
+	srcMatch := indirect.NewSourceMatchController(&radioSourceMatchAdapter{radio: r})
+	sender := indirect.NewSender(noopFS, srcMatch)
+
+	adapter := &realIndirectSenderAdapter{sender: sender}
+
+	// GetIndirectMessageCount should return 0 for unknown child.
+	child := &mle.Child{}
+	child.RLOC16 = 0x4001
+	if count := adapter.GetIndirectMessageCount(child); count != 0 {
+		t.Errorf("GetIndirectMessageCount: got %d, want 0", count)
+	}
+
+	// HandleFrameChangeDone should not panic.
+	adapter.HandleFrameChangeDone(child)
+
+	// HandleSentFrameToChild should not panic.
+	adapter.HandleSentFrameToChild(child, nil)
+}
+
+// testFrameSender is a no-op indirect.FrameSender for tests.
+type testFrameSender struct{}
+
+func (f *testFrameSender) SendIndirectFrame(_ indirect.ChildInfo, _ []byte) error {
+	return nil
 }

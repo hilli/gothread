@@ -29,6 +29,7 @@ import (
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/key"
+	"github.com/hilli/gothread/thread/indirect"
 	"github.com/hilli/gothread/thread/link"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
@@ -389,6 +390,14 @@ type Instance struct {
 	// children when this device operates as a parent/router (FTD).
 	dataPollHandler *supervision.DataPollHandler
 
+	// sourceMatchController manages the radio source address match table
+	// for indirect frame transmission to sleepy children.
+	sourceMatchController *indirect.SourceMatchController
+
+	// indirectSender manages buffering and transmission of indirect
+	// frames to sleepy end devices.
+	indirectSender *indirect.Sender
+
 	// droppedNonIPHC counts received frames that were not 6LoWPAN IPHC
 	// compressed and were silently dropped during RX processing.
 	droppedNonIPHC uint64
@@ -567,9 +576,26 @@ func (inst *Instance) wireModules() {
 	// Data Poll Handler — parent side.
 	// Manages indirect frame transmissions to sleepy children upon
 	// receiving data poll (MAC Data Request) frames.
+
+	// Wire real indirect sender when a radio is available.
+	var srcMatch *indirect.SourceMatchController
+	if inst.platRadio != nil {
+		srcMatch = indirect.NewSourceMatchController(&radioSourceMatchAdapter{radio: inst.platRadio})
+	}
+	inst.sourceMatchController = srcMatch
+
+	var indSender supervision.IndirectSender
+	if srcMatch != nil {
+		frameSender := &indirectFrameSender{inst: inst}
+		inst.indirectSender = indirect.NewSender(frameSender, srcMatch)
+		indSender = &realIndirectSenderAdapter{sender: inst.indirectSender}
+	} else {
+		indSender = &indirectSenderAdapter{} // fallback stub for no-radio
+	}
+
 	inst.dataPollHandler = supervision.NewDataPollHandler(
 		supervision.WithHandlerChildProvider(inst.childProvider),
-		supervision.WithIndirectSender(&indirectSenderAdapter{}),
+		supervision.WithIndirectSender(indSender),
 	)
 
 	// ---------------------------------------------------------------
@@ -642,6 +668,9 @@ func (inst *Instance) wireModules() {
 		return true
 	})
 	_ = inst.udpManager.AddReceiver(coapReceiver)
+
+	// Push initial MAC keys to the SubMac/radio.
+	inst.updateMacKeys()
 }
 
 // Start launches the event loop goroutine. It is an error to call Start
@@ -876,6 +905,16 @@ func (inst *Instance) SupervisionListener() *supervision.SupervisionListener {
 // DataPollHandler returns the data poll handler (parent-side indirect TX).
 func (inst *Instance) DataPollHandler() *supervision.DataPollHandler {
 	return inst.dataPollHandler
+}
+
+// SourceMatchController returns the source address match controller (may be nil).
+func (inst *Instance) SourceMatchController() *indirect.SourceMatchController {
+	return inst.sourceMatchController
+}
+
+// IndirectSender returns the indirect frame sender (may be nil).
+func (inst *Instance) IndirectSender() *indirect.Sender {
+	return inst.indirectSender
 }
 
 // DroppedNonIPHC returns the count of received frames dropped because

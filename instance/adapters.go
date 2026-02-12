@@ -22,6 +22,7 @@ import (
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
+	"github.com/hilli/gothread/thread/indirect"
 	"github.com/hilli/gothread/thread/key"
 	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
@@ -311,6 +312,126 @@ func (a *indirectSenderAdapter) GetIndirectMessageCount(_ *mle.Child) uint16  { 
 
 // Compile-time assertion.
 var _ supervision.IndirectSender = (*indirectSenderAdapter)(nil)
+
+// --------------------------------------------------------------------------
+// radioSourceMatchAdapter — bridges radio.Radio → indirect.RadioSourceMatch
+// --------------------------------------------------------------------------
+
+// radioSourceMatchAdapter adapts a radio.Radio to the indirect.RadioSourceMatch
+// interface for source address match table management.
+type radioSourceMatchAdapter struct {
+	radio radio.Radio
+}
+
+func (a *radioSourceMatchAdapter) AddShortSourceMatch(shortAddr uint16) error {
+	return a.radio.AddSrcMatchShortEntry(types.ShortAddress(shortAddr))
+}
+
+func (a *radioSourceMatchAdapter) AddExtSourceMatch(extAddr [8]byte) error {
+	return a.radio.AddSrcMatchExtEntry(types.ExtAddress(extAddr))
+}
+
+func (a *radioSourceMatchAdapter) ClearShortSourceMatch(shortAddr uint16) error {
+	return a.radio.ClearSrcMatchShortEntry(types.ShortAddress(shortAddr))
+}
+
+func (a *radioSourceMatchAdapter) ClearExtSourceMatch(extAddr [8]byte) error {
+	return a.radio.ClearSrcMatchExtEntry(types.ExtAddress(extAddr))
+}
+
+func (a *radioSourceMatchAdapter) ClearSourceMatchTable() {
+	a.radio.ClearSrcMatchShortEntries()
+	a.radio.ClearSrcMatchExtEntries()
+}
+
+func (a *radioSourceMatchAdapter) EnableSourceMatch(enable bool) {
+	a.radio.EnableSrcMatch(enable)
+}
+
+// Compile-time assertion.
+var _ indirect.RadioSourceMatch = (*radioSourceMatchAdapter)(nil)
+
+// --------------------------------------------------------------------------
+// childInfoAdapter — bridges *mle.Child → indirect.ChildInfo
+// --------------------------------------------------------------------------
+
+// childInfoAdapter wraps an *mle.Child to implement indirect.ChildInfo.
+type childInfoAdapter struct {
+	child *mle.Child
+}
+
+func (a *childInfoAdapter) GetShortAddress() uint16 {
+	return a.child.RLOC16
+}
+
+func (a *childInfoAdapter) GetExtAddress() [8]byte {
+	return [8]byte(a.child.MacAddr)
+}
+
+func (a *childInfoAdapter) IsRxOnWhenIdle() bool {
+	return a.child.IsRxOnWhenIdle()
+}
+
+func (a *childInfoAdapter) IsIndirectMessagePending() bool {
+	// TODO: integrate with indirect.Sender state when full TX pipeline is wired.
+	return false
+}
+
+// Compile-time assertion.
+var _ indirect.ChildInfo = (*childInfoAdapter)(nil)
+
+// --------------------------------------------------------------------------
+// indirectFrameSender — bridges indirect.FrameSender → Instance TX pipeline
+// --------------------------------------------------------------------------
+
+// indirectFrameSender implements indirect.FrameSender by building a TxMessage
+// and enqueuing it through the Instance's forwarder as a non-direct (indirect)
+// transmission.
+type indirectFrameSender struct {
+	inst *Instance
+}
+
+func (s *indirectFrameSender) SendIndirectFrame(child indirect.ChildInfo, payload []byte) error {
+	txMsg := &mesh.TxMessage{
+		Data:       payload,
+		MeshDest:   child.GetShortAddress(),
+		MeshSource: s.inst.rloc16,
+		Direct:     false, // indirect transmission
+	}
+	return s.inst.sendViaForwarder(txMsg)
+}
+
+// Compile-time assertion.
+var _ indirect.FrameSender = (*indirectFrameSender)(nil)
+
+// --------------------------------------------------------------------------
+// realIndirectSenderAdapter — bridges indirect.Sender → supervision.IndirectSender
+// --------------------------------------------------------------------------
+
+// realIndirectSenderAdapter wraps a real *indirect.Sender to implement
+// the supervision.IndirectSender interface used by DataPollHandler.
+type realIndirectSenderAdapter struct {
+	sender *indirect.Sender
+}
+
+func (a *realIndirectSenderAdapter) HandleFrameChangeDone(_ *mle.Child) {
+	// Informational callback — the indirect.Sender manages its own state.
+}
+
+func (a *realIndirectSenderAdapter) HandleSentFrameToChild(child *mle.Child, err error) {
+	if err == nil {
+		a.sender.HandleSentSuccess(child.RLOC16)
+	} else {
+		a.sender.HandleSentFailure(child.RLOC16)
+	}
+}
+
+func (a *realIndirectSenderAdapter) GetIndirectMessageCount(child *mle.Child) uint16 {
+	return uint16(a.sender.GetMessageCount(child.RLOC16))
+}
+
+// Compile-time assertion.
+var _ supervision.IndirectSender = (*realIndirectSenderAdapter)(nil)
 
 // --------------------------------------------------------------------------
 // realTimer — wraps time.Timer for supervision.Timer
@@ -634,6 +755,13 @@ func (inst *Instance) SendMLE(msg []byte, dst ip6.Address) error {
 		meta.PanId = uint16(inst.mac.GetPanID())
 	}
 
+	// Enable MAC-layer security (AES-CCM* ENC-MIC-32, Key ID Mode 1).
+	meta.SecurityEnabled = true
+	meta.Security.KeyIdMode = 1
+	meta.Security.KeyId = inst.keyManager.GetMacKeyId()
+	meta.Security.FrameCounter = inst.keyManager.GetMacFrameCounter()
+	meta.Security.Key = [16]byte(inst.keyManager.GetCurrentMacKey())
+
 	txMsg := mesh.NewTxMessageWithMetadata(msg, dstRLOC, inst.rloc16, meta)
 	txMsg.Priority = uint8(mesh.PriorityNet)
 	return inst.sendViaForwarder(txMsg)
@@ -723,9 +851,36 @@ func (inst *Instance) GetMacFrameCounter() uint32 {
 	return inst.keyManager.GetMacFrameCounter()
 }
 
+// updateMacKeys pushes the current, previous, and next MAC keys from
+// the key manager to the SubMac layer (and radio hardware if supported).
+func (inst *Instance) updateMacKeys() {
+	if inst.subMac == nil {
+		return
+	}
+	keyID := inst.keyManager.GetMacKeyId()
+	seq := inst.keyManager.GetCurrentKeySequence()
+
+	toKeyMaterial := func(mk key.MacKey) types.KeyMaterial {
+		var km types.KeyMaterial
+		km.SetKey(types.Key(mk))
+		return km
+	}
+
+	var prevKM types.KeyMaterial
+	if seq > 0 {
+		prevKM = toKeyMaterial(inst.keyManager.GetTemporaryMacKey(seq - 1))
+	}
+	currKM := toKeyMaterial(inst.keyManager.GetCurrentMacKey())
+	nextKM := toKeyMaterial(inst.keyManager.GetTemporaryMacKey(seq + 1))
+
+	inst.subMac.SetMacKey(1, keyID, prevKM, currKM, nextKM)
+	inst.subMac.SetFrameCounter(inst.keyManager.GetMacFrameCounter(), false)
+}
+
 // SetCurrentKeySequence delegates to key.Manager.
 func (inst *Instance) SetCurrentKeySequence(seq uint32, flags key.SeqUpdateFlag) {
 	inst.keyManager.SetCurrentKeySequence(seq, flags)
+	inst.updateMacKeys()
 }
 
 // --------------------------------------------------------------------------
@@ -1049,6 +1204,13 @@ func (inst *Instance) sendCoAP(data []byte, info coap.MessageInfo) error {
 	if inst.mac != nil {
 		meta.PanId = uint16(inst.mac.GetPanID())
 	}
+
+	// Enable MAC-layer security (AES-CCM* ENC-MIC-32, Key ID Mode 1).
+	meta.SecurityEnabled = true
+	meta.Security.KeyIdMode = 1
+	meta.Security.KeyId = inst.keyManager.GetMacKeyId()
+	meta.Security.FrameCounter = inst.keyManager.GetMacFrameCounter()
+	meta.Security.Key = [16]byte(inst.keyManager.GetCurrentMacKey())
 
 	txMsg := mesh.NewTxMessageWithMetadata(data, dstRLOC, inst.rloc16, meta)
 	txMsg.Priority = uint8(mesh.PriorityNormal)

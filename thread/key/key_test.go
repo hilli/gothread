@@ -596,3 +596,74 @@ func TestManagerUpdateKeyMaterial(t *testing.T) {
 		t.Error("UpdateKeyMaterial did not set correct MLE key")
 	}
 }
+
+func TestManagerGetCurrentMacKey(t *testing.T) {
+	m := NewManager()
+	var nk NetworkKey
+	copy(nk[:], mustDecodeHex("00112233445566778899aabbccddeeff"))
+	m.SetNetworkKey(nk)
+
+	// After SetNetworkKey, key sequence is 0 and keys are derived.
+	dk := m.ComputeKeys(0)
+	if m.GetCurrentMacKey() != dk.MacKey {
+		t.Error("GetCurrentMacKey should match computed MAC key for seq 0")
+	}
+
+	// Change key sequence and verify MAC key updates.
+	m.SetCurrentKeySequence(42, ForceUpdate)
+	dk42 := m.ComputeKeys(42)
+	if m.GetCurrentMacKey() != dk42.MacKey {
+		t.Error("GetCurrentMacKey should match computed MAC key for seq 42")
+	}
+}
+
+func TestManagerGetMacKeyId(t *testing.T) {
+	m := NewManager()
+
+	// Key sequence 0 → key ID 0.
+	if m.GetMacKeyId() != 0 {
+		t.Errorf("key ID for seq 0: got %d, want 0", m.GetMacKeyId())
+	}
+
+	// Key sequence 42 → key ID 42.
+	m.SetCurrentKeySequence(42, ForceUpdate)
+	if m.GetMacKeyId() != 42 {
+		t.Errorf("key ID for seq 42: got %d, want 42", m.GetMacKeyId())
+	}
+
+	// Key sequence 128 → key ID 0 (mod 128).
+	m.SetCurrentKeySequence(128, ForceUpdate)
+	if m.GetMacKeyId() != 0 {
+		t.Errorf("key ID for seq 128: got %d, want 0", m.GetMacKeyId())
+	}
+
+	// Key sequence 255 → key ID 127 (255 & 0x7F).
+	m.SetCurrentKeySequence(255, ForceUpdate)
+	if m.GetMacKeyId() != 127 {
+		t.Errorf("key ID for seq 255: got %d, want 127", m.GetMacKeyId())
+	}
+
+	// Key sequence 0xFFFFFFFF → key ID 127.
+	m.SetCurrentKeySequence(0xFFFFFFFF, ForceUpdate)
+	if m.GetMacKeyId() != 127 {
+		t.Errorf("key ID for max seq: got %d, want 127", m.GetMacKeyId())
+	}
+}
+
+func TestManagerUpdateKeyMaterialStoresMacKey(t *testing.T) {
+	m := NewManager()
+	var nk NetworkKey
+	copy(nk[:], mustDecodeHex("00112233445566778899aabbccddeeff"))
+	m.networkKey = nk
+	m.keySequence = 42
+
+	m.UpdateKeyMaterial()
+
+	dk := m.ComputeKeys(42)
+	if m.GetCurrentMleKey() != dk.MleKey {
+		t.Error("UpdateKeyMaterial did not set correct MLE key")
+	}
+	if m.GetCurrentMacKey() != dk.MacKey {
+		t.Error("UpdateKeyMaterial did not set correct MAC key")
+	}
+}
