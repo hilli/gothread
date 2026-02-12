@@ -16,6 +16,9 @@
 package mle
 
 import (
+	"math/rand/v2"
+	"time"
+
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/ip6"
 )
@@ -116,6 +119,15 @@ type Service struct {
 
 	// DiscoveryHandler handles Discovery Request messages.
 	DiscoveryHandler *DiscoveryHandler
+
+	// AdvTrickle is the Trickle timer that schedules periodic MLE
+	// Advertisement transmissions. It is driven by the Instance's
+	// 1-second periodic tick calling HandleAdvTick.
+	AdvTrickle *TrickleTimer
+
+	// transport and routeData are retained for SendAdvertisement.
+	transport Transport
+	routeData RouteDataProvider
 }
 
 // NewService creates a new MLE Service, wiring together the state machine,
@@ -159,6 +171,25 @@ func NewService(cfg ServiceConfig) *Service {
 	// ChildUpdateRouter is NOT registered on the dispatcher (see its doc comment).
 	s.ChildUpdateRouter = NewChildUpdateRouter(mle, dispatcher, cfg.KeyProvider, childTable)
 
+	// Advertisement trickle timer. Uses standard Trickle mode (RFC 6206)
+	// with the Thread MLE advertisement intervals.
+	s.AdvTrickle = NewTrickleTimer(TrickleTimerConfig{
+		IMin: AdvIntervalMin,
+		IMax: DetermineAdvertiseIntervalMax(0), // start with 0 neighbors
+		K:    0,                                // no redundancy suppression for now
+		Mode: TrickleModeTrickle,
+		RandFn: func(n time.Duration) time.Duration {
+			if n <= 0 {
+				return 0
+			}
+			return time.Duration(rand.Int64N(int64(n)))
+		},
+	})
+
+	// Retain transport and route data for advertisement sending.
+	s.transport = cfg.Transport
+	s.routeData = cfg.RouteData
+
 	return s
 }
 
@@ -186,4 +217,20 @@ func (s *Service) ChildTable() *ChildTable {
 // validation, decryption, and dispatching to the appropriate handler.
 func (s *Service) HandleReceive(data []byte, srcAddr types.ExtAddress, srcIP, dstIP ip6.Address, linkMargin uint8) error {
 	return s.dispatcher.HandleReceive(data, srcAddr, srcIP, dstIP, linkMargin)
+}
+
+// HandleAdvTick advances the advertisement trickle timer by the given
+// elapsed duration and sends an advertisement if the timer fires.
+// The caller (Instance periodic tick) should call this every second.
+func (s *Service) HandleAdvTick(elapsed time.Duration) {
+	if s.AdvTrickle.HandleTimeTick(elapsed) {
+		_ = s.SendAdvertisement()
+	}
+}
+
+// SendAdvertisement sends an MLE Advertisement if the device is a
+// Router or Leader. It delegates to the package-level SendAdvertisement
+// function.
+func (s *Service) SendAdvertisement() error {
+	return SendAdvertisement(s.mle, s.dispatcher, s.transport, s.routeData)
 }

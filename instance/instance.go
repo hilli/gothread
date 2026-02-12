@@ -694,6 +694,48 @@ func (inst *Instance) scheduleAttachTimer() {
 }
 
 // --------------------------------------------------------------------------
+// Periodic tick
+// --------------------------------------------------------------------------
+
+// periodicTickInterval is the interval for the 1-second periodic tick
+// that drives time-based state machines (router role transition,
+// router table ID reuse, trickle timers, neighbor aging, etc.).
+const periodicTickInterval = 1 * time.Second
+
+// startPeriodicTick schedules the first periodic tick. Subsequent ticks
+// are self-re-arming via handlePeriodicTick.
+func (inst *Instance) startPeriodicTick() {
+	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
+}
+
+// handlePeriodicTick is called once per second from the timer scheduler.
+// It drives all time-based state machines and then re-arms itself.
+func (inst *Instance) handlePeriodicTick() {
+	// Router ID reuse delay counters.
+	inst.routerTable.HandleTimeTick()
+
+	// Router role transition countdown (REED → Router upgrade jitter).
+	m := inst.mleService.Mle()
+	if m.GetRouterRoleTransition().HandleTimeTick() {
+		// Transition timer expired — attempt BecomeRouter.
+		_ = m.BecomeRouter()
+	}
+
+	// Advertisement trickle timer — drives periodic MLE advertisements.
+	// Start the timer when we become a Router/Leader; stop it otherwise.
+	trickle := inst.mleService.AdvTrickle
+	if m.IsRouterOrLeader() && !trickle.IsRunning() {
+		trickle.Start()
+	} else if !m.IsRouterOrLeader() && trickle.IsRunning() {
+		trickle.Stop()
+	}
+	inst.mleService.HandleAdvTick(periodicTickInterval)
+
+	// Re-arm for the next tick.
+	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
+}
+
+// --------------------------------------------------------------------------
 // Event loop
 // --------------------------------------------------------------------------
 
@@ -701,6 +743,9 @@ func (inst *Instance) scheduleAttachTimer() {
 // and processes tasks, timers, and notifier events cooperatively.
 func (inst *Instance) eventLoop() {
 	defer close(inst.doneCh)
+
+	// Start the 1-second periodic tick.
+	inst.startPeriodicTick()
 
 	for {
 		// Determine how long to wait for the next timer.

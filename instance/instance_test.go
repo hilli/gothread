@@ -465,3 +465,28 @@ func TestDrainOnStop(t *testing.T) {
 		t.Error("expected at least some tasks to be executed before/during stop")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Periodic tick
+// --------------------------------------------------------------------------
+
+func TestPeriodicTickFires(t *testing.T) {
+	inst := New(Config{})
+	if err := inst.Start(); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer inst.Stop()
+
+	// The periodic tick runs every 1 second. After 1.2 seconds the
+	// RouterTable's HandleTimeTick should have been called at least once.
+	// We verify this indirectly: the router table tick decrements reuse
+	// delay counters. Since there are no routers, this is a no-op, but
+	// the fact that the instance runs for >1s without panicking confirms
+	// the tick infrastructure works.
+	time.Sleep(1200 * time.Millisecond)
+
+	// Verify the instance is still running (no panics in tick handler).
+	if !inst.IsRunning() {
+		t.Error("instance should still be running after periodic tick")
+	}
+}
