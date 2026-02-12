@@ -81,6 +81,230 @@ func TestRestart(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// IfConfigUp / IfConfigDown lifecycle tests
+// --------------------------------------------------------------------------
+
+func TestIfConfigUp(t *testing.T) {
+	inst := New(Config{})
+
+	if inst.IsIfConfigUp() {
+		t.Error("new instance should not have interface up")
+	}
+
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp() error: %v", err)
+	}
+
+	if !inst.IsIfConfigUp() {
+		t.Error("interface should be up after IfConfigUp()")
+	}
+
+	// Without a radio, MAC enable is skipped (software-only mode).
+	// MAC enabled state depends on whether a radio was provided.
+	if inst.platRadio != nil && !inst.mac.IsEnabled() {
+		t.Error("MAC should be enabled after IfConfigUp() with radio")
+	}
+
+	// Forwarder should be enabled regardless.
+	if !inst.forwarder.IsEnabled() {
+		t.Error("forwarder should be enabled after IfConfigUp()")
+	}
+}
+
+func TestIfConfigUpIdempotent(t *testing.T) {
+	inst := New(Config{})
+
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp() error: %v", err)
+	}
+
+	// Second call should return errAlready.
+	if err := inst.IfConfigUp(); err == nil {
+		t.Error("second IfConfigUp() should return error")
+	}
+}
+
+func TestIfConfigDown(t *testing.T) {
+	inst := New(Config{})
+
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp() error: %v", err)
+	}
+
+	if err := inst.IfConfigDown(); err != nil {
+		t.Fatalf("IfConfigDown() error: %v", err)
+	}
+
+	if inst.IsIfConfigUp() {
+		t.Error("interface should be down after IfConfigDown()")
+	}
+	if inst.mac.IsEnabled() {
+		t.Error("MAC should be disabled after IfConfigDown()")
+	}
+	if inst.forwarder.IsEnabled() {
+		t.Error("forwarder should be disabled after IfConfigDown()")
+	}
+}
+
+func TestIfConfigDownIdempotent(t *testing.T) {
+	inst := New(Config{})
+
+	// Down when already down.
+	if err := inst.IfConfigDown(); err == nil {
+		t.Error("IfConfigDown() on already-down interface should return error")
+	}
+}
+
+func TestIfConfigDownBlockedByThread(t *testing.T) {
+	inst := New(Config{})
+
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp() error: %v", err)
+	}
+	if err := inst.ThreadStart(); err != nil {
+		t.Fatalf("ThreadStart() error: %v", err)
+	}
+
+	// Should not be able to bring interface down while Thread is running.
+	if err := inst.IfConfigDown(); err == nil {
+		t.Error("IfConfigDown() should fail while Thread is running")
+	}
+
+	// Stop thread first, then it should work.
+	if err := inst.ThreadStop(); err != nil {
+		t.Fatalf("ThreadStop() error: %v", err)
+	}
+	if err := inst.IfConfigDown(); err != nil {
+		t.Fatalf("IfConfigDown() after ThreadStop() error: %v", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// ThreadStart / ThreadStop lifecycle tests
+// --------------------------------------------------------------------------
+
+func TestThreadStart(t *testing.T) {
+	inst := New(Config{})
+
+	// Interface must be up first.
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp() error: %v", err)
+	}
+
+	if inst.IsThreadRunning() {
+		t.Error("Thread should not be running on a new instance")
+	}
+
+	if err := inst.ThreadStart(); err != nil {
+		t.Fatalf("ThreadStart() error: %v", err)
+	}
+
+	if !inst.IsThreadRunning() {
+		t.Error("Thread should be running after ThreadStart()")
+	}
+
+	// MLE should be in Detached state (or beyond, if attach proceeded).
+	m := inst.mleService.Mle()
+	if m.IsDisabled() {
+		t.Error("MLE should not be Disabled after ThreadStart()")
+	}
+}
+
+func TestThreadStartRequiresIfConfigUp(t *testing.T) {
+	inst := New(Config{})
+
+	// Without IfConfigUp, ThreadStart should fail.
+	if err := inst.ThreadStart(); err == nil {
+		t.Error("ThreadStart() without IfConfigUp should return error")
+	}
+}
+
+func TestThreadStartIdempotent(t *testing.T) {
+	inst := New(Config{})
+	_ = inst.IfConfigUp()
+
+	if err := inst.ThreadStart(); err != nil {
+		t.Fatalf("ThreadStart() error: %v", err)
+	}
+	if err := inst.ThreadStart(); err == nil {
+		t.Error("second ThreadStart() should return error")
+	}
+}
+
+func TestThreadStop(t *testing.T) {
+	inst := New(Config{})
+	_ = inst.IfConfigUp()
+
+	if err := inst.ThreadStart(); err != nil {
+		t.Fatalf("ThreadStart() error: %v", err)
+	}
+	if err := inst.ThreadStop(); err != nil {
+		t.Fatalf("ThreadStop() error: %v", err)
+	}
+
+	if inst.IsThreadRunning() {
+		t.Error("Thread should not be running after ThreadStop()")
+	}
+
+	// MLE should be back to Disabled.
+	m := inst.mleService.Mle()
+	if !m.IsDisabled() {
+		t.Error("MLE should be Disabled after ThreadStop()")
+	}
+}
+
+func TestThreadStopIdempotent(t *testing.T) {
+	inst := New(Config{})
+
+	if err := inst.ThreadStop(); err == nil {
+		t.Error("ThreadStop() on already-stopped Thread should return error")
+	}
+}
+
+func TestFullLifecycle(t *testing.T) {
+	inst := New(Config{})
+
+	// Up → Thread → Stop Thread → Down → repeat.
+	for i := range 2 {
+		if err := inst.IfConfigUp(); err != nil {
+			t.Fatalf("cycle %d: IfConfigUp() error: %v", i, err)
+		}
+		if err := inst.ThreadStart(); err != nil {
+			t.Fatalf("cycle %d: ThreadStart() error: %v", i, err)
+		}
+		if err := inst.ThreadStop(); err != nil {
+			t.Fatalf("cycle %d: ThreadStop() error: %v", i, err)
+		}
+		if err := inst.IfConfigDown(); err != nil {
+			t.Fatalf("cycle %d: IfConfigDown() error: %v", i, err)
+		}
+	}
+}
+
+func TestRoleChangeCallbackFires(t *testing.T) {
+	inst := New(Config{})
+
+	// Register a notifier callback to observe EventThreadRoleChanged.
+	var receivedEvents Event
+	inst.notifier.register(func(events Event) {
+		receivedEvents |= events
+	})
+
+	_ = inst.IfConfigUp()
+
+	// ThreadStart triggers MLE Enable (Disabled→Detached), which fires
+	// the role change callback.
+	_ = inst.ThreadStart()
+
+	// Process the notifier to dispatch queued events.
+	inst.notifier.process()
+
+	if receivedEvents&EventThreadRoleChanged == 0 {
+		t.Error("expected EventThreadRoleChanged to be signalled after ThreadStart")
+	}
+}
+
+// --------------------------------------------------------------------------
 // PostTask tests
 // --------------------------------------------------------------------------
 

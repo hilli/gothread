@@ -241,6 +241,14 @@ type Instance struct {
 	running   bool
 	runningMu sync.Mutex
 
+	// ifConfigUp tracks whether the IP6/MAC interface is enabled
+	// (equivalent to otIp6SetEnabled).
+	ifConfigUp bool
+
+	// threadEnabled tracks whether the Thread protocol is enabled
+	// (equivalent to otThreadSetEnabled).
+	threadEnabled bool
+
 	// ---------------------------------------------------------------
 	// Tier 1 — Radio / MAC / Key core
 	// ---------------------------------------------------------------
@@ -520,6 +528,15 @@ func (inst *Instance) wireModules() {
 	// initiates a fresh attach.
 	inst.mleService.AnnounceHandler.OnSignal = inst.processAnnounce
 
+	// Wire role-change callback so that Instance reacts to every MLE
+	// role transition. The callback is invoked from within Mle.setRole()
+	// with m.mu held, so it MUST NOT call any Mle method that acquires
+	// mu (IsChild, GetParent, etc.). Instead we use the oldRole/newRole
+	// parameters and defer heavier sync work via signal+periodic tick.
+	inst.mleService.Mle().SetRoleChangeCallback(func(oldRole, newRole mle.DeviceRole) {
+		inst.notifier.signal(EventThreadRoleChanged)
+	})
+
 	// DataPollSender manages periodic data poll requests when this device
 	// operates as a sleepy end device (SED). The macPollTransmitter
 	// adapter bridges to Mac.RequestDataPollTransmission().
@@ -657,6 +674,95 @@ func (inst *Instance) Stop() {
 	inst.doneCh = make(chan struct{})
 	inst.runningMu.Unlock()
 }
+
+// --------------------------------------------------------------------------
+// Interface / Thread lifecycle
+// --------------------------------------------------------------------------
+
+// IfConfigUp enables the network interface: MAC and mesh forwarder are
+// enabled so frames can be sent and received. This is the equivalent of
+// OpenThread's otIp6SetEnabled(true).
+//
+// Must be called before ThreadStart. Safe to call from any goroutine;
+// the work is posted to the event loop.
+func (inst *Instance) IfConfigUp() error {
+	if inst.ifConfigUp {
+		return errAlready
+	}
+	// Enable MAC only if a radio is available. Software-only instances
+	// (no radio) skip MAC enable and rely on the forwarder alone.
+	if inst.platRadio != nil {
+		if err := inst.mac.Enable(); err != nil {
+			return err
+		}
+	}
+	inst.forwarder.SetEnabled(true)
+	inst.ifConfigUp = true
+	return nil
+}
+
+// IfConfigDown disables the network interface. Thread must be stopped
+// first via ThreadStop. This is the equivalent of
+// OpenThread's otIp6SetEnabled(false).
+func (inst *Instance) IfConfigDown() error {
+	if !inst.ifConfigUp {
+		return errAlready
+	}
+	if inst.threadEnabled {
+		return errThreadStillRunning
+	}
+	inst.forwarder.SetEnabled(false)
+	if inst.platRadio != nil {
+		if err := inst.mac.Disable(); err != nil {
+			return err
+		}
+	}
+	inst.ifConfigUp = false
+	return nil
+}
+
+// IsIfConfigUp reports whether the network interface (MAC + forwarder)
+// is enabled.
+func (inst *Instance) IsIfConfigUp() bool { return inst.ifConfigUp }
+
+// ThreadStart enables the Thread protocol: MLE transitions from
+// Disabled to Detached and the attach process begins. The network
+// interface must be up (IfConfigUp) first. This is the equivalent of
+// OpenThread's otThreadSetEnabled(true).
+func (inst *Instance) ThreadStart() error {
+	if inst.threadEnabled {
+		return errAlready
+	}
+	if !inst.ifConfigUp {
+		return errInterfaceDown
+	}
+	m := inst.mleService.Mle()
+	if err := m.Enable(); err != nil {
+		return err
+	}
+	inst.threadEnabled = true
+
+	// Kick off the attach state machine.
+	inst.mleService.Attacher.Start(mle.AttachAnyPartition)
+	inst.scheduleAttachTimer()
+	return nil
+}
+
+// ThreadStop disables the Thread protocol: MLE returns to Disabled,
+// clearing routing state and detaching from the network. This is the
+// equivalent of OpenThread's otThreadSetEnabled(false).
+func (inst *Instance) ThreadStop() error {
+	if !inst.threadEnabled {
+		return errAlready
+	}
+	m := inst.mleService.Mle()
+	_ = m.Disable()
+	inst.threadEnabled = false
+	return nil
+}
+
+// IsThreadRunning reports whether the Thread protocol is enabled.
+func (inst *Instance) IsThreadRunning() bool { return inst.threadEnabled }
 
 // IsRunning reports whether the event loop is active.
 func (inst *Instance) IsRunning() bool {
@@ -1076,6 +1182,18 @@ func (inst *Instance) drainTasks() {
 
 // errAlreadyRunning is returned when Start is called on a running Instance.
 var errAlreadyRunning = &instanceError{msg: "instance: already running"}
+
+// errAlready is returned when a lifecycle method is called but the state
+// is already in the requested state (e.g. IfConfigUp when already up).
+var errAlready = &instanceError{msg: "instance: already in requested state"}
+
+// errThreadStillRunning is returned when IfConfigDown is called while
+// the Thread protocol is still enabled.
+var errThreadStillRunning = &instanceError{msg: "instance: thread protocol still running; call ThreadStop first"}
+
+// errInterfaceDown is returned when ThreadStart is called but the
+// network interface is not enabled (IfConfigUp not called).
+var errInterfaceDown = &instanceError{msg: "instance: network interface not enabled; call IfConfigUp first"}
 
 type instanceError struct {
 	msg string
