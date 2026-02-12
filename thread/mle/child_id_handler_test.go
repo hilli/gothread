@@ -51,7 +51,7 @@ func newChildIDHandlerTestSetup(role DeviceRole, routerID uint8) (
 	d := NewDispatcher(m, keyMgr, transport)
 	childTable := NewChildTable()
 
-	h := NewChildIDHandler(m, d, keyMgr, childTable, nil)
+	h := NewChildIDHandler(m, d, keyMgr, childTable, nil, nil)
 	return h, m, d, transport, keyMgr, childTable
 }
 

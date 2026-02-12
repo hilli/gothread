@@ -46,7 +46,7 @@ func newAnnounceHandlerTestSetup(role DeviceRole, routerID uint8) (
 	}
 
 	d := NewDispatcher(m, keyMgr, transport)
-	h := NewAnnounceHandler(m, d, keyMgr, nil)
+	h := NewAnnounceHandler(m, d, keyMgr, nil, nil)
 
 	return h, m, d, transport, keyMgr
 }

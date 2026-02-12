@@ -49,6 +49,13 @@ type ServiceConfig struct {
 	// for MLE handlers that need to include Active/Pending Dataset info.
 	Datasets DatasetProvider
 
+	// NetworkData provides access to the Thread Network Data TLVs for
+	// inclusion in Data Response and Child ID Response messages.
+	NetworkData NetworkDataProvider
+
+	// MacInfo provides PAN ID and channel information from the MAC layer.
+	MacInfo MacInfoProvider
+
 	// NeighborLookup resolves source extended addresses to neighbor entries.
 	// This is typically provided by the router/child table.
 	NeighborLookup func(addr types.ExtAddress) *Neighbor
@@ -143,10 +150,10 @@ func NewService(cfg ServiceConfig) *Service {
 	s.LinkHandlers = NewFtdLinkHandlers(mle, dispatcher, cfg.KeyProvider, cfg.RouterLookup, cfg.RouteData)
 	s.LinkRejectHandler = NewLinkRejectHandler(mle, dispatcher)
 	s.AdvertisementHandler = NewFtdAdvertisementHandler(mle, dispatcher, cfg.RouterOps)
-	s.AnnounceHandler = NewAnnounceHandler(mle, dispatcher, cfg.KeyProvider, cfg.Datasets)
-	s.DataRequestHandler = NewDataRequestHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Datasets)
+	s.AnnounceHandler = NewAnnounceHandler(mle, dispatcher, cfg.KeyProvider, cfg.Datasets, cfg.MacInfo)
+	s.DataRequestHandler = NewDataRequestHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Datasets, cfg.NetworkData)
 	s.ParentRequestHandler = NewParentRequestHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Connectivity)
-	s.ChildIDHandler = NewChildIDHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Datasets)
+	s.ChildIDHandler = NewChildIDHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Datasets, cfg.NetworkData)
 	s.DiscoveryHandler = NewDiscoveryHandler(mle, dispatcher, cfg.NetworkInfo)
 
 	// ChildUpdateRouter is NOT registered on the dispatcher (see its doc comment).

@@ -101,6 +101,33 @@ type KeyProvider interface {
 	SetCurrentKeySequence(seq uint32, flags key.SeqUpdateFlag)
 }
 
+// NetworkDataProvider abstracts access to the Thread Network Data managed
+// by the network data leader. MLE handlers use this to include real network
+// data TLVs in Data Response and Child ID Response messages.
+//
+// In production, this is satisfied by the Instance struct which delegates
+// to netdata.Leader.
+type NetworkDataProvider interface {
+	// GetNetworkData returns the current network data as raw TLV bytes.
+	// If stableOnly is true, only stable TLVs are included (for sleepy
+	// end devices). Returns nil if no network data is available.
+	GetNetworkData(stableOnly bool) []byte
+}
+
+// MacInfoProvider abstracts access to MAC-layer identity information needed
+// by MLE handlers (e.g., the Announce handler needs the current PAN ID and
+// operating channel).
+//
+// In production, this is satisfied by the Instance struct which delegates
+// to mac.Mac.
+type MacInfoProvider interface {
+	// GetPanID returns the current IEEE 802.15.4 PAN ID.
+	GetPanID() uint16
+
+	// GetPanChannel returns the current Thread PAN operating channel.
+	GetPanChannel() uint8
+}
+
 // DatasetProvider abstracts access to the Active and Pending operational
 // datasets. MLE handlers use this to obtain real timestamps and dataset
 // TLV payloads instead of zero-value placeholders.

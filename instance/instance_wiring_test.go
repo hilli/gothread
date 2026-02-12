@@ -39,6 +39,8 @@ var _ mle.AdvertisementRouterOps = (*Instance)(nil)
 var _ mle.ConnectivityProvider = (*Instance)(nil)
 var _ mle.NetworkInfoProvider = (*Instance)(nil)
 var _ mle.DatasetProvider = (*Instance)(nil)
+var _ mle.NetworkDataProvider = (*Instance)(nil)
+var _ mle.MacInfoProvider = (*Instance)(nil)
 var _ submac.Callbacks = (*submacCallbackBridge)(nil)
 
 // --------------------------------------------------------------------------
@@ -183,6 +185,109 @@ func TestWireModules_Tier1_DatasetProviderEmptyRead(t *testing.T) {
 	}
 	if data := inst.ReadPendingDataset(); data != nil {
 		t.Errorf("ReadPendingDataset() = %v, want nil", data)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Tier 2 — NetworkDataProvider delegation
+// --------------------------------------------------------------------------
+
+func TestWireModules_NetworkDataProvider_NilLeader(t *testing.T) {
+	inst := New(Config{})
+	inst.netdataLeader = nil
+
+	// Should return nil when netdataLeader is nil (nil-safe).
+	data := inst.GetNetworkData(false)
+	if data != nil {
+		t.Errorf("GetNetworkData(false) = %v, want nil with nil leader", data)
+	}
+}
+
+func TestWireModules_NetworkDataProvider_EmptyLeader(t *testing.T) {
+	inst := New(Config{})
+
+	// Fresh leader has no data.
+	data := inst.GetNetworkData(false)
+	if len(data) != 0 {
+		t.Errorf("GetNetworkData(false) = %v, want empty with fresh leader", data)
+	}
+
+	// stableOnly=true should also work (returns same data for now).
+	data = inst.GetNetworkData(true)
+	if len(data) != 0 {
+		t.Errorf("GetNetworkData(true) = %v, want empty with fresh leader", data)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Tier 2 — MacInfoProvider delegation
+// --------------------------------------------------------------------------
+
+func TestWireModules_MacInfoProvider_Default(t *testing.T) {
+	inst := New(Config{})
+
+	// Default PAN ID is 0.
+	panID := inst.GetPanID()
+	if panID != 0 {
+		t.Errorf("GetPanID() = %d, want 0", panID)
+	}
+
+	// Default channel is 11 (Thread default).
+	ch := inst.GetPanChannel()
+	if ch != 11 {
+		t.Errorf("GetPanChannel() = %d, want 11", ch)
+	}
+}
+
+func TestWireModules_MacInfoProvider_Configured(t *testing.T) {
+	inst := New(Config{})
+
+	inst.mac.SetPanID(types.PanID(0xFACE))
+	inst.mac.SetPanChannel(15)
+
+	if panID := inst.GetPanID(); panID != 0xFACE {
+		t.Errorf("GetPanID() = 0x%04X, want 0xFACE", panID)
+	}
+
+	if ch := inst.GetPanChannel(); ch != 15 {
+		t.Errorf("GetPanChannel() = %d, want 15", ch)
+	}
+}
+
+func TestWireModules_MacInfoProvider_NilMac(t *testing.T) {
+	inst := New(Config{})
+	inst.mac = nil
+
+	// Should be nil-safe.
+	if panID := inst.GetPanID(); panID != 0 {
+		t.Errorf("GetPanID() = %d, want 0 with nil mac", panID)
+	}
+	if ch := inst.GetPanChannel(); ch != 0 {
+		t.Errorf("GetPanChannel() = %d, want 0 with nil mac", ch)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Tier 3 — netdataLeader.SetOnChanged callback
+// --------------------------------------------------------------------------
+
+func TestWireModules_NetdataOnChanged_SignalsNotifier(t *testing.T) {
+	inst := New(Config{})
+
+	// Register a notifier callback to capture events.
+	var received Event
+	inst.notifier.register(func(events Event) {
+		received |= events
+	})
+
+	// Trigger the OnChanged callback by incrementing netdata versions.
+	inst.netdataLeader.IncrementVersions(false)
+
+	// Process notifier — signal is deferred until process().
+	inst.notifier.process()
+
+	if received&EventThreadNetDataChanged == 0 {
+		t.Error("OnChanged callback should signal EventThreadNetDataChanged")
 	}
 }
 

@@ -415,6 +415,8 @@ func (inst *Instance) wireModules() {
 		Connectivity: inst, // Instance provides connectivity data
 		NetworkInfo:  inst, // Instance provides network identity
 		Datasets:     inst, // Instance provides dataset access
+		NetworkData:  inst, // Instance delegates to netdataLeader
+		MacInfo:      inst, // Instance delegates to mac layer
 		NeighborLookup: func(addr types.ExtAddress) *mle.Neighbor {
 			n := inst.neighborTable.FindNeighborByExtAddress(addr, routing.FilterValid)
 			if n == nil {
@@ -431,6 +433,9 @@ func (inst *Instance) wireModules() {
 	inst.coapEngine = coap.NewEngine(inst.sendCoAP)
 	inst.tmfAgent = tmf.NewAgent(inst.coapEngine)
 	inst.netdataLeader = netdata.NewLeader(&routerCheckerAdapter{rt: inst.routerTable})
+	inst.netdataLeader.SetOnChanged(func() {
+		inst.notifier.signal(EventThreadNetDataChanged)
+	})
 	inst.forwarder = mesh.NewForwarder()
 
 	// ---------------------------------------------------------------

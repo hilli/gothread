@@ -24,11 +24,12 @@ import (
 // DataRequestHandler implements the router-side handling of MLE Data Request
 // messages received from children, and the sending of Data Response messages.
 type DataRequestHandler struct {
-	mle        *Mle
-	dispatcher *Dispatcher
-	keyMgr     KeyProvider
-	childTable *ChildTable
-	datasets   DatasetProvider
+	mle         *Mle
+	dispatcher  *Dispatcher
+	keyMgr      KeyProvider
+	childTable  *ChildTable
+	datasets    DatasetProvider
+	networkData NetworkDataProvider
 }
 
 // NewDataRequestHandler creates a new DataRequestHandler and registers the
@@ -39,13 +40,15 @@ func NewDataRequestHandler(
 	keyMgr KeyProvider,
 	childTable *ChildTable,
 	datasets DatasetProvider,
+	networkData NetworkDataProvider,
 ) *DataRequestHandler {
 	h := &DataRequestHandler{
-		mle:        mle,
-		dispatcher: dispatcher,
-		keyMgr:     keyMgr,
-		childTable: childTable,
-		datasets:   datasets,
+		mle:         mle,
+		dispatcher:  dispatcher,
+		keyMgr:      keyMgr,
+		childTable:  childTable,
+		datasets:    datasets,
+		networkData: networkData,
 	}
 
 	dispatcher.RegisterHandler(CommandDataRequest, h.HandleDataRequest)
@@ -173,10 +176,7 @@ func (h *DataRequestHandler) SendDataResponse(dstIP ip6.Address, requestedTLVs [
 	for _, tlvType := range requestedTLVs {
 		switch tlvType {
 		case TLVNetworkData:
-			// Append empty network data placeholder. A real implementation
-			// would include the leader's current network data, filtered by
-			// the child's data type (full vs stable).
-			msg.AppendNetworkDataTLV(nil)
+			msg.AppendNetworkDataTLV(h.getNetworkData())
 
 		case TLVActiveDataset:
 			msg.appendTLV(TLVActiveDataset, h.readActiveDataset())
@@ -233,6 +233,15 @@ func (h *DataRequestHandler) readPendingDataset() []byte {
 		return nil
 	}
 	return h.datasets.ReadPendingDataset()
+}
+
+// getNetworkData returns the current network data bytes from the provider,
+// or nil if no provider is configured.
+func (h *DataRequestHandler) getNetworkData() []byte {
+	if h.networkData == nil {
+		return nil
+	}
+	return h.networkData.GetNetworkData(false)
 }
 
 // appendIfMissing appends v to the slice if it is not already present.

@@ -26,11 +26,12 @@ import (
 // ChildIDHandler implements the router-side handling of MLE Child ID Request
 // messages and the sending of Child ID Response messages.
 type ChildIDHandler struct {
-	mle        *Mle
-	dispatcher *Dispatcher
-	keyMgr     KeyProvider
-	childTable *ChildTable
-	datasets   DatasetProvider
+	mle         *Mle
+	dispatcher  *Dispatcher
+	keyMgr      KeyProvider
+	childTable  *ChildTable
+	datasets    DatasetProvider
+	networkData NetworkDataProvider
 }
 
 // NewChildIDHandler creates a new ChildIDHandler and registers the
@@ -41,13 +42,15 @@ func NewChildIDHandler(
 	keyMgr KeyProvider,
 	childTable *ChildTable,
 	datasets DatasetProvider,
+	networkData NetworkDataProvider,
 ) *ChildIDHandler {
 	h := &ChildIDHandler{
-		mle:        mle,
-		dispatcher: dispatcher,
-		keyMgr:     keyMgr,
-		childTable: childTable,
-		datasets:   datasets,
+		mle:         mle,
+		dispatcher:  dispatcher,
+		keyMgr:      keyMgr,
+		childTable:  childTable,
+		datasets:    datasets,
+		networkData: networkData,
 	}
 
 	dispatcher.RegisterHandler(CommandChildIDRequest, h.HandleChildIDRequest)
@@ -222,9 +225,7 @@ func (h *ChildIDHandler) SendChildIDResponse(child *Child) error {
 	for _, tlvType := range child.GetRequestTLVs() {
 		switch tlvType {
 		case TLVNetworkData:
-			// Append empty network data placeholder. A real implementation
-			// would include the leader's current network data.
-			msg.AppendNetworkDataTLV(nil)
+			msg.AppendNetworkDataTLV(h.getNetworkData())
 
 		case TLVRoute64:
 			// Route64 would be appended from the router table.
@@ -281,4 +282,13 @@ func (h *ChildIDHandler) getPendingTimestamp() *meshcop.Timestamp {
 	}
 	ts := h.datasets.GetPendingTimestamp()
 	return &ts
+}
+
+// getNetworkData returns the current network data bytes from the provider,
+// or nil if no provider is configured.
+func (h *ChildIDHandler) getNetworkData() []byte {
+	if h.networkData == nil {
+		return nil
+	}
+	return h.networkData.GetNetworkData(false)
 }

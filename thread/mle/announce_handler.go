@@ -68,6 +68,7 @@ type AnnounceHandler struct {
 	dispatcher *Dispatcher
 	keyMgr     KeyProvider
 	datasets   DatasetProvider
+	macInfo    MacInfoProvider
 
 	// LastAction records the action taken by the most recent
 	// HandleAnnounce call. Useful for testing and debugging.
@@ -89,12 +90,14 @@ func NewAnnounceHandler(
 	dispatcher *Dispatcher,
 	keyMgr KeyProvider,
 	datasets DatasetProvider,
+	macInfo MacInfoProvider,
 ) *AnnounceHandler {
 	h := &AnnounceHandler{
 		mle:        mle,
 		dispatcher: dispatcher,
 		keyMgr:     keyMgr,
 		datasets:   datasets,
+		macInfo:    macInfo,
 	}
 
 	dispatcher.RegisterHandler(CommandAnnounce, h.HandleAnnounce)
@@ -157,12 +160,13 @@ func (h *AnnounceHandler) HandleAnnounce(rxInfo *RxInfo) error {
 	// 4. If the received timestamp is an Orphan Announce, check whether
 	// the channel and PAN ID match. If they do, ignore.
 	if receivedTS.IsOrphanAnnounce() {
-		// An orphan on our same channel/PAN can be ignored — we are
-		// presumably already in the right place. In a real implementation
-		// the check would compare against the device's current operating
-		// channel and PAN ID. For now we treat all orphan announces as
-		// potential "send back" candidates if we are attached and FTD.
-		// However, if not attached, we ignore.
+		localChannel, localPanID := h.getMacInfo()
+		if channel == localChannel && panID == localPanID {
+			// Orphan on our same channel/PAN — ignore.
+			h.LastAction = AnnounceActionIgnore
+			return nil
+		}
+		// Orphan on a different channel/PAN. If not attached, ignore.
 		if !h.mle.IsAttached() {
 			h.LastAction = AnnounceActionIgnore
 			return nil
@@ -234,9 +238,9 @@ func (h *AnnounceHandler) SendAnnounce(channel uint16, mode AnnounceMode, dst ip
 		return fmt.Errorf("mle: send announce: %w", err)
 	}
 
-	// PAN ID TLV: use 0 as placeholder. A real implementation would
-	// obtain the current PAN ID from the MAC layer.
-	msg.AppendPanIDTLV(0)
+	// PAN ID TLV: use the current PAN ID from the MAC layer.
+	_, localPanID := h.getMacInfo()
+	msg.AppendPanIDTLV(localPanID)
 
 	if err := h.dispatcher.SendMessage(msg, dst); err != nil {
 		return fmt.Errorf("mle: send announce: %w", err)
@@ -257,4 +261,13 @@ func (h *AnnounceHandler) getActiveTimestamp() *meshcop.Timestamp {
 	}
 	ts := h.datasets.GetActiveTimestamp()
 	return &ts
+}
+
+// getMacInfo returns the current PAN channel and PAN ID from the MAC
+// info provider. Returns (0, 0) if no provider is configured.
+func (h *AnnounceHandler) getMacInfo() (channel uint16, panID uint16) {
+	if h.macInfo == nil {
+		return 0, 0
+	}
+	return uint16(h.macInfo.GetPanChannel()), h.macInfo.GetPanID()
 }

@@ -690,6 +690,40 @@ func (inst *Instance) ReadPendingDataset() []byte {
 }
 
 // --------------------------------------------------------------------------
+// Instance implements mle.NetworkDataProvider
+// --------------------------------------------------------------------------
+
+// GetNetworkData returns the current network data bytes. The stableOnly
+// parameter is accepted for interface compatibility but is not yet used;
+// the full network data is always returned.
+func (inst *Instance) GetNetworkData(stableOnly bool) []byte {
+	if inst.netdataLeader == nil {
+		return nil
+	}
+	return inst.netdataLeader.Data()
+}
+
+// --------------------------------------------------------------------------
+// Instance implements mle.MacInfoProvider
+// --------------------------------------------------------------------------
+
+// GetPanID returns the PAN ID of the MAC layer.
+func (inst *Instance) GetPanID() uint16 {
+	if inst.mac == nil {
+		return 0
+	}
+	return uint16(inst.mac.GetPanID())
+}
+
+// GetPanChannel returns the operating channel of the MAC layer.
+func (inst *Instance) GetPanChannel() uint8 {
+	if inst.mac == nil {
+		return 0
+	}
+	return inst.mac.GetPanChannel()
+}
+
+// --------------------------------------------------------------------------
 // Helper: scheduleTimerDirect — schedules a timer on the event loop
 // --------------------------------------------------------------------------
 
