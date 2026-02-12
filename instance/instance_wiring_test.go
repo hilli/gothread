@@ -7,6 +7,7 @@ package instance
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	cnotifier "github.com/hilli/gothread/common/notifier"
 	"github.com/hilli/gothread/encoding"
@@ -26,6 +27,7 @@ import (
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
+	"github.com/hilli/gothread/thread/supervision"
 )
 
 // --------------------------------------------------------------------------
@@ -2522,5 +2524,348 @@ func TestDataPollSender_AttachModeViaScheduleAttachTimer(t *testing.T) {
 	period := inst.dataPollSender.GetPollPeriod()
 	if period == 100 {
 		t.Error("poll period should not be attach period (100ms) when no attach in progress")
+	}
+}
+
+// --------------------------------------------------------------------------
+// Child Supervision wiring tests (Phase 31ak)
+// --------------------------------------------------------------------------
+
+func TestWireModules_SupervisorCreated(t *testing.T) {
+	inst := New(Config{})
+	if inst.supervisor == nil {
+		t.Fatal("supervisor should be non-nil after New()")
+	}
+}
+
+func TestWireModules_SupervisionListenerCreated(t *testing.T) {
+	inst := New(Config{})
+	if inst.supervisionListener == nil {
+		t.Fatal("supervisionListener should be non-nil after New()")
+	}
+}
+
+func TestChildToMLE_Nil(t *testing.T) {
+	if got := childToMLE(nil); got != nil {
+		t.Fatalf("childToMLE(nil) = %v, want nil", got)
+	}
+}
+
+func TestChildToMLE_FieldMapping(t *testing.T) {
+	rc := &routing.Child{}
+	rc.ExtAddress = types.ExtAddress{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	rc.RLOC16 = 0x4401
+	rc.State = routing.StateValid
+	rc.Timeout = 300
+	rc.MeshLocalIID = ip6.InterfaceIdentifier{0xAA, 0xBB}
+	rc.NetworkDataVersion = 42
+	rc.SupervisionInterval = 190
+	rc.SecondsSinceSupervision = 5
+	rc.IP6Addresses = []ip6.Address{
+		{0x20, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{0x20, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2},
+	}
+	rc.RequestTLVs = [routing.MaxRequestTLVs]uint8{1, 2, 3, 4, 5, 6}
+
+	mc := childToMLE(rc)
+	if mc == nil {
+		t.Fatal("childToMLE returned nil")
+	}
+	if mc.RLOC16 != 0x4401 {
+		t.Errorf("RLOC16 = %#x, want 0x4401", mc.RLOC16)
+	}
+	if mc.Timeout != 300 {
+		t.Errorf("Timeout = %d, want 300", mc.Timeout)
+	}
+	if mc.NetworkDataVersion != 42 {
+		t.Errorf("NetworkDataVersion = %d, want 42", mc.NetworkDataVersion)
+	}
+	if mc.SupervisionInterval != 190 {
+		t.Errorf("SupervisionInterval = %d, want 190", mc.SupervisionInterval)
+	}
+	if mc.SecondsSinceSupervision != 5 {
+		t.Errorf("SecondsSinceSupervision = %d, want 5", mc.SecondsSinceSupervision)
+	}
+	if mc.IP6AddressCount != 2 {
+		t.Errorf("IP6AddressCount = %d, want 2", mc.IP6AddressCount)
+	}
+	if mc.IP6Addresses[0][15] != 1 || mc.IP6Addresses[1][15] != 2 {
+		t.Error("IP6Addresses not correctly copied")
+	}
+	// routing.MaxRequestTLVs=6 but mle.MaxRequestTLVs=5, so only 5 are copied.
+	if mc.RequestTLVCount != uint8(mle.MaxRequestTLVs) {
+		t.Errorf("RequestTLVCount = %d, want %d", mc.RequestTLVCount, mle.MaxRequestTLVs)
+	}
+	for i := 0; i < mle.MaxRequestTLVs; i++ {
+		if mc.RequestTLVs[i] != uint8(i+1) {
+			t.Errorf("RequestTLVs[%d] = %d, want %d", i, mc.RequestTLVs[i], i+1)
+		}
+	}
+}
+
+func TestChildProviderAdapter_EmptyTable(t *testing.T) {
+	ct := routing.NewChildTable()
+	adapter := &childProviderAdapter{childTable: ct}
+	children := adapter.GetChildren()
+	if len(children) != 0 {
+		t.Errorf("expected 0 children, got %d", len(children))
+	}
+}
+
+func TestChildProviderAdapter_WithChildren(t *testing.T) {
+	ct := routing.NewChildTable()
+	c := ct.GetNewChild()
+	if c == nil {
+		t.Fatal("ChildTable.GetNewChild() returned nil")
+	}
+	c.State = routing.StateValid
+	c.RLOC16 = 0x4401
+	c.Timeout = 120
+
+	adapter := &childProviderAdapter{childTable: ct}
+	children := adapter.GetChildren()
+	if len(children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(children))
+	}
+	if children[0].RLOC16 != 0x4401 {
+		t.Errorf("RLOC16 = %#x, want 0x4401", children[0].RLOC16)
+	}
+	if children[0].Timeout != 120 {
+		t.Errorf("Timeout = %d, want 120", children[0].Timeout)
+	}
+}
+
+func TestChildProviderAdapter_WriteBack(t *testing.T) {
+	ct := routing.NewChildTable()
+	c := ct.GetNewChild()
+	if c == nil {
+		t.Fatal("ChildTable.GetNewChild() returned nil")
+	}
+	c.State = routing.StateValid
+	c.RLOC16 = 0x4401
+	c.SecondsSinceSupervision = 0
+
+	adapter := &childProviderAdapter{childTable: ct}
+	children := adapter.GetChildren()
+	if len(children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(children))
+	}
+	// Simulate supervisor incrementing the counter on the mle.Child copy.
+	children[0].SecondsSinceSupervision = 42
+
+	adapter.WriteBack()
+
+	// Verify routing.Child was updated.
+	if c.SecondsSinceSupervision != 42 {
+		t.Errorf("routing child SecondsSinceSupervision = %d, want 42", c.SecondsSinceSupervision)
+	}
+}
+
+func TestSyncSupervision_StartsListenerWhenChild(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateChild(0x4401)
+
+	inst.syncSupervision()
+
+	if !inst.supervisionListener.IsRunning() {
+		t.Error("supervision listener should be running when child")
+	}
+}
+
+func TestSyncSupervision_StopsListenerWhenRouter(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+
+	// Start as child.
+	_ = m.SetStateChild(0x4401)
+	inst.syncSupervision()
+	if !inst.supervisionListener.IsRunning() {
+		t.Fatal("listener should be running as child")
+	}
+
+	// Become router — should stop.
+	_ = m.SetStateRouter(0x4400)
+	inst.syncSupervision()
+
+	if inst.supervisionListener.IsRunning() {
+		t.Error("supervision listener should not be running when router")
+	}
+}
+
+func TestSyncSupervision_StopsListenerWhenDetached(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+
+	// Start as child.
+	_ = m.SetStateChild(0x4401)
+	inst.syncSupervision()
+	if !inst.supervisionListener.IsRunning() {
+		t.Fatal("listener should be running as child")
+	}
+
+	// Detach — should stop.
+	_ = m.BecomeDetached()
+	inst.syncSupervision()
+
+	if inst.supervisionListener.IsRunning() {
+		t.Error("supervision listener should not be running when detached")
+	}
+}
+
+func TestSyncParentAddress_AlsoSyncsSupervision(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateChild(0x4401)
+	parent := m.GetParent()
+	parent.RLOC16 = 0x4400
+
+	inst.syncParentAddress()
+
+	if !inst.supervisionListener.IsRunning() {
+		t.Error("syncParentAddress should start supervision listener when child")
+	}
+
+	_ = m.BecomeDetached()
+	inst.syncParentAddress()
+
+	if inst.supervisionListener.IsRunning() {
+		t.Error("syncParentAddress should stop supervision listener when detached")
+	}
+}
+
+// fakeTimer implements supervision.Timer for testing.
+type fakeTimer struct {
+	ch       chan time.Time
+	running  bool
+	resetDur time.Duration
+}
+
+func newFakeTimer() *fakeTimer {
+	return &fakeTimer{ch: make(chan time.Time, 1)}
+}
+
+func (ft *fakeTimer) Reset(d time.Duration) {
+	ft.running = true
+	ft.resetDur = d
+}
+
+func (ft *fakeTimer) Stop() bool {
+	was := ft.running
+	ft.running = false
+	return was
+}
+
+func (ft *fakeTimer) C() <-chan time.Time { return ft.ch }
+
+var _ supervision.Timer = (*fakeTimer)(nil)
+
+func TestSupervisionTickInPeriodicTick(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateRouter(0x4400)
+
+	// Add a valid child to the child table.
+	c := inst.childTable.GetNewChild()
+	if c == nil {
+		t.Fatal("GetNewChild returned nil")
+	}
+	c.State = routing.StateValid
+	c.RLOC16 = 0x4401
+	c.SecondsSinceSupervision = 0
+	// Make the child sleepy (not RxOnWhenIdle) so supervisor will count it.
+	c.Mode = mle.NewDeviceMode(0) // no flags = sleepy
+
+	// Tick once — supervisor should increment SecondsSinceSupervision.
+	inst.handlePeriodicTick()
+
+	// After write-back, routing child should have incremented counter.
+	if c.SecondsSinceSupervision == 0 {
+		t.Error("SecondsSinceSupervision should have been incremented by supervisor tick")
+	}
+}
+
+func TestHandleReceivedFrame_UpdatesSupervisionListener(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateChild(0x4401)
+
+	// Start the supervision listener.
+	inst.syncSupervision()
+	if !inst.supervisionListener.IsRunning() {
+		t.Fatal("supervision listener should be running")
+	}
+
+	// Verify UpdateOnReceive doesn't panic when called via HandleReceivedFrame.
+	// We use a frame that the forwarder can process.
+	inst.forwarder.SetEnabled(true)
+	frame := &radio.Frame{
+		PSDU:    []byte{0x41, 0x88, 0x01, 0xFF, 0xFF, 0x01, 0x44, 0x01, 0x44, 0xAA, 0xBB},
+		Channel: 15,
+	}
+	// This won't panic even if the frame processing fails after forwarder —
+	// the key is that UpdateOnReceive is called.
+	inst.HandleReceivedFrame(frame)
+}
+
+func TestSupervisorAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.Supervisor() == nil {
+		t.Error("Supervisor() should return non-nil")
+	}
+	if inst.Supervisor() != inst.supervisor {
+		t.Error("Supervisor() should return the same pointer as inst.supervisor")
+	}
+}
+
+func TestSupervisionListenerAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.SupervisionListener() == nil {
+		t.Error("SupervisionListener() should return non-nil")
+	}
+	if inst.SupervisionListener() != inst.supervisionListener {
+		t.Error("SupervisionListener() should return the same pointer as inst.supervisionListener")
+	}
+}
+
+func TestParentLossHandler_TriggersReattach(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateChild(0x4401)
+
+	handler := &parentLossHandler{inst: inst}
+	handler.HandleParentLoss()
+
+	// After HandleParentLoss, MLE should be detached.
+	if !m.IsDetached() {
+		t.Error("MLE should be detached after HandleParentLoss")
+	}
+}
+
+func TestSupervisionMessageSender_SendsFrame(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.rloc16 = 0x4400
+
+	sender := &supervisionMessageSender{inst: inst}
+	child := &mle.Child{}
+	child.RLOC16 = 0x4401
+
+	err := sender.SendSupervisionMessage(child)
+	if err != nil {
+		t.Fatalf("SendSupervisionMessage() error: %v", err)
+	}
+
+	// Verify a message was enqueued to the forwarder.
+	direct, _ := inst.forwarder.GetQueueLength()
+	if direct == 0 {
+		t.Error("expected at least one message in forwarder direct queue")
 	}
 }

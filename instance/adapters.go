@@ -27,6 +27,7 @@ import (
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
+	"github.com/hilli/gothread/thread/supervision"
 )
 
 // --------------------------------------------------------------------------
@@ -176,6 +177,154 @@ func routingStateToMLE(s routing.State) mle.NeighborState {
 	return mle.NeighborState(s)
 }
 
+// childToMLE converts a routing-layer Child to an MLE-layer Child.
+// The routing package stores IP6Addresses as a slice while MLE uses a
+// fixed-size array; RequestTLVs differ in capacity (6 vs 5).
+func childToMLE(c *routing.Child) *mle.Child {
+	if c == nil {
+		return nil
+	}
+	neighbor := neighborToMLE(&c.Neighbor)
+	mc := &mle.Child{
+		Neighbor:                *neighbor,
+		Timeout:                 c.Timeout,
+		MeshLocalIID:            c.MeshLocalIID,
+		NetworkDataVersion:      c.NetworkDataVersion,
+		SupervisionInterval:     c.SupervisionInterval,
+		SecondsSinceSupervision: c.SecondsSinceSupervision,
+	}
+	// Copy IP6 addresses (routing uses slice, mle uses fixed array).
+	for i := 0; i < len(c.IP6Addresses) && i < mle.MaxChildIPAddresses; i++ {
+		mc.IP6Addresses[i] = c.IP6Addresses[i]
+	}
+	mc.IP6AddressCount = uint8(len(c.IP6Addresses))
+	if mc.IP6AddressCount > mle.MaxChildIPAddresses {
+		mc.IP6AddressCount = mle.MaxChildIPAddresses
+	}
+	// Copy RequestTLVs (routing has [6], mle has [5]).
+	n := len(c.RequestTLVs)
+	if n > mle.MaxRequestTLVs {
+		n = mle.MaxRequestTLVs
+	}
+	for i := 0; i < n; i++ {
+		mc.RequestTLVs[i] = c.RequestTLVs[i]
+	}
+	mc.RequestTLVCount = uint8(n)
+	return mc
+}
+
+// --------------------------------------------------------------------------
+// childProviderAdapter — bridges routing.ChildTable → supervision.ChildProvider
+// --------------------------------------------------------------------------
+
+// childProviderAdapter implements supervision.ChildProvider by returning
+// mle.Child copies converted from the routing.ChildTable. It caches the
+// mapping so that mutations made by the Supervisor (e.g. incrementing
+// SecondsSinceSupervision) can be written back to the routing entries.
+type childProviderAdapter struct {
+	childTable  *routing.ChildTable
+	lastMLE     []*mle.Child     // cached from last GetChildren()
+	lastRouting []*routing.Child // parallel slice of routing children
+}
+
+// GetChildren returns mle.Child pointers converted from the routing table.
+func (a *childProviderAdapter) GetChildren() []*mle.Child {
+	a.lastRouting = a.childTable.Children(routing.FilterValid)
+	a.lastMLE = make([]*mle.Child, 0, len(a.lastRouting))
+	for _, rc := range a.lastRouting {
+		a.lastMLE = append(a.lastMLE, childToMLE(rc))
+	}
+	return a.lastMLE
+}
+
+// WriteBack syncs supervision counters from the cached mle.Child copies
+// back to the routing-layer children.
+func (a *childProviderAdapter) WriteBack() {
+	for i, mc := range a.lastMLE {
+		if i < len(a.lastRouting) {
+			a.lastRouting[i].SecondsSinceSupervision = mc.SecondsSinceSupervision
+		}
+	}
+}
+
+// Compile-time assertion.
+var _ supervision.ChildProvider = (*childProviderAdapter)(nil)
+
+// --------------------------------------------------------------------------
+// supervisionMessageSender — sends empty supervision frames via forwarder
+// --------------------------------------------------------------------------
+
+// supervisionMessageSender implements supervision.MessageSender by sending
+// an empty data frame to the child's RLOC16 through the mesh forwarder.
+type supervisionMessageSender struct {
+	inst *Instance
+}
+
+// SendSupervisionMessage sends an empty supervision frame to the child.
+func (s *supervisionMessageSender) SendSupervisionMessage(child *mle.Child) error {
+	if s.inst.forwarder == nil {
+		return nil
+	}
+	msg := mesh.NewTxMessage(nil, child.RLOC16, s.inst.rloc16)
+	msg.Priority = uint8(mesh.PriorityNet)
+	return s.inst.forwarder.SendMessage(msg)
+}
+
+// Compile-time assertion.
+var _ supervision.MessageSender = (*supervisionMessageSender)(nil)
+
+// --------------------------------------------------------------------------
+// parentLossHandler — triggers re-attach on supervision timeout
+// --------------------------------------------------------------------------
+
+// parentLossHandler implements supervision.ParentLossHandler by detaching
+// and starting a fresh attach sequence.
+type parentLossHandler struct {
+	inst *Instance
+}
+
+// HandleParentLoss detaches from the current parent and begins re-attachment.
+func (h *parentLossHandler) HandleParentLoss() {
+	if h.inst.mleService == nil {
+		return
+	}
+	_ = h.inst.mleService.Mle().BecomeDetached()
+	h.inst.mleService.Attacher.Start(mle.AttachAnyPartition)
+	h.inst.scheduleAttachTimer()
+}
+
+// Compile-time assertion.
+var _ supervision.ParentLossHandler = (*parentLossHandler)(nil)
+
+// --------------------------------------------------------------------------
+// realTimer — wraps time.Timer for supervision.Timer
+// --------------------------------------------------------------------------
+
+// realTimer implements supervision.Timer using the standard library's
+// time.Timer. It is used by the SupervisionListener to detect parent loss.
+type realTimer struct {
+	t *time.Timer
+}
+
+// newRealTimer creates a realTimer in the stopped state.
+func newRealTimer() *realTimer {
+	t := time.NewTimer(time.Hour)
+	t.Stop()
+	return &realTimer{t: t}
+}
+
+// Reset reschedules the timer to fire after d.
+func (rt *realTimer) Reset(d time.Duration) { rt.t.Reset(d) }
+
+// Stop cancels the pending timer.
+func (rt *realTimer) Stop() bool { return rt.t.Stop() }
+
+// C returns the channel on which the timer fires.
+func (rt *realTimer) C() <-chan time.Time { return rt.t.C }
+
+// Compile-time assertion.
+var _ supervision.Timer = (*realTimer)(nil)
+
 // --------------------------------------------------------------------------
 // Instance implements mac.Callbacks
 // --------------------------------------------------------------------------
@@ -263,6 +412,13 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 	payload, _, err := inst.forwarder.HandleReceivedFrame(frame.PSDU, info)
 	if err != nil || len(payload) == 0 {
 		return
+	}
+
+	// Update child supervision listener — any received frame from the
+	// parent resets the supervision timeout so we don't falsely detect
+	// parent loss.
+	if inst.supervisionListener != nil && inst.supervisionListener.IsRunning() {
+		inst.supervisionListener.UpdateOnReceive()
 	}
 
 	// Step 2: Check for 6LoWPAN IPHC dispatch.

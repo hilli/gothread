@@ -365,6 +365,17 @@ type Instance struct {
 	// dataPollSender manages periodic 802.15.4 data poll requests
 	// when this device is operating as a sleepy end device (SED).
 	dataPollSender *supervision.DataPollSender
+
+	// supervisor sends periodic supervision messages to sleepy children
+	// when this device operates as a parent (router/leader).
+	supervisor *supervision.Supervisor
+
+	// supervisionListener monitors messages from the parent when this
+	// device operates as a child (SED/MED).
+	supervisionListener *supervision.SupervisionListener
+
+	// childProvider caches child conversions for supervision write-back.
+	childProvider *childProviderAdapter
 }
 
 // New creates a new Instance with the given platform configuration.
@@ -510,6 +521,22 @@ func (inst *Instance) wireModules() {
 	// adapter bridges to Mac.RequestDataPollTransmission().
 	inst.dataPollSender = supervision.NewDataPollSender(
 		supervision.WithPollTransmitter(&macPollTransmitter{inst: inst}),
+	)
+
+	// Child Supervision — parent side (Supervisor).
+	// Sends periodic supervision frames to sleepy children when this
+	// device operates as a router or leader.
+	inst.childProvider = &childProviderAdapter{childTable: inst.childTable}
+	inst.supervisor = supervision.NewSupervisor(
+		supervision.WithChildProvider(inst.childProvider),
+		supervision.WithMessageSender(&supervisionMessageSender{inst: inst}),
+	)
+
+	// Child Supervision — child side (SupervisionListener).
+	// Monitors frames from the parent and triggers re-attach on loss.
+	inst.supervisionListener = supervision.NewSupervisionListener(
+		supervision.WithTimer(newRealTimer()),
+		supervision.WithParentLossHandler(&parentLossHandler{inst: inst}),
 	)
 
 	// ---------------------------------------------------------------
@@ -716,6 +743,14 @@ func (inst *Instance) Forwarder() *mesh.Forwarder { return inst.forwarder }
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }
 
+// Supervisor returns the child supervisor (parent-side).
+func (inst *Instance) Supervisor() *supervision.Supervisor { return inst.supervisor }
+
+// SupervisionListener returns the supervision listener (child-side).
+func (inst *Instance) SupervisionListener() *supervision.SupervisionListener {
+	return inst.supervisionListener
+}
+
 // SetMeshLocalPrefix sets the 64-bit mesh-local prefix used for RLOC
 // and other mesh-local addresses.
 func (inst *Instance) SetMeshLocalPrefix(prefix [8]byte) { inst.meshLocalPrefix = prefix }
@@ -768,6 +803,7 @@ func (inst *Instance) syncParentAddress() {
 		inst.mac.SetParentShortAddress(0)
 	}
 	inst.syncDataPolling()
+	inst.syncSupervision()
 }
 
 // syncDataPolling starts the DataPollSender when the device becomes a
@@ -784,6 +820,26 @@ func (inst *Instance) syncDataPolling() {
 	} else {
 		if inst.dataPollSender.IsEnabled() {
 			inst.dataPollSender.Stop()
+		}
+	}
+}
+
+// syncSupervision starts the SupervisionListener when the device is a
+// child (so it can detect parent loss) and stops it otherwise. The
+// Supervisor (parent-side) is driven by handlePeriodicTick rather than
+// a role-based start/stop because HandleTimer already checks the role.
+func (inst *Instance) syncSupervision() {
+	if inst.supervisionListener == nil {
+		return
+	}
+	m := inst.mleService.Mle()
+	if m.IsChild() {
+		if !inst.supervisionListener.IsRunning() {
+			inst.supervisionListener.Start()
+		}
+	} else {
+		if inst.supervisionListener.IsRunning() {
+			inst.supervisionListener.Stop()
 		}
 	}
 }
@@ -854,6 +910,16 @@ func (inst *Instance) handlePeriodicTick() {
 		trickle.Stop()
 	}
 	inst.mleService.HandleAdvTick(periodicTickInterval)
+
+	// Child supervision — tick the supervisor for parent-side supervision.
+	// When this device is a router or leader it sends periodic supervision
+	// frames to sleepy children that haven't been heard from recently.
+	if inst.supervisor != nil && m.IsRouterOrLeader() {
+		inst.supervisor.HandleTimer()
+		if inst.childProvider != nil {
+			inst.childProvider.WriteBack()
+		}
+	}
 
 	// Re-arm for the next tick.
 	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
