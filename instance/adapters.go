@@ -434,8 +434,23 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 		return // MAC command frames are not forwarded through 6LoWPAN
 	}
 
-	// Step 1: Mesh forwarder strips mesh headers and returns the payload.
-	payload, _, err := inst.forwarder.HandleReceivedFrame(frame.PSDU, info)
+	// Step 1: Extract the MAC payload (6LoWPAN data) from the frame.
+	// For properly framed 802.15.4 data frames with source addressing,
+	// GetPayload strips the MAC header/footer so the forwarder sees
+	// only the 6LoWPAN dispatch. When the PSDU is already raw 6LoWPAN
+	// (common in unit tests), we use the PSDU directly.
+	var macPayload []byte
+	if mf.GetType() == macframe.TypeData && (mf.GetSrcAddrMode() != 0 || mf.GetDstAddrMode() != 0) {
+		if p, err := mf.GetPayload(); err == nil && len(p) > 0 {
+			macPayload = p
+		}
+	}
+	if macPayload == nil {
+		macPayload = frame.PSDU
+	}
+
+	// Step 2: Mesh forwarder strips mesh headers and returns the payload.
+	payload, _, err := inst.forwarder.HandleReceivedFrame(macPayload, info)
 	if err != nil || len(payload) == 0 {
 		return
 	}
@@ -447,7 +462,29 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 		inst.supervisionListener.UpdateOnReceive()
 	}
 
-	// Step 2: Check for 6LoWPAN IPHC dispatch.
+	// Step 2a: Check for 6LoWPAN fragment dispatch.
+	// Fragment headers (first=0xC0, subsequent=0xE0) are not IPHC, so they
+	// must be detected before the IPHC check. On reassembly completion the
+	// returned buffer starts with the IPHC dispatch bytes and falls through
+	// to normal decompression below.
+	if lowpan.IsFragment(payload) {
+		fh, consumed, err := lowpan.ParseFragmentHeader(payload)
+		if err != nil {
+			return
+		}
+		fragPayload := payload[consumed:]
+		reassembled, err := inst.forwarder.HandleFragment(
+			macAddrs.SrcExtAddr, fh.DatagramTag, fh.DatagramSize,
+			fh.DatagramOffset, fragPayload,
+		)
+		if err != nil || reassembled == nil {
+			return // waiting for more fragments or error
+		}
+		// Reassembly complete — the reassembled datagram starts with IPHC.
+		payload = reassembled
+	}
+
+	// Step 2b: Check for 6LoWPAN IPHC dispatch.
 	if !lowpan.IsLowpanHc(payload) {
 		return // not a 6LoWPAN-compressed frame; drop for now
 	}

@@ -183,6 +183,97 @@ func IsLowpanHc(data []byte) bool {
 	return (dispatch & HcDispatchMask) == HcDispatch
 }
 
+// ---------------------------------------------------------------------------
+// 6LoWPAN Fragment dispatch (RFC 4944 §5.3)
+// ---------------------------------------------------------------------------
+
+const (
+	// FragDispatchMask masks the top 5 bits for fragment identification.
+	FragDispatchMask byte = 0xF8
+
+	// FragFirstDispatch is the dispatch value for first fragments (11000xxx).
+	FragFirstDispatch byte = 0xC0
+
+	// FragSubsequentDispatch is the dispatch value for subsequent fragments (11100xxx).
+	FragSubsequentDispatch byte = 0xE0
+
+	// FragFirstHeaderLen is the header length for a first fragment (4 bytes):
+	// dispatch+size(2) + tag(2).
+	FragFirstHeaderLen = 4
+
+	// FragSubsequentHeaderLen is the header length for a subsequent fragment
+	// (5 bytes): dispatch+size(2) + tag(2) + offset(1).
+	FragSubsequentHeaderLen = 5
+)
+
+// IsFragment returns true if data starts with a 6LoWPAN fragment dispatch
+// (either first-fragment 0xC0 or subsequent-fragment 0xE0).
+func IsFragment(data []byte) bool {
+	if len(data) < 1 {
+		return false
+	}
+	d := data[0] & FragDispatchMask
+	return d == FragFirstDispatch || d == FragSubsequentDispatch
+}
+
+// FragmentHeader holds the parsed fields of a 6LoWPAN fragment header.
+type FragmentHeader struct {
+	// DatagramSize is the total size of the unfragmented datagram.
+	DatagramSize uint16
+	// DatagramTag identifies which datagram this fragment belongs to.
+	DatagramTag uint16
+	// DatagramOffset is the offset (in units of 8 bytes) of this
+	// fragment's payload within the original datagram. Zero for the
+	// first fragment.
+	DatagramOffset uint16
+	// IsFirst is true when this is a first-fragment header (dispatch 0xC0).
+	IsFirst bool
+}
+
+// ParseFragmentHeader parses a 6LoWPAN fragment header from data.
+//
+// Returns the parsed header, bytes consumed (header length), and any error.
+// The caller can use data[consumed:] to access the fragment payload.
+func ParseFragmentHeader(data []byte) (FragmentHeader, int, error) {
+	if len(data) < FragFirstHeaderLen {
+		return FragmentHeader{}, 0, errors.ErrParse
+	}
+
+	dispatch := data[0] & FragDispatchMask
+	isFirst := dispatch == FragFirstDispatch
+	isSubsequent := dispatch == FragSubsequentDispatch
+
+	if !isFirst && !isSubsequent {
+		return FragmentHeader{}, 0, errors.ErrParse
+	}
+
+	// datagram_size: 11 bits across bytes 0-1 (lower 3 bits of byte 0 + all 8 bits of byte 1).
+	size := uint16(data[0]&0x07)<<8 | uint16(data[1])
+	tag := uint16(data[2])<<8 | uint16(data[3])
+
+	if isFirst {
+		return FragmentHeader{
+			DatagramSize:   size,
+			DatagramTag:    tag,
+			DatagramOffset: 0,
+			IsFirst:        true,
+		}, FragFirstHeaderLen, nil
+	}
+
+	// Subsequent fragment: 5-byte header.
+	if len(data) < FragSubsequentHeaderLen {
+		return FragmentHeader{}, 0, errors.ErrParse
+	}
+	offset := uint16(data[4]) * 8 // offset is in units of 8 octets
+
+	return FragmentHeader{
+		DatagramSize:   size,
+		DatagramTag:    tag,
+		DatagramOffset: offset,
+		IsFirst:        false,
+	}, FragSubsequentHeaderLen, nil
+}
+
 // DecompressHeader decompresses an IPHC-compressed header.
 //
 // It takes the compressed data, MAC address context, and an optional slice of

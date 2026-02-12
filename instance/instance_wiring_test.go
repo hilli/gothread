@@ -3077,3 +3077,89 @@ func TestHandleReceivedFrame_MACDataRequest_NoForwardTo6LoWPAN(t *testing.T) {
 		t.Error("MAC command frame should not be forwarded to UDP/6LoWPAN pipeline")
 	}
 }
+
+func TestFullRxPath_FragmentReassembly_ToSocket(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// Register a socket on port 5683 (CoAP port, arbitrary choice).
+	s := &udp.Socket{}
+	var gotPayload []byte
+	var gotInfo *ip6.MessageInfo
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		gotPayload = p
+		gotInfo = mi
+	})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: 5683})
+
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc}
+
+	// Build a large enough payload so fragmentation produces at least 3 fragments.
+	appData := make([]byte, 160)
+	for i := range appData {
+		appData[i] = byte(i)
+	}
+
+	// Build the complete IPHC+inline-UDP datagram (what would be sent unfragmented).
+	datagram := build6LoWPANFrameInlineUDP(srcIP, dstIP, 4444, 5683, appData)
+
+	// Fragment with a small fragment size. Fragment payload sizes must be
+	// multiples of 8 for correct offset encoding.
+	fragmentPayloadSize := 56 // bytes of datagram per fragment
+	fragments, _, err := inst.forwarder.FragmentMessage(datagram, fragmentPayloadSize)
+	if err != nil {
+		t.Fatalf("FragmentMessage: %v", err)
+	}
+	if len(fragments) < 3 {
+		t.Fatalf("expected >= 3 fragments, got %d", len(fragments))
+	}
+
+	// Source extended address for MAC frame construction.
+	srcExt := types.ExtAddress{0x00, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
+
+	// Feed each fragment through HandleReceivedFrame wrapped in a proper
+	// 802.15.4 data frame. The MAC header provides a consistent source
+	// address so the forwarder's reassembly key is stable across fragments.
+	// Frame layout: FCF(2) + Seq(1) + SrcPanID(2) + SrcExtAddr(8) + payload + FCS(2).
+	fcf := uint16(macframe.FcfFrameData | macframe.FcfSrcAddrExt | macframe.FcfFrameVersion2006)
+	for i, frag := range fragments {
+		psdu := make([]byte, 0, 15+len(frag))
+		psdu = append(psdu, byte(fcf), byte(fcf>>8)) // FCF LE
+		psdu = append(psdu, byte(i))                 // Sequence number
+		psdu = append(psdu, 0xCE, 0xFA)              // Source PAN ID
+		// Extended address in frame is reversed byte order.
+		for j := 7; j >= 0; j-- {
+			psdu = append(psdu, srcExt[j])
+		}
+		psdu = append(psdu, frag...)    // 6LoWPAN fragment payload
+		psdu = append(psdu, 0x00, 0x00) // FCS placeholder
+
+		frame := &radio.Frame{PSDU: psdu, Channel: 15}
+		inst.HandleReceivedFrame(frame)
+	}
+
+	if gotPayload == nil {
+		t.Fatal("socket handler was not called after reassembly")
+	}
+	if len(gotPayload) != len(appData) {
+		t.Fatalf("payload length = %d, want %d", len(gotPayload), len(appData))
+	}
+	for i, b := range appData {
+		if gotPayload[i] != b {
+			t.Errorf("payload[%d] = %02x, want %02x", i, gotPayload[i], b)
+		}
+	}
+	if gotInfo == nil {
+		t.Fatal("MessageInfo was nil")
+	}
+	if gotInfo.PeerAddr != srcIP {
+		t.Errorf("PeerAddr = %v, want %v", gotInfo.PeerAddr, srcIP)
+	}
+	if gotInfo.PeerPort != 4444 {
+		t.Errorf("PeerPort = %d, want 4444", gotInfo.PeerPort)
+	}
+	if gotInfo.SockPort != 5683 {
+		t.Errorf("SockPort = %d, want 5683", gotInfo.SockPort)
+	}
+}

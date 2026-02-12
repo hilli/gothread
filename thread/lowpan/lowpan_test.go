@@ -660,6 +660,122 @@ func TestDecompressHeader_NhCompressedFlag(t *testing.T) {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// Fragment detection and parsing tests
+// ---------------------------------------------------------------------------
+
+func TestIsFragment(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{"nil", nil, false},
+		{"empty", []byte{}, false},
+		{"IPHC dispatch", []byte{0x60, 0x00}, false},
+		{"first fragment 0xC0", []byte{0xC0, 0x50, 0x00, 0x01}, true},
+		{"first fragment 0xC7", []byte{0xC7, 0xFF, 0x00, 0x01}, true},
+		{"subsequent fragment 0xE0", []byte{0xE0, 0x50, 0x00, 0x01, 0x08}, true},
+		{"subsequent fragment 0xE7", []byte{0xE7, 0xFF, 0x00, 0x01, 0x10}, true},
+		{"mesh header 0x80", []byte{0x80}, false},
+		{"broadcast 0x50", []byte{0x50}, false},
+		{"0xD0 not fragment", []byte{0xD0}, false}, // between first and subsequent
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsFragment(tt.data); got != tt.want {
+				t.Errorf("IsFragment() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseFragmentHeader(t *testing.T) {
+	t.Run("first fragment", func(t *testing.T) {
+		// dispatch=0xC0 | size_hi=0x01, size_lo=0x00 → size=256
+		// tag=0x00AB
+		data := []byte{0xC1, 0x00, 0x00, 0xAB, 0xDE, 0xAD} // payload follows
+		hdr, consumed, err := ParseFragmentHeader(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if consumed != FragFirstHeaderLen {
+			t.Errorf("consumed = %d, want %d", consumed, FragFirstHeaderLen)
+		}
+		if !hdr.IsFirst {
+			t.Error("IsFirst = false, want true")
+		}
+		if hdr.DatagramSize != 256 {
+			t.Errorf("DatagramSize = %d, want 256", hdr.DatagramSize)
+		}
+		if hdr.DatagramTag != 0x00AB {
+			t.Errorf("DatagramTag = 0x%04X, want 0x00AB", hdr.DatagramTag)
+		}
+		if hdr.DatagramOffset != 0 {
+			t.Errorf("DatagramOffset = %d, want 0", hdr.DatagramOffset)
+		}
+	})
+
+	t.Run("subsequent fragment", func(t *testing.T) {
+		// dispatch=0xE0 | size_hi=0x02, size_lo=0x58 → size=600
+		// tag=0x1234, offset_byte=0x0A → offset=80
+		data := []byte{0xE2, 0x58, 0x12, 0x34, 0x0A, 0xFF, 0xFF}
+		hdr, consumed, err := ParseFragmentHeader(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if consumed != FragSubsequentHeaderLen {
+			t.Errorf("consumed = %d, want %d", consumed, FragSubsequentHeaderLen)
+		}
+		if hdr.IsFirst {
+			t.Error("IsFirst = true, want false")
+		}
+		if hdr.DatagramSize != 600 {
+			t.Errorf("DatagramSize = %d, want 600", hdr.DatagramSize)
+		}
+		if hdr.DatagramTag != 0x1234 {
+			t.Errorf("DatagramTag = 0x%04X, want 0x1234", hdr.DatagramTag)
+		}
+		if hdr.DatagramOffset != 80 {
+			t.Errorf("DatagramOffset = %d, want 80", hdr.DatagramOffset)
+		}
+	})
+
+	t.Run("too short for first", func(t *testing.T) {
+		_, _, err := ParseFragmentHeader([]byte{0xC0, 0x50, 0x00})
+		if err == nil {
+			t.Error("expected error for truncated first fragment header")
+		}
+	})
+
+	t.Run("too short for subsequent", func(t *testing.T) {
+		_, _, err := ParseFragmentHeader([]byte{0xE0, 0x50, 0x00, 0x01})
+		if err == nil {
+			t.Error("expected error for truncated subsequent fragment header")
+		}
+	})
+
+	t.Run("invalid dispatch", func(t *testing.T) {
+		_, _, err := ParseFragmentHeader([]byte{0x60, 0x00, 0x00, 0x00, 0x00})
+		if err == nil {
+			t.Error("expected error for non-fragment dispatch")
+		}
+	})
+
+	t.Run("max datagram size", func(t *testing.T) {
+		// Size = 0x7FF (2047), the max 11-bit value.
+		data := []byte{0xC7, 0xFF, 0x00, 0x01}
+		hdr, _, err := ParseFragmentHeader(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hdr.DatagramSize != 2047 {
+			t.Errorf("DatagramSize = %d, want 2047", hdr.DatagramSize)
+		}
+	})
+}
+
 func TestDecompressUDPHeader(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -938,6 +938,12 @@ func (inst *Instance) handlePeriodicTick() {
 		}
 	}
 
+	// 6LoWPAN fragment reassembly timeout — remove stale entries from the
+	// forwarder's reassembly table so incomplete fragments don't leak memory.
+	if inst.forwarder != nil {
+		inst.forwarder.CleanupExpiredReassemblies()
+	}
+
 	// Re-arm for the next tick.
 	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
 }
