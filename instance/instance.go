@@ -435,6 +435,17 @@ func (inst *Instance) wireModules() {
 	inst.netdataLeader = netdata.NewLeader(&routerCheckerAdapter{rt: inst.routerTable})
 	inst.netdataLeader.SetOnChanged(func() {
 		inst.notifier.signal(EventThreadNetDataChanged)
+		// Sync network-data version numbers into MLE LeaderData so that
+		// advertisements and responses carry current values.  Only the
+		// leader originates these versions; other roles receive them via
+		// incoming advertisements.
+		if inst.mleService != nil && inst.mleService.Mle().IsLeader() {
+			m := inst.mleService.Mle()
+			ld := m.GetLeaderData()
+			ld.DataVersion = inst.netdataLeader.Version()
+			ld.StableDataVersion = inst.netdataLeader.StableVersion()
+			m.SetLeaderData(ld)
+		}
 	})
 	inst.forwarder = mesh.NewForwarder()
 

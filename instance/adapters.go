@@ -619,15 +619,19 @@ func (inst *Instance) RemoveRouterLink(router *mle.Router) {
 
 // GetConnectivityTLV builds and returns the Connectivity TLV data.
 func (inst *Instance) GetConnectivityTLV() mle.ConnectivityTLV {
+	var leaderCost uint8
+	if inst.mleService != nil {
+		leaderRouterID := inst.mleService.Mle().GetLeaderData().LeaderRouterID
+		leaderRLOC16 := uint16(leaderRouterID) << 10
+		leaderCost = inst.routerTable.GetPathCostToLeader(leaderRLOC16)
+	}
 	return mle.ConnectivityTLV{
 		LinkQuality3:  uint8(inst.routerTable.GetNeighborCount(3)),
 		LinkQuality2:  uint8(inst.routerTable.GetNeighborCount(2)),
 		LinkQuality1:  uint8(inst.routerTable.GetNeighborCount(1)),
 		ActiveRouters: uint8(inst.routerTable.GetActiveRouterCount()),
 		IDSequence:    inst.routerTable.GetRouterIDSequence(),
-		// LeaderCost, SEDBufferSize, SEDDatagramCount, Flags are
-		// populated when the router's full leader routing state is
-		// available (Phase 28b+).
+		LeaderCost:    leaderCost,
 	}
 }
 

@@ -291,6 +291,69 @@ func TestWireModules_NetdataOnChanged_SignalsNotifier(t *testing.T) {
 	}
 }
 
+func TestWireModules_NetdataOnChanged_SyncsLeaderDataVersions(t *testing.T) {
+	inst := New(Config{})
+
+	// Make the MLE instance a leader so the version sync fires.
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateLeader(0x0400) // router ID 1
+
+	// Set initial leader data with zeroed versions.
+	m.SetLeaderData(mle.LeaderData{
+		PartitionID:       0xABCD,
+		LeaderRouterID:    1,
+		DataVersion:       0,
+		StableDataVersion: 0,
+	})
+
+	// Increment netdata versions — the callback should sync them into
+	// MLE LeaderData.
+	inst.netdataLeader.IncrementVersions(false) // data version only
+	inst.notifier.process()
+
+	ld := m.GetLeaderData()
+	wantDataVer := inst.netdataLeader.Version()
+	wantStableVer := inst.netdataLeader.StableVersion()
+
+	if ld.DataVersion != wantDataVer {
+		t.Errorf("LeaderData.DataVersion = %d, want %d", ld.DataVersion, wantDataVer)
+	}
+	if ld.StableDataVersion != wantStableVer {
+		t.Errorf("LeaderData.StableDataVersion = %d, want %d", ld.StableDataVersion, wantStableVer)
+	}
+}
+
+func TestWireModules_NetdataOnChanged_SkipsSyncForNonLeader(t *testing.T) {
+	inst := New(Config{})
+
+	// Make the MLE instance a router (not leader).
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateRouter(0x0400) // router ID 1
+
+	// Set leader data with specific versions.
+	m.SetLeaderData(mle.LeaderData{
+		PartitionID:       0xABCD,
+		LeaderRouterID:    1,
+		DataVersion:       42,
+		StableDataVersion: 10,
+	})
+
+	// Increment netdata versions — since we are NOT leader, the MLE
+	// LeaderData should NOT be updated.
+	inst.netdataLeader.IncrementVersions(true)
+	inst.notifier.process()
+
+	ld := m.GetLeaderData()
+	if ld.DataVersion != 42 {
+		t.Errorf("LeaderData.DataVersion = %d, want 42 (should not be overwritten)", ld.DataVersion)
+	}
+	if ld.StableDataVersion != 10 {
+		t.Errorf("LeaderData.StableDataVersion = %d, want 10 (should not be overwritten)", ld.StableDataVersion)
+	}
+}
+
 // --------------------------------------------------------------------------
 // Tier 2 — Module creation and wiring
 // --------------------------------------------------------------------------
@@ -438,6 +501,27 @@ func TestWireModules_Tier2_ConnectivityProvider(t *testing.T) {
 	tlv := inst.GetConnectivityTLV()
 	if tlv.ActiveRouters != 0 {
 		t.Errorf("ActiveRouters = %d, want 0", tlv.ActiveRouters)
+	}
+}
+
+func TestWireModules_Tier2_ConnectivityProvider_LeaderCost(t *testing.T) {
+	inst := New(Config{})
+
+	// Set up leader data so LeaderCost calculation has a leader router ID.
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateLeader(0x0400) // router ID 1
+	m.SetLeaderData(mle.LeaderData{
+		PartitionID:    0xABCD,
+		LeaderRouterID: 1,
+	})
+
+	tlv := inst.GetConnectivityTLV()
+
+	// With no routers in the table the leader is unreachable and the path
+	// cost equals MaxRouteCost (16).
+	if tlv.LeaderCost != 16 {
+		t.Errorf("LeaderCost = %d, want 16 (MaxRouteCost for unreachable leader)", tlv.LeaderCost)
 	}
 }
 

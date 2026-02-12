@@ -32,6 +32,7 @@ type ChildIDHandler struct {
 	childTable  *ChildTable
 	datasets    DatasetProvider
 	networkData NetworkDataProvider
+	routeData   RouteDataProvider
 }
 
 // NewChildIDHandler creates a new ChildIDHandler and registers the
@@ -43,6 +44,7 @@ func NewChildIDHandler(
 	childTable *ChildTable,
 	datasets DatasetProvider,
 	networkData NetworkDataProvider,
+	routeData RouteDataProvider,
 ) *ChildIDHandler {
 	h := &ChildIDHandler{
 		mle:         mle,
@@ -51,6 +53,7 @@ func NewChildIDHandler(
 		childTable:  childTable,
 		datasets:    datasets,
 		networkData: networkData,
+		routeData:   routeData,
 	}
 
 	dispatcher.RegisterHandler(CommandChildIDRequest, h.HandleChildIDRequest)
@@ -228,8 +231,12 @@ func (h *ChildIDHandler) SendChildIDResponse(child *Child) error {
 			msg.AppendNetworkDataTLV(h.getNetworkData())
 
 		case TLVRoute64:
-			// Route64 would be appended from the router table.
-			// Omitted here — a real implementation fills it in.
+			if h.routeData != nil {
+				routerID := RouterIDFromRLOC16(h.mle.RLOC16())
+				leaderID := h.mle.GetLeaderData().LeaderRouterID
+				seq, mask, entries := h.routeData.GetRouteData(routerID, leaderID)
+				msg.AppendRoute64TLV(seq, mask, entries)
+			}
 
 		case TLVActiveTimestamp:
 			ts := h.getActiveTimestamp()

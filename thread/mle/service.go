@@ -153,7 +153,7 @@ func NewService(cfg ServiceConfig) *Service {
 	s.AnnounceHandler = NewAnnounceHandler(mle, dispatcher, cfg.KeyProvider, cfg.Datasets, cfg.MacInfo)
 	s.DataRequestHandler = NewDataRequestHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Datasets, cfg.NetworkData)
 	s.ParentRequestHandler = NewParentRequestHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Connectivity)
-	s.ChildIDHandler = NewChildIDHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Datasets, cfg.NetworkData)
+	s.ChildIDHandler = NewChildIDHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Datasets, cfg.NetworkData, cfg.RouteData)
 	s.DiscoveryHandler = NewDiscoveryHandler(mle, dispatcher, cfg.NetworkInfo)
 
 	// ChildUpdateRouter is NOT registered on the dispatcher (see its doc comment).
