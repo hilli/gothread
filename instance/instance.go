@@ -25,9 +25,11 @@ import (
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/icmp6"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/slaac"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
+	"github.com/hilli/gothread/thread/addrresolver"
 	"github.com/hilli/gothread/thread/key"
 	"github.com/hilli/gothread/thread/indirect"
 	"github.com/hilli/gothread/thread/link"
@@ -307,6 +309,10 @@ type Instance struct {
 	// icmpManager manages ICMPv6 handlers.
 	icmpManager *icmp6.Icmp
 
+	// slaacManager generates and manages SLAAC addresses from
+	// on-mesh prefixes advertised in Thread Network Data.
+	slaacManager *slaac.Manager
+
 	// ---------------------------------------------------------------
 	// Tier 3 — Application layer (CoAP, TMF, Mesh forwarding)
 	// ---------------------------------------------------------------
@@ -332,8 +338,24 @@ type Instance struct {
 	// netdataLeader manages the Thread Network Data.
 	netdataLeader *netdata.Leader
 
+	// netdataLocal manages this device's local Network Data
+	// contributions (on-mesh prefixes, external routes, services).
+	netdataLocal *netdata.Local
+
+	// netdataNotifier synchronises the local Network Data with the
+	// leader, triggering registration when local data changes.
+	netdataNotifier *netdata.Notifier
+
+	// netdataPublisher automatically publishes and unpublishes
+	// prefixes and services based on leader Network Data.
+	netdataPublisher *netdata.Publisher
+
 	// forwarder handles mesh frame forwarding.
 	forwarder *mesh.Forwarder
+
+	// addrResolver resolves EID-to-RLOC16 mappings for IPv6 destination
+	// addresses using Address Query/Notification TMF messages.
+	addrResolver *addrresolver.Resolver
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -571,6 +593,12 @@ func (inst *Instance) wireModules() {
 	// parameters and defer heavier sync work via signal+periodic tick.
 	inst.mleService.Mle().SetRoleChangeCallback(func(oldRole, newRole mle.DeviceRole) {
 		inst.notifier.signal(EventThreadRoleChanged)
+		// Update publisher's router flag — safe because this doesn't
+		// call any Mle method that acquires mu.
+		if inst.netdataPublisher != nil {
+			isRouter := newRole == mle.RoleRouter || newRole == mle.RoleLeader
+			inst.netdataPublisher.SetIsRouter(isRouter)
+		}
 	})
 
 	// DataPollSender manages periodic data poll requests when this device
@@ -641,6 +669,8 @@ func (inst *Instance) wireModules() {
 			ld.StableDataVersion = inst.netdataLeader.StableVersion()
 			m.SetLeaderData(ld)
 		}
+		// Update SLAAC addresses based on the new on-mesh prefixes.
+		inst.updateSlaacAddresses()
 	})
 	inst.forwarder = mesh.NewForwarder()
 
@@ -651,6 +681,49 @@ func (inst *Instance) wireModules() {
 	inst.tmfLeaderService = tmf.NewLeaderService(inst.tmfAgent, routerTableAdapter, 16)
 	inst.tmfServerDataService = tmf.NewServerDataService(inst.tmfAgent, inst.netdataLeader)
 	inst.tmfCommissionerDataService = tmf.NewCommissionerDataService(inst.tmfAgent, inst.netdataLeader)
+
+	// Address Resolver — resolves EID-to-RLOC16 mappings via
+	// TMF Address Query / Notification messages.
+	inst.addrResolver = addrresolver.NewResolver()
+	inst.addrResolver.SetQueryCallback(func(target ip6.Address) {
+		// TODO: Send TMF Address Query (a/aq) via CoAP to realm-local all-routers
+	})
+	inst.addrResolver.SetNotificationCallback(func(target ip6.Address, rloc16 uint16, err error) {
+		// TODO: Resume queued messages for this EID
+	})
+
+	// Network Data Local — manages this device's own Network Data
+	// contributions that are registered with the leader.
+	inst.netdataLocal = netdata.NewLocal()
+	inst.netdataNotifier = netdata.NewNotifier(inst.netdataLocal)
+	inst.netdataNotifier.SetSyncCallback(func(oldRloc16 uint16, data []byte) error {
+		if inst.mleService != nil && inst.mleService.Mle().IsLeader() {
+			return inst.netdataLeader.RegisterNetworkData(inst.rloc16, data)
+		}
+		// TODO: Send CoAP POST to leader RLOC for non-leader devices
+		return nil
+	})
+	inst.netdataPublisher = netdata.NewPublisher()
+
+	// SLAAC Manager — generates IPv6 addresses from on-mesh prefixes.
+	{
+		var secretKey [32]byte
+		if inst.stackSettings != nil {
+			if data, err := inst.stackSettings.ReadSlaacIidSecretKey(); err == nil && len(data) == 32 {
+				copy(secretKey[:], data)
+			} else {
+				if inst.entropy != nil {
+					_ = inst.entropy.Fill(secretKey[:])
+				}
+				if inst.stackSettings != nil {
+					_ = inst.stackSettings.WriteSlaacIidSecretKey(secretKey[:])
+				}
+			}
+		}
+		extAddr := inst.mac.GetExtAddress()
+		iidGen := slaac.NewDefaultIIDGenerator(secretKey, [8]byte(extAddr))
+		inst.slaacManager = slaac.NewManager(iidGen)
+	}
 
 	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
@@ -761,6 +834,9 @@ func (inst *Instance) IfConfigUp() error {
 		}
 	}
 	inst.forwarder.SetEnabled(true)
+	if inst.slaacManager != nil {
+		inst.slaacManager.Enable()
+	}
 	inst.ifConfigUp = true
 	return nil
 }
@@ -774,6 +850,9 @@ func (inst *Instance) IfConfigDown() error {
 	}
 	if inst.threadEnabled {
 		return errThreadStillRunning
+	}
+	if inst.slaacManager != nil {
+		inst.slaacManager.Disable()
 	}
 	inst.forwarder.SetEnabled(false)
 	if inst.platRadio != nil {
@@ -982,6 +1061,21 @@ func (inst *Instance) NetdataLeader() *netdata.Leader { return inst.netdataLeade
 // Forwarder returns the mesh forwarder.
 func (inst *Instance) Forwarder() *mesh.Forwarder { return inst.forwarder }
 
+// AddrResolver returns the EID-to-RLOC16 address resolver.
+func (inst *Instance) AddrResolver() *addrresolver.Resolver { return inst.addrResolver }
+
+// NetdataLocal returns the local Network Data manager.
+func (inst *Instance) NetdataLocal() *netdata.Local { return inst.netdataLocal }
+
+// NetdataNotifier returns the Network Data sync notifier.
+func (inst *Instance) NetdataNotifier() *netdata.Notifier { return inst.netdataNotifier }
+
+// NetdataPublisher returns the Network Data publisher.
+func (inst *Instance) NetdataPublisher() *netdata.Publisher { return inst.netdataPublisher }
+
+// SlaacManager returns the SLAAC address manager.
+func (inst *Instance) SlaacManager() *slaac.Manager { return inst.slaacManager }
+
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }
 
@@ -1020,7 +1114,18 @@ func (inst *Instance) SetMeshLocalPrefix(prefix [8]byte) { inst.meshLocalPrefix 
 func (inst *Instance) MeshLocalPrefix() [8]byte { return inst.meshLocalPrefix }
 
 // SetRLOC16 sets the 16-bit Routing Locator of this device.
-func (inst *Instance) SetRLOC16(rloc16 uint16) { inst.rloc16 = rloc16 }
+func (inst *Instance) SetRLOC16(rloc16 uint16) {
+	inst.rloc16 = rloc16
+	if inst.netdataLocal != nil {
+		inst.netdataLocal.SetRloc16(rloc16)
+	}
+	if inst.netdataPublisher != nil {
+		inst.netdataPublisher.SetRloc16(rloc16)
+	}
+	if inst.netdataNotifier != nil {
+		inst.netdataNotifier.SetOldRloc16(rloc16)
+	}
+}
 
 // RLOC16 returns the 16-bit Routing Locator of this device.
 func (inst *Instance) RLOC16() uint16 { return inst.rloc16 }
@@ -1103,6 +1208,52 @@ func (inst *Instance) syncSupervision() {
 			inst.supervisionListener.Stop()
 		}
 	}
+}
+
+// updateSlaacAddresses iterates on-mesh prefixes from the leader
+// Network Data and drives the SLAAC manager to generate or remove
+// IPv6 addresses accordingly.
+func (inst *Instance) updateSlaacAddresses() {
+	if inst.slaacManager == nil || !inst.slaacManager.IsEnabled() {
+		return
+	}
+	if inst.netdataLeader == nil {
+		return
+	}
+	it := netdata.NewIterator(inst.netdataLeader.Data())
+	var prefixes []slaac.Prefix
+	for {
+		cfg, err := it.NextOnMeshPrefix()
+		if err != nil {
+			break
+		}
+		var flags uint8
+		if cfg.OnMesh {
+			flags |= slaac.FlagOnMesh
+		}
+		if cfg.SLAAC {
+			flags |= slaac.FlagSlaac
+		}
+		if cfg.DHCP {
+			flags |= slaac.FlagDhcp
+		}
+		if cfg.Configure {
+			flags |= slaac.FlagConfigure
+		}
+		if cfg.DefaultRoute {
+			flags |= slaac.FlagDefaultRoute
+		}
+		if cfg.Preferred {
+			flags |= slaac.FlagPreferred
+		}
+		pfxBytes := cfg.Prefix.GetBytes()
+		prefixes = append(prefixes, slaac.Prefix{
+			Prefix: pfxBytes,
+			Length: cfg.Prefix.GetLength(),
+			Flags:  flags,
+		})
+	}
+	inst.slaacManager.Update(prefixes)
 }
 
 // processAnnounce is invoked by the AnnounceHandler when a received
@@ -1197,8 +1348,57 @@ func (inst *Instance) handlePeriodicTick() {
 		inst.updateMacKeys()
 	}
 
+	// Address Resolver — drive retry/timeout timers for pending EID queries.
+	if inst.addrResolver != nil {
+		inst.addrResolver.HandleTimer(time.Now())
+	}
+
+	// Network Data Notifier — check if local data needs to be synced
+	// with the leader and drive the notifier's retry timer.
+	if inst.netdataNotifier != nil {
+		if inst.netdataNotifier.NeedsSync() {
+			inst.netdataNotifier.HandleTimerFired()
+		}
+	}
+
+	// Network Data Publisher — process prefix/service publishing against
+	// current leader data and advance publisher timers.
+	if inst.netdataPublisher != nil && inst.netdataLeader != nil {
+		actions := inst.netdataPublisher.Process(inst.netdataLeader.Data())
+		for _, a := range actions {
+			inst.applyPublisherAction(a)
+		}
+		inst.netdataPublisher.AdvanceTime(1000) // 1 second in ms
+	}
+
 	// Re-arm for the next tick.
 	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
+}
+
+// applyPublisherAction applies a single PublisherAction from the
+// Publisher to the local Network Data.
+func (inst *Instance) applyPublisherAction(a netdata.PublisherAction) {
+	if inst.netdataLocal == nil {
+		return
+	}
+	switch a.Type {
+	case netdata.PublisherActionAdd:
+		if a.IsOnMesh {
+			_ = inst.netdataLocal.AddOnMeshPrefix(a.OnMesh)
+		} else {
+			_ = inst.netdataLocal.AddHasRoutePrefix(a.ExtRoute)
+		}
+	case netdata.PublisherActionRemove:
+		if a.IsOnMesh {
+			_ = inst.netdataLocal.RemoveOnMeshPrefix(a.OnMesh.Prefix)
+		} else {
+			_ = inst.netdataLocal.RemoveHasRoutePrefix(a.ExtRoute.Prefix)
+		}
+	}
+	if inst.netdataLocal.HasChanged() {
+		inst.netdataLocal.ClearChanged()
+		inst.netdataNotifier.HandleServerDataUpdated()
+	}
 }
 
 // handleRouterNeighborTimers performs per-router-neighbor aging and Link

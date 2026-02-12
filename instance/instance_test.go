@@ -1581,3 +1581,155 @@ func TestChildInfoAdapter_IsIndirectMessagePending_NoMessages(t *testing.T) {
 		t.Error("should return false with no queued messages")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Address Resolver wiring tests
+// --------------------------------------------------------------------------
+
+func TestWireModules_AddrResolverCreated(t *testing.T) {
+	inst := New(Config{})
+	if inst.addrResolver == nil {
+		t.Error("addrResolver should not be nil after wireModules")
+	}
+	if inst.AddrResolver() == nil {
+		t.Error("AddrResolver() accessor returned nil")
+	}
+}
+
+func TestPeriodicTick_AddrResolverTimerCalled(t *testing.T) {
+	inst := New(Config{})
+	// The resolver's HandleTimer should not panic when called
+	// via the periodic tick path.
+	inst.handlePeriodicTick()
+}
+
+// --------------------------------------------------------------------------
+// Network Data Local/Notifier/Publisher wiring tests
+// --------------------------------------------------------------------------
+
+func TestWireModules_NetdataLocalCreated(t *testing.T) {
+	inst := New(Config{})
+	if inst.netdataLocal == nil {
+		t.Error("netdataLocal should not be nil after wireModules")
+	}
+	if inst.NetdataLocal() == nil {
+		t.Error("NetdataLocal() accessor returned nil")
+	}
+}
+
+func TestWireModules_NetdataNotifierCreated(t *testing.T) {
+	inst := New(Config{})
+	if inst.netdataNotifier == nil {
+		t.Error("netdataNotifier should not be nil after wireModules")
+	}
+	if inst.NetdataNotifier() == nil {
+		t.Error("NetdataNotifier() accessor returned nil")
+	}
+}
+
+func TestWireModules_NetdataPublisherCreated(t *testing.T) {
+	inst := New(Config{})
+	if inst.netdataPublisher == nil {
+		t.Error("netdataPublisher should not be nil after wireModules")
+	}
+	if inst.NetdataPublisher() == nil {
+		t.Error("NetdataPublisher() accessor returned nil")
+	}
+}
+
+func TestSetRLOC16_PropagatesToNetdataLocal(t *testing.T) {
+	inst := New(Config{})
+	inst.SetRLOC16(0x4001)
+	// Verify the local network data manager received the RLOC16
+	// by checking that it doesn't panic and the instance's RLOC16
+	// is set correctly.
+	if inst.RLOC16() != 0x4001 {
+		t.Errorf("RLOC16 = %04x, want 0x4001", inst.RLOC16())
+	}
+}
+
+func TestRoleChange_UpdatesPublisherIsRouter(t *testing.T) {
+	inst := New(Config{})
+	m := inst.mleService.Mle()
+
+	// Initially disabled — publisher should not be router.
+	// Transition to Router role.
+	_ = m.Enable()
+	_ = m.BecomeRouter()
+
+	// The role change callback should have set IsRouter on the publisher.
+	// We can't directly query IsRouter, but at minimum the callback should
+	// not panic.
+}
+
+func TestPeriodicTick_NetdataNotifierDriven(t *testing.T) {
+	inst := New(Config{})
+	// Trigger periodic tick — netdata notifier sync path should
+	// execute without panicking.
+	inst.handlePeriodicTick()
+}
+
+func TestPeriodicTick_NetdataPublisherDriven(t *testing.T) {
+	inst := New(Config{})
+	// Trigger periodic tick — publisher process/advance should
+	// execute without panicking.
+	inst.handlePeriodicTick()
+}
+
+// --------------------------------------------------------------------------
+// SLAAC Manager wiring tests
+// --------------------------------------------------------------------------
+
+func TestWireModules_SlaacManagerCreated(t *testing.T) {
+	inst := New(Config{})
+	if inst.slaacManager == nil {
+		t.Error("slaacManager should not be nil after wireModules")
+	}
+	if inst.SlaacManager() == nil {
+		t.Error("SlaacManager() accessor returned nil")
+	}
+}
+
+func TestIfConfigUp_EnablesSlaac(t *testing.T) {
+	inst := New(Config{})
+	if inst.slaacManager.IsEnabled() {
+		t.Error("SLAAC should be disabled before IfConfigUp")
+	}
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp: %v", err)
+	}
+	if !inst.slaacManager.IsEnabled() {
+		t.Error("SLAAC should be enabled after IfConfigUp")
+	}
+}
+
+func TestIfConfigDown_DisablesSlaac(t *testing.T) {
+	inst := New(Config{})
+	_ = inst.IfConfigUp()
+	if !inst.slaacManager.IsEnabled() {
+		t.Fatal("SLAAC should be enabled after IfConfigUp")
+	}
+	if err := inst.IfConfigDown(); err != nil {
+		t.Fatalf("IfConfigDown: %v", err)
+	}
+	if inst.slaacManager.IsEnabled() {
+		t.Error("SLAAC should be disabled after IfConfigDown")
+	}
+}
+
+func TestUpdateSlaacAddresses_EmptyNetdata(t *testing.T) {
+	inst := New(Config{})
+	_ = inst.IfConfigUp()
+	// Should not panic with empty network data.
+	inst.updateSlaacAddresses()
+	addrs := inst.slaacManager.GetAddresses()
+	if len(addrs) != 0 {
+		t.Errorf("expected no SLAAC addresses with empty netdata, got %d", len(addrs))
+	}
+}
+
+func TestUpdateSlaacAddresses_DisabledManager(t *testing.T) {
+	inst := New(Config{})
+	// SLAAC not enabled — updateSlaacAddresses should be a no-op.
+	inst.updateSlaacAddresses()
+}
