@@ -721,6 +721,15 @@ func (inst *Instance) handlePeriodicTick() {
 		_ = m.BecomeRouter()
 	}
 
+	// Neighbor aging and Link Accept countdown (Phase 31y/z).
+	inst.handleRouterNeighborTimers(m)
+
+	// Flush any pending Parent Response messages whose scheduled
+	// delay has elapsed (Phase 31aa).
+	if inst.mleService.ParentRequestHandler != nil {
+		_, _ = inst.mleService.ParentRequestHandler.FlushPendingResponses()
+	}
+
 	// Advertisement trickle timer — drives periodic MLE advertisements.
 	// Start the timer when we become a Router/Leader; stop it otherwise.
 	trickle := inst.mleService.AdvTrickle
@@ -733,6 +742,76 @@ func (inst *Instance) handlePeriodicTick() {
 
 	// Re-arm for the next tick.
 	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
+}
+
+// handleRouterNeighborTimers performs per-router-neighbor aging and Link
+// Accept countdown processing. This runs once per second as part of the
+// periodic tick.
+//
+// For each valid router neighbor, the age (time since last heard) is
+// compared against a threshold. If the neighbor is stale, its link is
+// removed.
+//
+// For each router waiting for a Link Accept, the countdown is
+// decremented. When the countdown expires, a retry Link Request is
+// sent if attempts remain; otherwise the link is removed.
+func (inst *Instance) handleRouterNeighborTimers(m *mle.Mle) {
+	// Determine the age threshold based on our current role.
+	maxAge := mle.MaxNeighborAge
+	if m.IsChild() {
+		maxAge = mle.MaxNeighborAgeOnChild
+	}
+
+	nowMs := uint32(time.Now().UnixMilli())
+	routers := inst.routerTable.Routers()
+
+	for i := range routers {
+		r := &routers[i]
+
+		if !r.IsStateValid() {
+			// Phase 31z: Link Accept countdown for non-valid routers
+			// that are waiting for a Link Accept response.
+			if r.IsWaitingForLinkAccept() {
+				r.DecrementLinkAcceptTimeout()
+				if !r.IsWaitingForLinkAccept() {
+					// Timeout expired — retry or give up.
+					if r.HasRemainingLinkRequestAttempts() {
+						r.DecrementLinkRequestAttempts()
+						inst.sendLinkRequestToRouter(r)
+					} else {
+						inst.routerTable.RemoveRouterLink(r)
+					}
+				}
+			}
+			continue
+		}
+
+		// Phase 31y: Neighbor aging — evict stale valid neighbors.
+		ageMs := nowMs - r.LastHeard
+		if time.Duration(ageMs)*time.Millisecond > maxAge {
+			inst.routerTable.RemoveRouterLink(r)
+		}
+	}
+}
+
+// sendLinkRequestToRouter converts a routing-layer router to an MLE-layer
+// router and sends a unicast Link Request. The resulting challenge and
+// link accept timeout are synced back to the routing-layer router.
+func (inst *Instance) sendLinkRequestToRouter(r *routing.Router) {
+	mleRouter := routerToMLE(r)
+	challenge, err := mle.SendLinkRequest(
+		inst.mleService.Mle(),
+		inst.mleService.Dispatcher(),
+		inst.mleService.Transport(),
+		mleRouter,
+	)
+	if err != nil {
+		return
+	}
+	// Sync state back: SendLinkRequest stores the challenge on the MLE
+	// router and restarts its link accept timeout.
+	r.Challenge = [8]byte(challenge)
+	r.LinkAcceptTimeout = routing.DefaultLinkAcceptTimeout
 }
 
 // --------------------------------------------------------------------------

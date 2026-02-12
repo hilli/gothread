@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hilli/gothread/thread/routing"
 )
 
 // --------------------------------------------------------------------------
@@ -488,5 +490,192 @@ func TestPeriodicTickFires(t *testing.T) {
 	// Verify the instance is still running (no panics in tick handler).
 	if !inst.IsRunning() {
 		t.Error("instance should still be running after periodic tick")
+	}
+}
+
+// --------------------------------------------------------------------------
+// Neighbor aging (Phase 31y)
+// --------------------------------------------------------------------------
+
+func TestNeighborAgingEvictsStaleRouter(t *testing.T) {
+	inst := New(Config{})
+
+	// Allocate a router and mark it as valid with a stale LastHeard.
+	r, _, err := inst.routerTable.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate() error: %v", err)
+	}
+	r.State = routing.StateValid
+	// Set LastHeard to 200 seconds ago (well past MaxNeighborAge of 100s).
+	r.LastHeard = uint32(time.Now().Add(-200 * time.Second).UnixMilli())
+	r.LinkQualityOut = 3 // Give it a valid link quality so we can detect removal.
+
+	m := inst.mleService.Mle()
+	inst.handleRouterNeighborTimers(m)
+
+	// After aging, the router's link should have been removed
+	// (LinkQualityOut reset to 0 by RemoveRouterLink).
+	if r.LinkQualityOut != 0 {
+		t.Errorf("LinkQualityOut = %d after aging, want 0 (link removed)", r.LinkQualityOut)
+	}
+}
+
+func TestNeighborAgingKeepsFreshRouter(t *testing.T) {
+	inst := New(Config{})
+
+	r, _, err := inst.routerTable.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate() error: %v", err)
+	}
+	r.State = routing.StateValid
+	// Set LastHeard to 10 seconds ago (well within MaxNeighborAge of 100s).
+	r.LastHeard = uint32(time.Now().Add(-10 * time.Second).UnixMilli())
+	r.LinkQualityOut = 3
+
+	m := inst.mleService.Mle()
+	inst.handleRouterNeighborTimers(m)
+
+	// Fresh router should NOT be evicted.
+	if r.LinkQualityOut != 3 {
+		t.Errorf("LinkQualityOut = %d, want 3 (router should not be evicted)", r.LinkQualityOut)
+	}
+}
+
+func TestNeighborAgingSkipsInvalidRouters(t *testing.T) {
+	inst := New(Config{})
+
+	r, _, err := inst.routerTable.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate() error: %v", err)
+	}
+	// Leave state as StateInvalid (default) with a stale LastHeard.
+	r.LastHeard = uint32(time.Now().Add(-200 * time.Second).UnixMilli())
+	r.LinkQualityOut = 3
+
+	m := inst.mleService.Mle()
+	inst.handleRouterNeighborTimers(m)
+
+	// Invalid routers should NOT be evicted by aging (they're not neighbors).
+	if r.LinkQualityOut != 3 {
+		t.Errorf("LinkQualityOut = %d, want 3 (invalid router should not be aged)", r.LinkQualityOut)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Link Accept countdown (Phase 31z)
+// --------------------------------------------------------------------------
+
+func TestLinkAcceptCountdownDecrement(t *testing.T) {
+	inst := New(Config{})
+
+	r, _, err := inst.routerTable.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate() error: %v", err)
+	}
+	// Leave state as StateInvalid (waiting for link accept).
+	r.LinkAcceptTimeout = 3
+
+	m := inst.mleService.Mle()
+	inst.handleRouterNeighborTimers(m)
+
+	if r.LinkAcceptTimeout != 2 {
+		t.Errorf("LinkAcceptTimeout = %d after one tick, want 2", r.LinkAcceptTimeout)
+	}
+}
+
+func TestLinkAcceptTimeoutRemovesLink(t *testing.T) {
+	inst := New(Config{})
+
+	r, _, err := inst.routerTable.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate() error: %v", err)
+	}
+	r.State = routing.StateLinkRequest
+	r.LinkAcceptTimeout = 1   // Will expire on next tick.
+	r.LinkRequestAttempts = 0 // No retries left.
+	r.LinkQualityOut = 3
+
+	m := inst.mleService.Mle()
+	inst.handleRouterNeighborTimers(m)
+
+	// With no retries left, the link should be removed.
+	if r.LinkQualityOut != 0 {
+		t.Errorf("LinkQualityOut = %d after timeout with no retries, want 0", r.LinkQualityOut)
+	}
+}
+
+func TestLinkAcceptTimeoutRetriesLinkRequest(t *testing.T) {
+	inst := New(Config{})
+
+	r, _, err := inst.routerTable.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate() error: %v", err)
+	}
+	r.State = routing.StateLinkRequest
+	r.LinkAcceptTimeout = 1   // Will expire on next tick.
+	r.LinkRequestAttempts = 2 // Has retries remaining.
+	r.LinkQualityOut = 3
+
+	m := inst.mleService.Mle()
+	inst.handleRouterNeighborTimers(m)
+
+	// LinkRequestAttempts should be decremented.
+	if r.LinkRequestAttempts != 1 {
+		t.Errorf("LinkRequestAttempts = %d after retry, want 1", r.LinkRequestAttempts)
+	}
+	// Link should NOT be removed because retries remain.
+	// (sendLinkRequestToRouter will fail because transport is nil,
+	// but the attempt counter should still be decremented.)
+	if r.LinkQualityOut != 3 {
+		t.Errorf("LinkQualityOut = %d, want 3 (link should not be removed on retry)", r.LinkQualityOut)
+	}
+}
+
+func TestLinkAcceptNotWaitingSkipped(t *testing.T) {
+	inst := New(Config{})
+
+	r, _, err := inst.routerTable.Allocate()
+	if err != nil {
+		t.Fatalf("Allocate() error: %v", err)
+	}
+	// State is invalid, LinkAcceptTimeout is 0 — not waiting.
+	r.LinkAcceptTimeout = 0
+	r.LinkQualityOut = 3
+
+	m := inst.mleService.Mle()
+	inst.handleRouterNeighborTimers(m)
+
+	// Nothing should happen.
+	if r.LinkQualityOut != 3 {
+		t.Errorf("LinkQualityOut = %d, want 3", r.LinkQualityOut)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Flush parent responses (Phase 31aa)
+// --------------------------------------------------------------------------
+
+func TestFlushPendingParentResponses(t *testing.T) {
+	inst := New(Config{})
+
+	// Verify that handlePeriodicTick does not panic when calling
+	// FlushPendingResponses (even with no pending responses).
+	// The ParentRequestHandler is always created by NewService.
+	if inst.mleService.ParentRequestHandler == nil {
+		t.Fatal("ParentRequestHandler should not be nil")
+	}
+
+	count := inst.mleService.ParentRequestHandler.PendingResponseCount()
+	if count != 0 {
+		t.Errorf("PendingResponseCount() = %d, want 0", count)
+	}
+
+	// Call the flush — should return 0 sent, nil error.
+	sent, err := inst.mleService.ParentRequestHandler.FlushPendingResponses()
+	if err != nil {
+		t.Errorf("FlushPendingResponses() error: %v", err)
+	}
+	if sent != 0 {
+		t.Errorf("FlushPendingResponses() = %d, want 0", sent)
 	}
 }

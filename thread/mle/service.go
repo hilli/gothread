@@ -205,6 +205,11 @@ func (s *Service) Dispatcher() *Dispatcher {
 	return s.dispatcher
 }
 
+// Transport returns the Transport used for sending MLE messages.
+func (s *Service) Transport() Transport {
+	return s.transport
+}
+
 // ChildTable returns the child table managed by this service.
 func (s *Service) ChildTable() *ChildTable {
 	return s.childTable
