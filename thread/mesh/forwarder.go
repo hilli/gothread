@@ -106,9 +106,55 @@ type ForwarderCounters struct {
 // Reset clears all forwarder counters to zero.
 func (c *ForwarderCounters) Reset() { *c = ForwarderCounters{} }
 
+// TxMetadata holds IPv6 and transport-layer metadata required to build
+// a proper 6LoWPAN-compressed frame on the TX path. When populated,
+// HandleFrameRequest can construct the full stack of headers:
+// 802.15.4 MAC → 6LoWPAN IPHC → (optional NHC UDP) → payload.
+type TxMetadata struct {
+	// SrcAddr is the IPv6 source address.
+	SrcAddr [16]byte
+	// DstAddr is the IPv6 destination address.
+	DstAddr [16]byte
+
+	// SrcPort is the UDP source port (0 if not UDP).
+	SrcPort uint16
+	// DstPort is the UDP destination port (0 if not UDP).
+	DstPort uint16
+
+	// NextHeader is the IPv6 next header protocol number
+	// (e.g. ip6.ProtoUDP=17, ip6.ProtoICMPv6=58).
+	NextHeader uint8
+	// HopLimit is the IPv6 hop limit.
+	HopLimit uint8
+
+	// SrcExtAddr is the source extended MAC address (for MAC header and
+	// IPHC stateless address compression).
+	SrcExtAddr [8]byte
+	// DstExtAddr is the destination extended MAC address.
+	DstExtAddr [8]byte
+
+	// UseSrcShort indicates the MAC source should use the short address
+	// (MeshSource) rather than SrcExtAddr.
+	UseSrcShort bool
+	// UseDstShort indicates the MAC destination should use the short
+	// address (MeshDest) rather than DstExtAddr.
+	UseDstShort bool
+
+	// PanId is the IEEE 802.15.4 PAN ID.
+	PanId uint16
+
+	// SecurityEnabled indicates whether MAC-layer security is used.
+	SecurityEnabled bool
+	// Security holds the MAC-layer security material when SecurityEnabled.
+	Security SecurityMaterial
+}
+
 // TxMessage represents a message queued for transmission through the mesh.
 type TxMessage struct {
-	// Data is the payload to transmit.
+	// Data is the application-layer payload to transmit (e.g. MLE or
+	// CoAP message body). When Metadata is non-nil, this is just the
+	// payload — IPv6, UDP, and MAC headers are constructed from
+	// Metadata during frame building.
 	Data []byte
 	// MeshDest is the destination short address for mesh routing.
 	MeshDest uint16
@@ -122,6 +168,9 @@ type TxMessage struct {
 	AckRequired bool
 	// MaxHops is the maximum number of hops for mesh forwarding.
 	MaxHops uint8
+	// Metadata holds IPv6/transport/MAC metadata for frame construction.
+	// When nil, Data is treated as a pre-built frame (legacy behavior).
+	Metadata *TxMetadata
 }
 
 // NewTxMessage creates a new TxMessage with default settings.
@@ -135,6 +184,28 @@ func NewTxMessage(data []byte, dest, source uint16) *TxMessage {
 		AckRequired: true,
 		MaxHops:     MaxHopsLeft,
 	}
+}
+
+// NewTxMessageWithMetadata creates a TxMessage with full IPv6/transport
+// metadata for proper frame construction. The data parameter is the
+// application-layer payload (not including IPv6 or UDP headers).
+func NewTxMessageWithMetadata(data []byte, dest, source uint16, meta *TxMetadata) *TxMessage {
+	return &TxMessage{
+		Data:        data,
+		MeshDest:    dest,
+		MeshSource:  source,
+		Priority:    uint8(PriorityNormal),
+		Direct:      true,
+		AckRequired: true,
+		MaxHops:     MaxHopsLeft,
+		Metadata:    meta,
+	}
+}
+
+// HasMetadata reports whether this TxMessage has IPv6/transport metadata
+// for full frame construction.
+func (m *TxMessage) HasMetadata() bool {
+	return m.Metadata != nil
 }
 
 // FragmentInfo tracks a partially reassembled datagram.

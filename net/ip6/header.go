@@ -245,6 +245,21 @@ func (h *Header) SetDestination(addr Address) {
 	copy(h.data[headerOffsetDest:], addr[:])
 }
 
+// NewHeader constructs an IPv6 header with the given parameters.
+// The version is set to 6, traffic class and flow label to 0, and
+// payload length to the given value.
+func NewHeader(src, dst Address, nextHeader, hopLimit uint8, payloadLength uint16) Header {
+	var h Header
+	// Version = 6
+	h.data[0] = 0x60
+	h.SetNextHeader(nextHeader)
+	h.SetHopLimit(hopLimit)
+	h.SetPayloadLength(payloadLength)
+	h.SetSource(src)
+	h.SetDestination(dst)
+	return h
+}
+
 // ---------------------------------------------------------------------------
 // ExtensionHeader (generic IPv6 extension header)
 // ---------------------------------------------------------------------------

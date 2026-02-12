@@ -899,31 +899,39 @@ func TestFullTxPath_SendMLE_Through_HandleFrameRequest(t *testing.T) {
 	inst.forwarder.SetEnabled(true)
 	inst.SetRLOC16(0x0400)
 
-	// Step 1: Send an MLE message — enqueues to forwarder.
+	// Step 1: Send an MLE message — enqueues to forwarder with metadata.
 	mleData := []byte{0x0A, 0x01, 0x02, 0x03, 0x04}
 	err := inst.SendMLE(mleData, ip6.Address{})
 	if err != nil {
 		t.Fatalf("SendMLE() error: %v", err)
 	}
 
-	// Step 2: MAC requests a frame — dequeues from forwarder.
+	// Step 2: MAC requests a frame — dequeues from forwarder and
+	// builds a complete 802.15.4 frame with 6LoWPAN headers.
 	frame := &radio.Frame{}
 	if !inst.HandleFrameRequest(frame) {
 		t.Fatal("HandleFrameRequest should return true after SendMLE")
 	}
 
-	// Step 3: Verify the frame carries the MLE data.
-	if len(frame.PSDU) != len(mleData) {
-		t.Errorf("PSDU length = %d, want %d", len(frame.PSDU), len(mleData))
+	// Step 3: Verify the frame is larger than just the raw payload
+	// (it now includes MAC header + IPHC + NHC-UDP + payload).
+	if len(frame.PSDU) <= len(mleData) {
+		t.Errorf("PSDU should be larger than raw MLE data (%d), got %d",
+			len(mleData), len(frame.PSDU))
 	}
 
-	// Step 4: Report successful transmission.
+	// Step 4: Verify the MAC sequence number was incremented.
+	if inst.macSeqNum != 1 {
+		t.Errorf("macSeqNum = %d, want 1 after first frame", inst.macSeqNum)
+	}
+
+	// Step 5: Report successful transmission.
 	inst.HandleSentFrame(frame, nil)
 	if inst.pendingTxMsg != nil {
 		t.Error("pendingTxMsg should be nil after HandleSentFrame")
 	}
 
-	// Step 5: Queue should be empty now.
+	// Step 6: Queue should be empty now.
 	direct, _ := inst.forwarder.GetQueueLength()
 	if direct != 0 {
 		t.Errorf("queue should be empty after TX, got %d", direct)

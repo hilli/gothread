@@ -18,6 +18,7 @@ import (
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/key"
@@ -180,8 +181,9 @@ func routingStateToMLE(s routing.State) mle.NeighborState {
 
 // HandleFrameRequest is called by the MAC layer when it needs a frame to
 // transmit. It dequeues the next message from the mesh forwarder's direct
-// queue and copies the payload into the radio frame. Returns true if a
-// frame was provided.
+// queue. If the message has TxMetadata, it builds a complete 802.15.4
+// frame with 6LoWPAN-compressed headers; otherwise it copies the raw
+// payload directly (legacy behavior). Returns true if a frame was provided.
 func (inst *Instance) HandleFrameRequest(frame *radio.Frame) bool {
 	if inst.forwarder == nil {
 		return false
@@ -190,9 +192,19 @@ func (inst *Instance) HandleFrameRequest(frame *radio.Frame) bool {
 	if msg == nil {
 		return false
 	}
-	// Copy the message data into the radio frame's PSDU buffer.
-	frame.PSDU = make([]byte, len(msg.Data))
-	copy(frame.PSDU, msg.Data)
+	if msg.HasMetadata() {
+		// Build the full 802.15.4 frame from metadata.
+		built, err := mesh.BuildTxFrame(msg, inst.macSeqNum)
+		if err != nil {
+			return false
+		}
+		inst.macSeqNum++
+		frame.PSDU = built
+	} else {
+		// Legacy: copy raw data directly into the frame.
+		frame.PSDU = make([]byte, len(msg.Data))
+		copy(frame.PSDU, msg.Data)
+	}
 	// Remember the in-flight message so HandleSentFrame can report back.
 	inst.pendingTxMsg = msg
 	return true
@@ -334,10 +346,10 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 // --------------------------------------------------------------------------
 
 // SendMLE sends an MLE message to the given IPv6 destination. The message
-// is wrapped in a TxMessage and enqueued to the mesh forwarder for
-// transmission. If the destination is a mesh-local RLOC, the destination
-// RLOC16 is extracted from the address; otherwise the message is sent as
-// a broadcast.
+// is wrapped in a TxMessage with full IPv6/transport metadata and enqueued
+// to the mesh forwarder for transmission. If the destination is a mesh-local
+// RLOC, the destination RLOC16 is extracted from the address; otherwise the
+// message is sent as a broadcast.
 func (inst *Instance) SendMLE(msg []byte, dst ip6.Address) error {
 	if inst.forwarder == nil {
 		return nil
@@ -350,7 +362,26 @@ func (inst *Instance) SendMLE(msg []byte, dst ip6.Address) error {
 		iid := dst.GetIid()
 		dstRLOC = iid.GetLocator()
 	}
-	txMsg := mesh.NewTxMessage(msg, dstRLOC, inst.rloc16)
+
+	// Build the source address: use the mesh-local RLOC address for
+	// mesh-local destinations, link-local for everything else.
+	var srcAddr ip6.Address
+	if dst.IsRoutingLocator() || dst.IsAnycastRoutingLocator() {
+		srcAddr = inst.GetMeshLocalAddress()
+	} else {
+		srcAddr = inst.GetLinkLocalAddress()
+	}
+
+	// Build TxMetadata for proper 6LoWPAN frame construction.
+	meta := mesh.BuildUDPMetadata(srcAddr, dst, mle.UDPPort, mle.UDPPort, 64)
+	meta.SrcExtAddr = inst.GetExtAddress()
+	meta.UseSrcShort = true
+	meta.UseDstShort = (dstRLOC != 0xFFFF) // short for unicast, ext for broadcast
+	if inst.mac != nil {
+		meta.PanId = uint16(inst.mac.GetPanID())
+	}
+
+	txMsg := mesh.NewTxMessageWithMetadata(msg, dstRLOC, inst.rloc16, meta)
 	txMsg.Priority = uint8(mesh.PriorityNet)
 	return inst.forwarder.SendMessage(txMsg)
 }
@@ -642,7 +673,8 @@ func (inst *Instance) postTask(fn func()) {
 
 // sendCoAP is a function satisfying coap.Sender that transmits CoAP
 // data through the Instance's mesh forwarder. The peer address from the
-// MessageInfo is used to determine the destination RLOC16.
+// MessageInfo is used to determine the destination RLOC16, and full
+// TxMetadata is populated for proper 6LoWPAN frame construction.
 func (inst *Instance) sendCoAP(data []byte, info coap.MessageInfo) error {
 	if inst.forwarder == nil {
 		return nil
@@ -655,7 +687,19 @@ func (inst *Instance) sendCoAP(data []byte, info coap.MessageInfo) error {
 		iid := peerAddr.GetIid()
 		dstRLOC = iid.GetLocator()
 	}
-	txMsg := mesh.NewTxMessage(data, dstRLOC, inst.rloc16)
+
+	// Build TxMetadata for proper 6LoWPAN frame construction.
+	var srcAddr [16]byte
+	copy(srcAddr[:], info.LocalAddr[:])
+	meta := mesh.BuildUDPMetadata(srcAddr, info.PeerAddr, udp.TmfPort, info.PeerPort, 64)
+	meta.SrcExtAddr = inst.GetExtAddress()
+	meta.UseSrcShort = true
+	meta.UseDstShort = (dstRLOC != 0xFFFF) // short for unicast
+	if inst.mac != nil {
+		meta.PanId = uint16(inst.mac.GetPanID())
+	}
+
+	txMsg := mesh.NewTxMessageWithMetadata(data, dstRLOC, inst.rloc16, meta)
 	txMsg.Priority = uint8(mesh.PriorityNormal)
 	return inst.forwarder.SendMessage(txMsg)
 }

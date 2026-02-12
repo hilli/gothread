@@ -310,6 +310,10 @@ type Instance struct {
 	// MAC layer, so HandleSentFrame can report completion back to the
 	// mesh forwarder.
 	pendingTxMsg *mesh.TxMessage
+
+	// macSeqNum is the MAC-layer sequence number counter, incremented
+	// with each transmitted frame.
+	macSeqNum uint8
 }
 
 // New creates a new Instance with the given platform configuration.
