@@ -10,6 +10,7 @@ import (
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/key"
 )
 
@@ -849,5 +850,193 @@ func TestDiscoveryResponseEncodeDecodeRoundTrip(t *testing.T) {
 				t.Errorf("IsNativeCommissioner = %v, want %v", decoded.IsNativeCommissioner, tt.native)
 			}
 		})
+	}
+}
+
+// --- HandleDiscoveryResponse tests ---
+
+// mockDiscoverySender implements discover.DiscoverySender for test scanners.
+type mockDiscoverySender struct{}
+
+func (m *mockDiscoverySender) SendDiscoveryRequest(channel, panID uint16, enableFiltering bool) error {
+	return nil
+}
+
+// mockDiscoverTimer implements discover.Timer for test scanners.
+type mockDiscoverTimer struct {
+	running  bool
+	callback func()
+}
+
+func (t *mockDiscoverTimer) Start(delayMs uint32) {
+	t.running = true
+}
+
+func (t *mockDiscoverTimer) Stop() {
+	t.running = false
+}
+
+func (t *mockDiscoverTimer) IsRunning() bool {
+	return t.running
+}
+
+// buildDiscoveryResponseRxInfo creates an RxInfo simulating a received
+// Discovery Response with the given parameters.
+func buildDiscoveryResponseRxInfo(
+	version uint16,
+	isNative bool,
+	extPanID [8]byte,
+	networkName string,
+	steeringData []byte,
+	srcAddr types.ExtAddress,
+) *RxInfo {
+	resp := encodeDiscoveryResponse(DiscoveryResponseData{
+		Version:              version,
+		IsNativeCommissioner: isNative,
+	})
+	var subTLVs []byte
+	subTLVs = appendMeshCoPSubTLV(subTLVs, meshcop.TLVDiscoveryResponse, resp[:])
+	subTLVs = appendMeshCoPSubTLV(subTLVs, meshcop.TLVExtendedPanID, extPanID[:])
+	subTLVs = appendMeshCoPSubTLV(subTLVs, meshcop.TLVNetworkName, []byte(networkName))
+	if steeringData != nil {
+		subTLVs = appendMeshCoPSubTLV(subTLVs, meshcop.TLVSteeringData, steeringData)
+	}
+
+	tlvs := []TLV{{Type: TLVDiscovery, Value: subTLVs}}
+	srcIP := ip6.Address(linkLocalIPFromExtAddress(srcAddr))
+
+	return &RxInfo{
+		SrcAddr:       srcAddr,
+		SrcIP:         srcIP,
+		DstIP:         LinkLocalAllNodesMulticast,
+		LinkMarginRaw: 20,
+		Command:       CommandDiscoveryResponse,
+		TLVs:          tlvs,
+	}
+}
+
+func TestHandleDiscoveryResponse_NilScanner(t *testing.T) {
+	t.Parallel()
+
+	h, _, _, _, _ := newDiscoveryHandlerTestSetup(RoleRouter, 3)
+	// scanner is nil by default
+
+	extPanID := [8]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	srcAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	rxInfo := buildDiscoveryResponseRxInfo(4, true, extPanID, "TestNet", nil, srcAddr)
+
+	err := h.HandleDiscoveryResponse(rxInfo)
+	if err != nil {
+		t.Fatalf("expected nil error with nil scanner, got: %v", err)
+	}
+}
+
+func TestHandleDiscoveryResponse_NotScanning(t *testing.T) {
+	t.Parallel()
+
+	h, _, _, _, _ := newDiscoveryHandlerTestSetup(RoleRouter, 3)
+
+	// Create a scanner but don't start scanning.
+	scanner := discover.NewScanner(&mockDiscoverySender{}, &mockDiscoverTimer{})
+	h.SetScanner(scanner)
+
+	extPanID := [8]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	srcAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	rxInfo := buildDiscoveryResponseRxInfo(4, false, extPanID, "IdleNet", nil, srcAddr)
+
+	err := h.HandleDiscoveryResponse(rxInfo)
+	if err != nil {
+		t.Fatalf("expected nil error when not scanning, got: %v", err)
+	}
+}
+
+func TestHandleDiscoveryResponse_ParsesAndForwards(t *testing.T) {
+	t.Parallel()
+
+	h, _, _, _, _ := newDiscoveryHandlerTestSetup(RoleRouter, 3)
+
+	// Create a scanner and start scanning.
+	timer := &mockDiscoverTimer{}
+	scanner := discover.NewScanner(&mockDiscoverySender{}, timer)
+
+	var receivedResults []*discover.ScanResult
+	err := scanner.Discover(1<<11, discover.PanIDBroadcast, false, func(result *discover.ScanResult) {
+		if result != nil {
+			receivedResults = append(receivedResults, result)
+		}
+	})
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+
+	h.SetScanner(scanner)
+
+	// Build and handle a Discovery Response.
+	extPanID := [8]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11}
+	steering := []byte{0xFF, 0x00, 0x55}
+	srcAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x99}
+	rxInfo := buildDiscoveryResponseRxInfo(4, true, extPanID, "DiscNet", steering, srcAddr)
+
+	err = h.HandleDiscoveryResponse(rxInfo)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Allow scanner to process (it's synchronous within HandleDiscoveryResponse).
+	// The scanner should have received the result via its handler.
+	if len(receivedResults) != 1 {
+		t.Fatalf("expected 1 scan result, got %d", len(receivedResults))
+	}
+
+	got := receivedResults[0]
+	if got.ExtPanID != extPanID {
+		t.Errorf("ExtPanID = %x, want %x", got.ExtPanID, extPanID)
+	}
+	if got.NetworkName != "DiscNet" {
+		t.Errorf("NetworkName = %q, want %q", got.NetworkName, "DiscNet")
+	}
+	if got.Version != 4 {
+		t.Errorf("Version = %d, want 4", got.Version)
+	}
+	if !got.IsNative {
+		t.Error("expected IsNative to be true")
+	}
+	if got.ExtAddress != srcAddr {
+		t.Errorf("ExtAddress = %x, want %x", got.ExtAddress, srcAddr)
+	}
+	if len(got.SteeringData) != 3 {
+		t.Fatalf("SteeringData length = %d, want 3", len(got.SteeringData))
+	}
+	if got.SteeringData[0] != 0xFF || got.SteeringData[1] != 0x00 || got.SteeringData[2] != 0x55 {
+		t.Errorf("SteeringData = %x, want ff0055", got.SteeringData)
+	}
+}
+
+func TestHandleDiscoveryResponse_MissingDiscoveryTLV(t *testing.T) {
+	t.Parallel()
+
+	h, _, _, _, _ := newDiscoveryHandlerTestSetup(RoleRouter, 3)
+
+	// Create a scanner and start scanning.
+	timer := &mockDiscoverTimer{}
+	scanner := discover.NewScanner(&mockDiscoverySender{}, timer)
+	err := scanner.Discover(1<<11, discover.PanIDBroadcast, false, func(result *discover.ScanResult) {})
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+
+	h.SetScanner(scanner)
+
+	// Build an RxInfo with no Discovery TLV.
+	rxInfo := &RxInfo{
+		SrcAddr:       types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0xAA},
+		Command:       CommandDiscoveryResponse,
+		TLVs:          []TLV{}, // no Discovery TLV
+		LinkMarginRaw: 20,
+	}
+
+	err = h.HandleDiscoveryResponse(rxInfo)
+	if err == nil {
+		t.Fatal("expected error for missing Discovery TLV, got nil")
 	}
 }

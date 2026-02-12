@@ -24,6 +24,7 @@ import (
 
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/thread/discover"
 )
 
 // DiscoveryRequestData holds the parsed fields from a MeshCoP
@@ -122,15 +123,18 @@ type NetworkInfoProvider interface {
 }
 
 // DiscoveryHandler handles incoming MLE Discovery Request messages and
-// sends Discovery Response messages.
+// sends Discovery Response messages. It also processes received Discovery
+// Response messages during active scanning.
 type DiscoveryHandler struct {
 	mle         *Mle
 	dispatcher  *Dispatcher
 	networkInfo NetworkInfoProvider
+	scanner     *discover.Scanner
 }
 
 // NewDiscoveryHandler creates a new DiscoveryHandler and registers the
-// CommandDiscoveryRequest handler with the dispatcher.
+// CommandDiscoveryRequest and CommandDiscoveryResponse handlers with the
+// dispatcher.
 func NewDiscoveryHandler(
 	mle *Mle,
 	dispatcher *Dispatcher,
@@ -143,8 +147,41 @@ func NewDiscoveryHandler(
 	}
 
 	dispatcher.RegisterHandler(CommandDiscoveryRequest, h.HandleDiscoveryRequest)
+	dispatcher.RegisterHandler(CommandDiscoveryResponse, h.HandleDiscoveryResponse)
 
 	return h
+}
+
+// SetScanner sets the discovery scanner that will receive parsed Discovery
+// Response results. This must be called before scanning begins.
+func (h *DiscoveryHandler) SetScanner(s *discover.Scanner) {
+	h.scanner = s
+}
+
+// HandleDiscoveryResponse processes a received MLE Discovery Response.
+// It parses the Discovery TLV and its MeshCoP sub-TLVs, converts them
+// to a discover.ScanResult, and passes the result to the scanner.
+func (h *DiscoveryHandler) HandleDiscoveryResponse(rxInfo *RxInfo) error {
+	if h.scanner == nil || !h.scanner.IsScanning() {
+		return nil // not scanning, ignore
+	}
+
+	parsed, err := ParseDiscoveryResponse(rxInfo.TLVs)
+	if err != nil {
+		return fmt.Errorf("mle: handle discovery response: %w", err)
+	}
+
+	result := &discover.ScanResult{
+		ExtPanID:     parsed.ExtendedPanID,
+		NetworkName:  parsed.NetworkName,
+		SteeringData: parsed.SteeringData,
+		Version:      uint8(parsed.Version),
+		IsNative:     parsed.IsNativeCommissioner,
+		ExtAddress:   rxInfo.SrcAddr,
+	}
+
+	h.scanner.HandleDiscoveryResponse(result)
+	return nil
 }
 
 // HandleDiscoveryRequest processes a received MLE Discovery Request.
