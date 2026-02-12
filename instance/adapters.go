@@ -297,6 +297,22 @@ func (h *parentLossHandler) HandleParentLoss() {
 var _ supervision.ParentLossHandler = (*parentLossHandler)(nil)
 
 // --------------------------------------------------------------------------
+// indirectSenderAdapter — stub for DataPollHandler's IndirectSender
+// --------------------------------------------------------------------------
+
+// indirectSenderAdapter implements supervision.IndirectSender as a stub.
+// When the full indirect transmission pipeline is wired, this will bridge
+// to the indirect.Sender for actual frame delivery.
+type indirectSenderAdapter struct{}
+
+func (a *indirectSenderAdapter) HandleFrameChangeDone(_ *mle.Child)           {}
+func (a *indirectSenderAdapter) HandleSentFrameToChild(_ *mle.Child, _ error) {}
+func (a *indirectSenderAdapter) GetIndirectMessageCount(_ *mle.Child) uint16  { return 0 }
+
+// Compile-time assertion.
+var _ supervision.IndirectSender = (*indirectSenderAdapter)(nil)
+
+// --------------------------------------------------------------------------
 // realTimer — wraps time.Timer for supervision.Timer
 // --------------------------------------------------------------------------
 
@@ -408,6 +424,16 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 		}
 	}
 
+	// Check for MAC Data Request (command frame type 0x04).
+	// Data polls are MAC command frames, not 6LoWPAN data frames,
+	// so we handle them before the forwarder/6LoWPAN pipeline.
+	if mf.GetType() == macframe.TypeMacCmd {
+		if payload, err := mf.GetPayload(); err == nil && len(payload) > 0 && payload[0] == 0x04 {
+			inst.handleDataPoll(macAddrs)
+		}
+		return // MAC command frames are not forwarded through 6LoWPAN
+	}
+
 	// Step 1: Mesh forwarder strips mesh headers and returns the payload.
 	payload, _, err := inst.forwarder.HandleReceivedFrame(frame.PSDU, info)
 	if err != nil || len(payload) == 0 {
@@ -505,6 +531,25 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 	default:
 		return // unsupported protocol
 	}
+}
+
+// handleDataPoll processes an incoming MAC Data Request from a child.
+// It looks up the child by source extended address and delegates to
+// the DataPollHandler for indirect frame scheduling.
+func (inst *Instance) handleDataPoll(macAddrs lowpan.AddressContext) {
+	if inst.dataPollHandler == nil || inst.childTable == nil {
+		return
+	}
+	// Look up child by source extended address.
+	rc := inst.childTable.FindChildByExtAddress(macAddrs.SrcExtAddr, routing.FilterValid)
+	if rc == nil {
+		return
+	}
+	mc := childToMLE(rc)
+	if mc == nil {
+		return
+	}
+	inst.dataPollHandler.HandleDataPoll(mc)
 }
 
 // --------------------------------------------------------------------------

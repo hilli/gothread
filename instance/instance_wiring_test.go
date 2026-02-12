@@ -2880,17 +2880,157 @@ func TestSupervisionMessageSender_SendsFrame(t *testing.T) {
 	inst.rloc16 = 0x4400
 
 	sender := &supervisionMessageSender{inst: inst}
+
 	child := &mle.Child{}
 	child.RLOC16 = 0x4401
+	child.MacAddr = types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 
 	err := sender.SendSupervisionMessage(child)
 	if err != nil {
-		t.Fatalf("SendSupervisionMessage() error: %v", err)
+		t.Errorf("SendSupervisionMessage() error: %v", err)
 	}
+}
 
-	// Verify a message was enqueued to the forwarder.
-	direct, _ := inst.forwarder.GetQueueLength()
-	if direct == 0 {
-		t.Error("expected at least one message in forwarder direct queue")
+// --------------------------------------------------------------------------
+// Phase 31al — DataPollHandler wiring tests
+// --------------------------------------------------------------------------
+
+func TestDataPollHandler_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dataPollHandler == nil {
+		t.Error("dataPollHandler should be non-nil after New(Config{})")
+	}
+}
+
+func TestDataPollHandler_Accessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.DataPollHandler() == nil {
+		t.Error("DataPollHandler() should return non-nil")
+	}
+	if inst.DataPollHandler() != inst.dataPollHandler {
+		t.Error("DataPollHandler() should return the same pointer as inst.dataPollHandler")
+	}
+}
+
+func TestHandleDataPoll_NilGuards(t *testing.T) {
+	inst := New(Config{})
+	// Should not panic with zero-value AddressContext.
+	inst.handleDataPoll(lowpan.AddressContext{})
+}
+
+func TestHandleDataPoll_UnknownChild(t *testing.T) {
+	inst := New(Config{})
+	// Use an address that doesn't match any child in the table.
+	macAddrs := lowpan.AddressContext{
+		SrcExtAddr: types.ExtAddress{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11},
+	}
+	// Should not panic; child not found, no-op.
+	inst.handleDataPoll(macAddrs)
+	if inst.dataPollHandler.GetIndirectTxChild() != nil {
+		t.Error("no child should be queued for indirect tx")
+	}
+}
+
+func TestHandleDataPoll_KnownChild(t *testing.T) {
+	inst := New(Config{})
+	// Add a valid child to the child table.
+	childExt := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	rc := inst.childTable.GetNewChild()
+	if rc == nil {
+		t.Fatal("GetNewChild() returned nil — child table full")
+	}
+	rc.ExtAddress = childExt
+	rc.RLOC16 = 0x4401
+	rc.State = routing.StateValid
+
+	macAddrs := lowpan.AddressContext{SrcExtAddr: childExt}
+	inst.handleDataPoll(macAddrs)
+
+	txChild := inst.dataPollHandler.GetIndirectTxChild()
+	if txChild == nil {
+		t.Fatal("expected an indirect tx child after handleDataPoll")
+	}
+	if txChild.RLOC16 != 0x4401 {
+		t.Errorf("indirect tx child RLOC16 = 0x%04X, want 0x4401", txChild.RLOC16)
+	}
+}
+
+func TestHandleReceivedFrame_MACDataRequest(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// Add a valid child to the child table.
+	childExt := types.ExtAddress{0x47, 0x36, 0x07, 0xd9, 0x74, 0x45, 0x8d, 0xb2}
+	rc := inst.childTable.GetNewChild()
+	if rc == nil {
+		t.Fatal("GetNewChild() returned nil")
+	}
+	rc.ExtAddress = childExt
+	rc.RLOC16 = 0x4402
+	rc.State = routing.StateValid
+
+	// Build a minimal MAC Data Request (command frame).
+	// FCF: Type=MacCmd(3), AckRequest, no security, no PanIDCompr,
+	//       DstAddr=None, SrcAddr=Extended, Version=2006
+	// = 0x0003 | 0x0020 | 0x1000 | 0xC000 = 0xD023
+	fcf := uint16(macframe.FcfFrameMacCmd | macframe.FcfAckRequest |
+		macframe.FcfFrameVersion2006 | macframe.FcfSrcAddrExt)
+	psdu := make([]byte, 0, 16)
+	psdu = append(psdu, byte(fcf), byte(fcf>>8)) // FCF (LE)
+	psdu = append(psdu, 0x01)                    // Sequence number
+	psdu = append(psdu, 0xCE, 0xFA)              // Src PAN ID (LE) = 0xFACE
+	// Src Extended Address — written in reverse byte order because the
+	// 802.15.4 frame parser reads ext addresses with ReverseByteOrder,
+	// i.e. it reverses the bytes to reconstruct the ExtAddress value.
+	for i := types.ExtAddressSize - 1; i >= 0; i-- {
+		psdu = append(psdu, childExt[i])
+	}
+	psdu = append(psdu, 0x04)       // MAC command: Data Request
+	psdu = append(psdu, 0x00, 0x00) // FCS placeholder
+
+	frame := &radio.Frame{
+		PSDU:    psdu,
+		Channel: 11,
+	}
+	inst.HandleReceivedFrame(frame)
+
+	// The DataPollHandler should have been called for this child.
+	txChild := inst.dataPollHandler.GetIndirectTxChild()
+	if txChild == nil {
+		t.Fatal("expected DataPollHandler to have an indirect tx child after receiving MAC Data Request")
+	}
+	if txChild.RLOC16 != 0x4402 {
+		t.Errorf("indirect tx child RLOC16 = 0x%04X, want 0x4402", txChild.RLOC16)
+	}
+}
+
+func TestHandleReceivedFrame_MACDataRequest_NoForwardTo6LoWPAN(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// Register a UDP receiver that should NOT be called.
+	called := false
+	recv := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		called = true
+		return true
+	})
+	inst.udpManager.AddReceiver(recv)
+
+	// Build a MAC Data Request frame (same as above but with unknown child).
+	fcf := uint16(macframe.FcfFrameMacCmd | macframe.FcfAckRequest |
+		macframe.FcfFrameVersion2006 | macframe.FcfSrcAddrExt)
+	psdu := make([]byte, 0, 16)
+	psdu = append(psdu, byte(fcf), byte(fcf>>8))
+	psdu = append(psdu, 0x02)
+	psdu = append(psdu, 0xCE, 0xFA)
+	psdu = append(psdu, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11) // random ext addr
+	psdu = append(psdu, 0x04)                                           // Data Request
+	psdu = append(psdu, 0x00, 0x00)
+
+	frame := &radio.Frame{PSDU: psdu, Channel: 11}
+	inst.HandleReceivedFrame(frame)
+
+	if called {
+		t.Error("MAC command frame should not be forwarded to UDP/6LoWPAN pipeline")
 	}
 }

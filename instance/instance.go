@@ -376,6 +376,10 @@ type Instance struct {
 
 	// childProvider caches child conversions for supervision write-back.
 	childProvider *childProviderAdapter
+
+	// dataPollHandler manages indirect frame transmissions to sleepy
+	// children when this device operates as a parent/router (FTD).
+	dataPollHandler *supervision.DataPollHandler
 }
 
 // New creates a new Instance with the given platform configuration.
@@ -537,6 +541,14 @@ func (inst *Instance) wireModules() {
 	inst.supervisionListener = supervision.NewSupervisionListener(
 		supervision.WithTimer(newRealTimer()),
 		supervision.WithParentLossHandler(&parentLossHandler{inst: inst}),
+	)
+
+	// Data Poll Handler — parent side.
+	// Manages indirect frame transmissions to sleepy children upon
+	// receiving data poll (MAC Data Request) frames.
+	inst.dataPollHandler = supervision.NewDataPollHandler(
+		supervision.WithHandlerChildProvider(inst.childProvider),
+		supervision.WithIndirectSender(&indirectSenderAdapter{}),
 	)
 
 	// ---------------------------------------------------------------
@@ -749,6 +761,11 @@ func (inst *Instance) Supervisor() *supervision.Supervisor { return inst.supervi
 // SupervisionListener returns the supervision listener (child-side).
 func (inst *Instance) SupervisionListener() *supervision.SupervisionListener {
 	return inst.supervisionListener
+}
+
+// DataPollHandler returns the data poll handler (parent-side indirect TX).
+func (inst *Instance) DataPollHandler() *supervision.DataPollHandler {
+	return inst.dataPollHandler
 }
 
 // SetMeshLocalPrefix sets the 64-bit mesh-local prefix used for RLOC
