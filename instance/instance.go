@@ -464,6 +464,12 @@ func (inst *Instance) wireModules() {
 		func(dt meshcop.DatasetType) { inst.stackNotifier.Signal(cnotifier.Events(EventPendingDatasetChanged)) },
 	)
 
+	// Restore datasets from persistent storage. With MemoryDatasetStore
+	// this is a no-op, but a real persistent store needs it to hydrate
+	// the manager's localSaved/timestamp state on restart.
+	_ = inst.activeDataset.Restore()
+	_ = inst.pendingDataset.Restore()
+
 	if inst.platSettings != nil {
 		inst.stackSettings = csettings.New(&settingsDriverAdapter{ps: inst.platSettings})
 	}
