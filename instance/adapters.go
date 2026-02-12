@@ -315,12 +315,17 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 			dstPort = encoding.BigEndianReadUint16(remaining[2:4])
 			udpPayload = remaining[8:]
 		}
+		linkInfo := &ip6.LinkInfo{
+			SrcExtAddr: macAddrs.SrcExtAddr,
+			RSSI:       info.Rssi,
+		}
 		messageInfo := &ip6.MessageInfo{
 			PeerAddr: hdr.GetSource(),
 			PeerPort: srcPort,
 			SockAddr: hdr.GetDestination(),
 			SockPort: dstPort,
 			HopLimit: hdr.GetHopLimit(),
+			LinkInfo: linkInfo,
 		}
 		if inst.udpManager != nil {
 			inst.udpManager.HandleMessage(udpPayload, messageInfo)
@@ -331,6 +336,10 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 			PeerAddr: hdr.GetSource(),
 			SockAddr: hdr.GetDestination(),
 			HopLimit: hdr.GetHopLimit(),
+			LinkInfo: &ip6.LinkInfo{
+				SrcExtAddr: macAddrs.SrcExtAddr,
+				RSSI:       info.Rssi,
+			},
 		}
 		if inst.icmpManager != nil {
 			inst.icmpManager.HandleMessage(remaining, messageInfo)

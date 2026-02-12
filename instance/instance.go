@@ -425,15 +425,27 @@ func (inst *Instance) wireModules() {
 		if mi.SockPort != mle.UDPPort {
 			return false
 		}
-		// MLE requires the source extended address and link margin.
-		// TODO: The zero ExtAddress and zero link margin are a limitation.
-		// MAC addresses are extracted from the 802.15.4 header in
-		// HandleReceivedFrame, but they are not currently threaded
-		// through the UDP dispatch path to reach this receiver.
-		// A future phase should propagate the MAC source address via
-		// MessageInfo or a side channel so MLE can authenticate peers.
+		// Extract the source extended address and compute link margin
+		// from the MAC-layer metadata attached during RX processing.
 		var srcExt types.ExtAddress
-		_ = inst.mleService.HandleReceive(payload, srcExt, mi.PeerAddr, mi.SockAddr, 0)
+		var linkMargin uint8
+		if mi.LinkInfo != nil {
+			srcExt = mi.LinkInfo.SrcExtAddr
+			// Link margin approximation: RSSI + 130 dBm noise floor offset,
+			// clamped to [0, 255]. This is a simplified model; real
+			// implementations use a calibrated noise floor per radio.
+			if mi.LinkInfo.RSSI > -128 {
+				margin := int(mi.LinkInfo.RSSI) + 130
+				if margin < 0 {
+					margin = 0
+				}
+				if margin > 255 {
+					margin = 255
+				}
+				linkMargin = uint8(margin)
+			}
+		}
+		_ = inst.mleService.HandleReceive(payload, srcExt, mi.PeerAddr, mi.SockAddr, linkMargin)
 		return true
 	})
 	_ = inst.udpManager.AddReceiver(mleReceiver)

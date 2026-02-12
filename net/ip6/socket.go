@@ -38,6 +38,22 @@ func (sa SockAddr) ToString() string {
 }
 
 // --------------------------------------------------------------------------
+// LinkInfo — MAC-layer metadata from a received frame
+// --------------------------------------------------------------------------
+
+// LinkInfo carries MAC-layer metadata from a received IEEE 802.15.4 frame.
+// It is populated on the RX path and attached to MessageInfo so that
+// upper-layer receivers (e.g. MLE) can access the source extended address
+// and signal strength without requiring a separate side channel.
+type LinkInfo struct {
+	// SrcExtAddr is the source extended MAC address from the 802.15.4 header.
+	// Uses [8]byte (identical to types.ExtAddress) to avoid importing mac/types.
+	SrcExtAddr [8]byte
+	// RSSI is the received signal strength indicator in dBm.
+	RSSI int8
+}
+
+// --------------------------------------------------------------------------
 // MessageInfo — metadata accompanying an IPv6 datagram
 // --------------------------------------------------------------------------
 
@@ -65,6 +81,9 @@ type MessageInfo struct {
 	// AllowZeroHopLimit when true applies hop limit 0 literally rather than
 	// substituting the default.
 	AllowZeroHopLimit bool
+	// LinkInfo carries MAC-layer metadata from a received frame. It is nil
+	// for locally originated (TX) messages and populated on the RX path.
+	LinkInfo *LinkInfo
 }
 
 // HasSamePeerAddrAndPort reports whether the peer address and port match
