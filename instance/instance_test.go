@@ -10,6 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hilli/gothread/mac"
+	"github.com/hilli/gothread/mac/types"
+	"github.com/hilli/gothread/net/coap"
+	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/radio"
+	"github.com/hilli/gothread/thread/mesh"
+	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
 )
 
@@ -955,5 +962,186 @@ func TestFlushPendingParentResponses(t *testing.T) {
 	}
 	if sent != 0 {
 		t.Errorf("FlushPendingResponses() = %d, want 0", sent)
+	}
+}
+
+
+// --------------------------------------------------------------------------
+// nopRadio — minimal radio.Radio stub for tests that need MAC enabled
+// --------------------------------------------------------------------------
+
+// nopRadio is a no-op radio.Radio implementation that succeeds on all
+// operations without performing actual radio I/O. It enables tests to
+// create an Instance with a working MAC layer.
+type nopRadio struct {
+	enabled bool
+	txBuf   radio.Frame
+}
+
+func (r *nopRadio) Enable() error                        { r.enabled = true; return nil }
+func (r *nopRadio) Disable() error                       { r.enabled = false; return nil }
+func (r *nopRadio) IsEnabled() bool                      { return r.enabled }
+func (r *nopRadio) GetState() radio.State                { return radio.StateSleep }
+func (r *nopRadio) Sleep() error                         { return nil }
+func (r *nopRadio) Receive(channel uint8) error          { return nil }
+func (r *nopRadio) Transmit(frame *radio.Frame) error    { return nil }
+func (r *nopRadio) GetTransmitBuffer() *radio.Frame      { return &r.txBuf }
+func (r *nopRadio) GetCaps() radio.Caps                  { return radio.CapNone }
+func (r *nopRadio) GetIEEEEui64() [8]byte                { return [8]byte{1, 2, 3, 4, 5, 6, 7, 8} }
+func (r *nopRadio) SetPanID(uint16)                      {}
+func (r *nopRadio) SetExtendedAddress(types.ExtAddress)   {}
+func (r *nopRadio) SetShortAddress(types.ShortAddress)    {}
+func (r *nopRadio) GetTransmitPower() (int8, error)       { return 0, nil }
+func (r *nopRadio) SetTransmitPower(int8) error           { return nil }
+func (r *nopRadio) GetPromiscuous() bool                  { return false }
+func (r *nopRadio) SetPromiscuous(bool)                   {}
+func (r *nopRadio) GetRSSI() int8                         { return -50 }
+func (r *nopRadio) GetSupportedChannelMask() uint32       { return 0x07FFF800 }
+func (r *nopRadio) GetPreferredChannelMask() uint32       { return 0x07FFF800 }
+func (r *nopRadio) GetReceiveSensitivity() int8           { return -100 }
+func (r *nopRadio) EnableSrcMatch(bool)                   {}
+func (r *nopRadio) AddSrcMatchShortEntry(types.ShortAddress) error   { return nil }
+func (r *nopRadio) AddSrcMatchExtEntry(types.ExtAddress) error       { return nil }
+func (r *nopRadio) ClearSrcMatchShortEntry(types.ShortAddress) error { return nil }
+func (r *nopRadio) ClearSrcMatchExtEntry(types.ExtAddress) error     { return nil }
+func (r *nopRadio) ClearSrcMatchShortEntries()                       {}
+func (r *nopRadio) ClearSrcMatchExtEntries()                         {}
+func (r *nopRadio) SetMacKey(uint8, uint8, types.KeyMaterial, types.KeyMaterial, types.KeyMaterial) {
+}
+func (r *nopRadio) SetMacFrameCounter(uint32)          {}
+func (r *nopRadio) SetMacFrameCounterIfLarger(uint32)  {}
+func (r *nopRadio) EnergyScan(uint8, uint16) error     { return nil }
+
+var _ radio.Radio = (*nopRadio)(nil)
+
+// --------------------------------------------------------------------------
+// MAC TX notification tests (Critical #3)
+// --------------------------------------------------------------------------
+
+// newInstanceWithRadio creates an Instance backed by a nopRadio so that
+// the MAC layer is functional (Enable succeeds).
+func newInstanceWithRadio(t *testing.T) *Instance {
+	t.Helper()
+	inst := New(Config{Radio: &nopRadio{}})
+	if inst.mac == nil {
+		t.Fatal("mac should be created")
+	}
+	return inst
+}
+
+func TestSendViaForwarder_DirectNotifiesMAC(t *testing.T) {
+	inst := newInstanceWithRadio(t)
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp() error: %v", err)
+	}
+
+	msg := mesh.NewTxMessage([]byte{0xAA}, 0x0401, inst.rloc16)
+	// msg.Direct defaults to true.
+	if err := inst.sendViaForwarder(msg); err != nil {
+		t.Fatalf("sendViaForwarder() error: %v", err)
+	}
+
+	pending := inst.mac.GetPendingOperations()
+	if pending&mac.OperationTransmitDataDirect == 0 {
+		t.Errorf("MAC should have OperationTransmitDataDirect pending; got %v", pending)
+	}
+}
+
+func TestSendViaForwarder_IndirectNotifiesMAC(t *testing.T) {
+	inst := newInstanceWithRadio(t)
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp() error: %v", err)
+	}
+
+	msg := mesh.NewTxMessage([]byte{0xBB}, 0x0401, inst.rloc16)
+	msg.Direct = false // mark as indirect
+	if err := inst.sendViaForwarder(msg); err != nil {
+		t.Fatalf("sendViaForwarder() error: %v", err)
+	}
+
+	pending := inst.mac.GetPendingOperations()
+	if pending&mac.OperationTransmitDataIndirect == 0 {
+		t.Errorf("MAC should have OperationTransmitDataIndirect pending; got %v", pending)
+	}
+}
+
+func TestSendViaForwarder_NoRadioNoPanic(t *testing.T) {
+	// Instance without radio — mac is created but platRadio is nil,
+	// so IfConfigUp skips mac.Enable(). sendViaForwarder should still
+	// succeed (forwarder enqueue works) without panicking.
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true) // manually enable for test
+
+	msg := mesh.NewTxMessage([]byte{0xCC}, 0x0401, inst.rloc16)
+	if err := inst.sendViaForwarder(msg); err != nil {
+		t.Fatalf("sendViaForwarder() error: %v", err)
+	}
+	// No assertion on pending ops — just ensure no panic.
+}
+
+func TestSendMLE_NotifiesMAC(t *testing.T) {
+	inst := newInstanceWithRadio(t)
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp() error: %v", err)
+	}
+
+	// SendMLE sends to a destination address via UDP MLE port.
+	dst := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}
+	err := inst.SendMLE([]byte{0x00, 0x01}, dst)
+	if err != nil {
+		t.Fatalf("SendMLE() error: %v", err)
+	}
+
+	pending := inst.mac.GetPendingOperations()
+	if pending&mac.OperationTransmitDataDirect == 0 {
+		t.Errorf("MAC should have OperationTransmitDataDirect after SendMLE; got %v", pending)
+	}
+}
+
+func TestSendCoAP_NotifiesMAC(t *testing.T) {
+	inst := newInstanceWithRadio(t)
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp() error: %v", err)
+	}
+	inst.rloc16 = 0x0400
+
+	// Construct a peer address using the mesh-local prefix.
+	var peerAddr [16]byte
+	copy(peerAddr[:8], inst.meshLocalPrefix[:])
+	peerAddr[14] = 0x04
+	peerAddr[15] = 0x01
+
+	// sendCoAP is the internal function wired into the CoAP engine.
+	err := inst.sendCoAP([]byte{0x40, 0x01}, coap.MessageInfo{
+		PeerAddr: peerAddr,
+		PeerPort: 61631,
+	})
+	if err != nil {
+		t.Fatalf("sendCoAP() error: %v", err)
+	}
+
+	pending := inst.mac.GetPendingOperations()
+	if pending&mac.OperationTransmitDataDirect == 0 {
+		t.Errorf("MAC should have OperationTransmitDataDirect after sendCoAP; got %v", pending)
+	}
+}
+
+func TestSendSupervisionMessage_NotifiesMAC(t *testing.T) {
+	inst := newInstanceWithRadio(t)
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp() error: %v", err)
+	}
+
+	sender := &supervisionMessageSender{inst: inst}
+	child := &mle.Child{
+		Neighbor: mle.Neighbor{RLOC16: 0x0401},
+	}
+	if err := sender.SendSupervisionMessage(child); err != nil {
+		t.Fatalf("SendSupervisionMessage() error: %v", err)
+	}
+
+	pending := inst.mac.GetPendingOperations()
+	if pending&mac.OperationTransmitDataDirect == 0 {
+		t.Errorf("MAC should have OperationTransmitDataDirect after SendSupervisionMessage; got %v", pending)
 	}
 }

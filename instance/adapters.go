@@ -267,7 +267,7 @@ func (s *supervisionMessageSender) SendSupervisionMessage(child *mle.Child) erro
 	}
 	msg := mesh.NewTxMessage(nil, child.RLOC16, s.inst.rloc16)
 	msg.Priority = uint8(mesh.PriorityNet)
-	return s.inst.forwarder.SendMessage(msg)
+	return s.inst.sendViaForwarder(msg)
 }
 
 // Compile-time assertion.
@@ -362,6 +362,9 @@ func (inst *Instance) HandleFrameRequest(frame *radio.Frame) bool {
 		// Build the full 802.15.4 frame from metadata.
 		built, err := mesh.BuildTxFrame(msg, inst.macSeqNum)
 		if err != nil {
+			// Report the failure to the forwarder so the message is
+			// not silently lost after being dequeued.
+			inst.forwarder.HandleSentFrame(msg, false)
 			return false
 		}
 		inst.macSeqNum++
@@ -486,6 +489,7 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 
 	// Step 2b: Check for 6LoWPAN IPHC dispatch.
 	if !lowpan.IsLowpanHc(payload) {
+		inst.droppedNonIPHC++
 		return // not a 6LoWPAN-compressed frame; drop for now
 	}
 
@@ -632,7 +636,7 @@ func (inst *Instance) SendMLE(msg []byte, dst ip6.Address) error {
 
 	txMsg := mesh.NewTxMessageWithMetadata(msg, dstRLOC, inst.rloc16, meta)
 	txMsg.Priority = uint8(mesh.PriorityNet)
-	return inst.forwarder.SendMessage(txMsg)
+	return inst.sendViaForwarder(txMsg)
 }
 
 // GetExtAddress returns the extended MAC address of this device.
@@ -649,6 +653,9 @@ func (inst *Instance) GetExtAddress() types.ExtAddress {
 // bit toggled, per RFC 4291 Appendix A).
 func (inst *Instance) GetLinkLocalAddress() ip6.Address {
 	var addr ip6.Address
+	if inst.mac == nil {
+		return addr
+	}
 	addr[0] = 0xfe
 	addr[1] = 0x80
 	// Bytes 2-7 are zero (link-local prefix is fe80::/64).
@@ -993,6 +1000,24 @@ func (inst *Instance) postTask(fn func()) {
 	inst.PostTask(fn)
 }
 
+// sendViaForwarder enqueues a TxMessage through the mesh forwarder and
+// notifies the MAC layer that a frame is waiting to be transmitted.
+// Without this notification the MAC stays idle — it uses a push model
+// and only starts TX when explicitly told via RequestDirect/IndirectFrameTransmission.
+func (inst *Instance) sendViaForwarder(msg *mesh.TxMessage) error {
+	if err := inst.forwarder.SendMessage(msg); err != nil {
+		return err
+	}
+	if inst.mac != nil {
+		if msg.Direct {
+			inst.mac.RequestDirectFrameTransmission()
+		} else {
+			inst.mac.RequestIndirectFrameTransmission()
+		}
+	}
+	return nil
+}
+
 // --------------------------------------------------------------------------
 // Helper: sendCoAP — satisfies coap.Sender func type
 // --------------------------------------------------------------------------
@@ -1027,7 +1052,7 @@ func (inst *Instance) sendCoAP(data []byte, info coap.MessageInfo) error {
 
 	txMsg := mesh.NewTxMessageWithMetadata(data, dstRLOC, inst.rloc16, meta)
 	txMsg.Priority = uint8(mesh.PriorityNormal)
-	return inst.forwarder.SendMessage(txMsg)
+	return inst.sendViaForwarder(txMsg)
 }
 
 // --------------------------------------------------------------------------

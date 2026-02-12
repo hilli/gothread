@@ -388,6 +388,10 @@ type Instance struct {
 	// dataPollHandler manages indirect frame transmissions to sleepy
 	// children when this device operates as a parent/router (FTD).
 	dataPollHandler *supervision.DataPollHandler
+
+	// droppedNonIPHC counts received frames that were not 6LoWPAN IPHC
+	// compressed and were silently dropped during RX processing.
+	droppedNonIPHC uint64
 }
 
 // New creates a new Instance with the given platform configuration.
@@ -873,6 +877,10 @@ func (inst *Instance) SupervisionListener() *supervision.SupervisionListener {
 func (inst *Instance) DataPollHandler() *supervision.DataPollHandler {
 	return inst.dataPollHandler
 }
+
+// DroppedNonIPHC returns the count of received frames dropped because
+// they were not 6LoWPAN IPHC compressed.
+func (inst *Instance) DroppedNonIPHC() uint64 { return inst.droppedNonIPHC }
 
 // SetMeshLocalPrefix sets the 64-bit mesh-local prefix used for RLOC
 // and other mesh-local addresses.
