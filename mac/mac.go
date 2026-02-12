@@ -216,6 +216,7 @@ type Mac struct {
 
 	// Transmit state
 	transmitPending bool
+	beaconSequence  uint8
 
 	// Transmission counters
 	txTotal    uint32
@@ -731,11 +732,108 @@ func (m *Mac) performEnergyScan() {
 // --------------------------------------------------------------------------
 
 func (m *Mac) performTransmitBeacon() {
-	// Build a minimal beacon response into the SubMac's transmit buffer.
-	// In a full implementation this would construct a proper IEEE 802.15.4
-	// beacon frame. For now, we signal completion.
-	m.finishOperation()
-	m.scheduleNextOperation()
+	frame := m.subMac.GetTransmitFrame()
+	if frame == nil {
+		m.finishOperation()
+		m.scheduleNextOperation()
+		return
+	}
+
+	// Build an IEEE 802.15.4 beacon frame into the transmit buffer.
+	//
+	// Layout:
+	//   FCF (2 LE) | Seq (1) | SrcPanID (2 LE) | SrcExtAddr (8) |
+	//   SuperframeSpec (2) | GTSSpec (1) | PendingAddrSpec (1) |
+	//   ProtocolID (1) | Flags (1) | NetworkName (16) | ExtPanID (8) |
+	//   FCS (2)
+	//
+	// Total: 2+1+2+8+2+1+1+1+1+16+8+2 = 45 bytes.
+
+	var d [45]byte
+	p := 0
+
+	// Frame Control Field: Beacon(0) | SrcAddrExt(0xC000) | Version2003(0)
+	// = 0xC000, little-endian.
+	d[p] = 0x00
+	d[p+1] = 0xC0
+	p += 2
+
+	// Sequence number.
+	d[p] = m.beaconSequence
+	m.beaconSequence++
+	p++
+
+	// Source PAN ID (little-endian).
+	panIDVal := uint16(m.panID)
+	d[p] = byte(panIDVal)
+	d[p+1] = byte(panIDVal >> 8)
+	p += 2
+
+	// Source Extended Address (little-endian on wire — reversed).
+	for i := 7; i >= 0; i-- {
+		d[p] = m.extAddress[i]
+		p++
+	}
+
+	// Superframe Specification (2 bytes) — non-PAN-coordinator values.
+	d[p] = 0xFF
+	d[p+1] = 0xCF
+	p += 2
+
+	// GTS Specification (1 byte) — no GTS.
+	d[p] = 0x00
+	p++
+
+	// Pending Address Specification (1 byte) — none.
+	d[p] = 0x00
+	p++
+
+	// Thread Beacon Payload.
+	// Protocol ID = 3 (Thread).
+	d[p] = 0x03
+	p++
+
+	// Flags: bit 3 = native (always true for Thread), bit 0 = joinable.
+	flags := byte(0x08) // native
+	if m.joinable {
+		flags |= 0x01
+	}
+	d[p] = flags
+	p++
+
+	// Network Name (16 bytes, null-padded).
+	var nameBytes [16]byte
+	copy(nameBytes[:], m.networkName)
+	copy(d[p:p+16], nameBytes[:])
+	p += 16
+
+	// Extended PAN ID (8 bytes).
+	copy(d[p:p+8], m.extendedPanID[:])
+	p += 8
+
+	// FCS (2 bytes — placeholder, hardware/radio appends real CRC).
+	d[p] = 0x00
+	d[p+1] = 0x00
+	p += 2
+
+	frame.PSDU = make([]byte, p)
+	copy(frame.PSDU, d[:p])
+	frame.Channel = m.radioChannel
+
+	// Beacons are broadcast — no ACK request, no retries.
+	m.transmitPending = true
+	err := m.subMac.Send(submac.TxRequest{
+		Channel:         m.radioChannel,
+		CsmaCaEnabled:   true,
+		AckRequest:      false,
+		MaxCsmaBackoffs: uint8(submac.DefaultMaxCsmaBackoffsDirect),
+		MaxFrameRetries: 0,
+	})
+	if err != nil {
+		m.transmitPending = false
+		m.finishOperation()
+		m.scheduleNextOperation()
+	}
 }
 
 func (m *Mac) performTransmitData() {

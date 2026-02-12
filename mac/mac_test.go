@@ -757,6 +757,161 @@ func TestTransmitDoneCallsSentFrame(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Transmit beacon
+// --------------------------------------------------------------------------
+
+func TestTransmitBeaconBuildFrame(t *testing.T) {
+	m, _, _, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+
+	// Configure beacon payload fields.
+	m.SetNetworkName("TestNet")
+	m.SetExtendedPanID([8]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11})
+	m.SetJoinable(true)
+	m.SetPanID(0x1234)
+	m.SetExtAddress(types.ExtAddress{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77})
+	m.SetPanChannel(15)
+
+	m.RequestBeaconTransmission()
+	runner.run()
+
+	// The Mac should have a pending transmit (SubMac Send was called).
+	// We verify the frame contents regardless of radio state transitions.
+
+	frame := m.subMac.GetTransmitFrame()
+	if frame == nil {
+		t.Fatal("transmit frame is nil")
+	}
+	if len(frame.PSDU) != 45 {
+		t.Fatalf("PSDU length = %d, want 45", len(frame.PSDU))
+	}
+
+	psdu := frame.PSDU
+
+	// FCF: 0x00, 0xC0 (beacon, extended src addr).
+	if psdu[0] != 0x00 || psdu[1] != 0xC0 {
+		t.Errorf("FCF = [%#x, %#x], want [0x00, 0xC0]", psdu[0], psdu[1])
+	}
+
+	// Sequence number = 0 (first beacon).
+	if psdu[2] != 0x00 {
+		t.Errorf("Sequence = %d, want 0", psdu[2])
+	}
+
+	// PAN ID (little-endian) = 0x1234.
+	if psdu[3] != 0x34 || psdu[4] != 0x12 {
+		t.Errorf("PanID = [%#x, %#x], want [0x34, 0x12]", psdu[3], psdu[4])
+	}
+
+	// Source extended address (wire order = reversed).
+	wantExtWire := []byte{0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00}
+	for i := 0; i < 8; i++ {
+		if psdu[5+i] != wantExtWire[i] {
+			t.Errorf("SrcExtAddr[%d] = %#x, want %#x", i, psdu[5+i], wantExtWire[i])
+		}
+	}
+
+	// SuperframeSpec.
+	if psdu[13] != 0xFF || psdu[14] != 0xCF {
+		t.Errorf("SuperframeSpec = [%#x, %#x], want [0xFF, 0xCF]", psdu[13], psdu[14])
+	}
+
+	// GTS spec and pending addr spec.
+	if psdu[15] != 0x00 || psdu[16] != 0x00 {
+		t.Errorf("GTS/Pending = [%#x, %#x], want [0x00, 0x00]", psdu[15], psdu[16])
+	}
+
+	// Thread beacon: ProtocolID = 0x03.
+	if psdu[17] != 0x03 {
+		t.Errorf("ProtocolID = %#x, want 0x03", psdu[17])
+	}
+
+	// Flags: native(0x08) | joinable(0x01) = 0x09.
+	if psdu[18] != 0x09 {
+		t.Errorf("Flags = %#x, want 0x09", psdu[18])
+	}
+
+	// Network name (16 bytes, "TestNet" + zeros).
+	wantName := make([]byte, 16)
+	copy(wantName, "TestNet")
+	for i := 0; i < 16; i++ {
+		if psdu[19+i] != wantName[i] {
+			t.Errorf("NetworkName[%d] = %#x, want %#x", i, psdu[19+i], wantName[i])
+		}
+	}
+
+	// Extended PAN ID (8 bytes).
+	wantEPID := [8]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11}
+	for i := 0; i < 8; i++ {
+		if psdu[35+i] != wantEPID[i] {
+			t.Errorf("ExtPanID[%d] = %#x, want %#x", i, psdu[35+i], wantEPID[i])
+		}
+	}
+
+	// Channel should be set.
+	if frame.Channel != 15 {
+		t.Errorf("Channel = %d, want 15", frame.Channel)
+	}
+}
+
+func TestTransmitBeaconSequenceIncrements(t *testing.T) {
+	m, _, _, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+
+	m.SetNetworkName("SeqTest")
+	m.SetPanChannel(20)
+
+	// First beacon.
+	m.RequestBeaconTransmission()
+	runner.run()
+
+	frame := m.subMac.GetTransmitFrame()
+	if frame == nil || len(frame.PSDU) < 3 {
+		t.Fatal("first beacon frame too short or nil")
+	}
+	if frame.PSDU[2] != 0x00 {
+		t.Errorf("first beacon seq = %d, want 0", frame.PSDU[2])
+	}
+
+	// Complete the first send so we can request another.
+	m.TransmitDone(frame, nil, nil)
+	runner.run()
+
+	// Second beacon.
+	m.RequestBeaconTransmission()
+	runner.run()
+
+	frame = m.subMac.GetTransmitFrame()
+	if frame == nil || len(frame.PSDU) < 3 {
+		t.Fatal("second beacon frame too short or nil")
+	}
+	if frame.PSDU[2] != 0x01 {
+		t.Errorf("second beacon seq = %d, want 1", frame.PSDU[2])
+	}
+}
+
+func TestTransmitBeaconNotJoinable(t *testing.T) {
+	m, _, _, _, runner := newTestMac(radio.CapNone)
+	_ = m.Enable()
+
+	m.SetNetworkName("NoJoin")
+	m.SetJoinable(false)
+	m.SetPanChannel(11)
+
+	m.RequestBeaconTransmission()
+	runner.run()
+
+	frame := m.subMac.GetTransmitFrame()
+	if frame == nil || len(frame.PSDU) < 19 {
+		t.Fatal("beacon frame too short or nil")
+	}
+	// Flags: native(0x08) only, no joinable.
+	if frame.PSDU[18] != 0x08 {
+		t.Errorf("Flags = %#x, want 0x08 (native only, not joinable)", frame.PSDU[18])
+	}
+}
+
+// --------------------------------------------------------------------------
 // ReceiveDone — normal mode
 // --------------------------------------------------------------------------
 

@@ -730,6 +730,12 @@ func (inst *Instance) handlePeriodicTick() {
 		_, _ = inst.mleService.ParentRequestHandler.FlushPendingResponses()
 	}
 
+	// Flush any delayed Link Accept messages for multicast-received
+	// Link Requests whose delay has elapsed (Phase 31ab).
+	if inst.mleService.LinkHandlers != nil {
+		_, _ = inst.mleService.LinkHandlers.FlushPendingAccepts()
+	}
+
 	// Advertisement trickle timer — drives periodic MLE advertisements.
 	// Start the timer when we become a Router/Leader; stop it otherwise.
 	trickle := inst.mleService.AdvTrickle

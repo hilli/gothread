@@ -9,6 +9,7 @@ package mle
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/hilli/gothread/mac/types"
@@ -26,6 +27,15 @@ type RouterLookup interface {
 	FindRouterByExtAddress(addr types.ExtAddress) *Router
 }
 
+// pendingLinkAccept holds a delayed Link Accept response scheduled for
+// sending after a random delay. This is used for multicast-received Link
+// Requests to avoid collisions when multiple routers respond simultaneously.
+type pendingLinkAccept struct {
+	info   LinkAcceptInfo
+	rloc16 uint16 // RLOC16 for router re-lookup at send time (safer than storing *Router)
+	sendAt time.Time
+}
+
 // FtdLinkHandlers implements MLE Link Request, Link Accept, and Link Accept
 // And Request handlers for Full Thread Devices (routers and leaders).
 //
@@ -38,6 +48,10 @@ type FtdLinkHandlers struct {
 	keyMgr       KeyProvider
 	routerLookup RouterLookup
 	routeData    RouteDataProvider
+
+	// pendingAccepts holds delayed Link Accept messages for multicast-
+	// received Link Requests. Flushed by FlushPendingAccepts each tick.
+	pendingAccepts []pendingLinkAccept
 }
 
 // NewFtdLinkHandlers creates a new FtdLinkHandlers instance and registers
@@ -199,17 +213,97 @@ func (h *FtdLinkHandlers) HandleLinkRequest(rxInfo *RxInfo) error {
 
 	// 6. Send the Link Accept (or Link Accept And Request) reply.
 	//
-	// Determine destination: for unicast replies use the sender's
-	// link-local address derived from their extended MAC address.
-	// For multicast-received requests the response is always unicast
-	// back to the sender.
-	// TODO: OpenThread uses a delayed sender for multicast-received
-	// Link Requests (rxInfo.DstIP[0] == 0xFF) to avoid collisions.
-	// Implement delayed sending in a future phase.
+	// For multicast-received Link Requests, delay the response by a random
+	// 0–MaxLinkAcceptDelay to avoid collisions when multiple routers reply.
+	// For unicast requests, send immediately.
+
+	if rxInfo.DstIP.IsMulticast() {
+		delay := time.Duration(rand.IntN(int(MaxLinkAcceptDelay.Milliseconds()))) * time.Millisecond
+		rloc16 := uint16(0)
+		if router != nil {
+			rloc16 = router.RLOC16
+		}
+		h.scheduleLinkAccept(acceptInfo, rloc16, delay)
+		return nil
+	}
 
 	if err := SendLinkAccept(h.mle, h.dispatcher, h.keyMgr, &acceptInfo, router, h.routeData); err != nil {
 		return fmt.Errorf("mle: link request: failed to send link accept: %w", err)
 	}
 
 	return nil
+}
+
+// scheduleLinkAccept queues a delayed Link Accept response.
+func (h *FtdLinkHandlers) scheduleLinkAccept(info LinkAcceptInfo, rloc16 uint16, delay time.Duration) {
+	h.pendingAccepts = append(h.pendingAccepts, pendingLinkAccept{
+		info:   info,
+		rloc16: rloc16,
+		sendAt: time.Now().Add(delay),
+	})
+}
+
+// FlushPendingAccepts sends any pending Link Accept messages whose
+// scheduled delay has elapsed. Returns the number sent and the first
+// error encountered, if any.
+func (h *FtdLinkHandlers) FlushPendingAccepts() (int, error) {
+	now := time.Now()
+	sent := 0
+	var remaining []pendingLinkAccept
+	var firstErr error
+
+	for _, pa := range h.pendingAccepts {
+		if now.Before(pa.sendAt) {
+			remaining = append(remaining, pa)
+			continue
+		}
+
+		// Re-lookup router by RLOC16 at send time for safety — the
+		// router entry may have changed between queue and flush.
+		var router *Router
+		if pa.rloc16 != 0 {
+			router = h.routerLookup.FindRouterByRLOC16(pa.rloc16)
+		}
+
+		if err := SendLinkAccept(h.mle, h.dispatcher, h.keyMgr, &pa.info, router, h.routeData); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			sent++
+		}
+	}
+
+	h.pendingAccepts = remaining
+	return sent, firstErr
+}
+
+// SendAllPendingAccepts immediately sends all pending Link Accepts,
+// ignoring delays. This is primarily useful for testing.
+func (h *FtdLinkHandlers) SendAllPendingAccepts() (int, error) {
+	sent := 0
+	var firstErr error
+
+	for _, pa := range h.pendingAccepts {
+		var router *Router
+		if pa.rloc16 != 0 {
+			router = h.routerLookup.FindRouterByRLOC16(pa.rloc16)
+		}
+
+		if err := SendLinkAccept(h.mle, h.dispatcher, h.keyMgr, &pa.info, router, h.routeData); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			sent++
+		}
+	}
+
+	h.pendingAccepts = nil
+	return sent, firstErr
+}
+
+// PendingAcceptCount returns the number of unsent Link Accepts.
+func (h *FtdLinkHandlers) PendingAcceptCount() int {
+	return len(h.pendingAccepts)
 }

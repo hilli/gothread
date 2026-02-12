@@ -490,3 +490,269 @@ func TestNewFtdLinkHandlers_RegistersHandler(t *testing.T) {
 		t.Error("handler for CommandLinkRequest not registered")
 	}
 }
+
+// --- Delayed Link Accept for multicast tests (Phase 31ab) ---
+
+// buildMulticastLinkRequestRxInfo creates an RxInfo with a multicast DstIP.
+func buildMulticastLinkRequestRxInfo(
+	srcAddr types.ExtAddress,
+	challenge *Challenge,
+	version *uint16,
+	sourceRLOC16 *uint16,
+) *RxInfo {
+	rxInfo := buildLinkRequestRxInfo(srcAddr, challenge, version, sourceRLOC16, nil)
+	// Set DstIP to an all-routers multicast address.
+	rxInfo.DstIP = ip6.Address{0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02}
+	return rxInfo
+}
+
+func TestHandleLinkRequest_MulticastQueuesDelayedAccept(t *testing.T) {
+	t.Parallel()
+
+	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+
+	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
+	version := uint16(ThreadVersion)
+	rloc := uint16(0x0800)
+
+	r := &Router{
+		Neighbor: Neighbor{
+			MacAddr: peerAddr,
+			RLOC16:  0x0800,
+			State:   StateValid,
+		},
+	}
+	rl.routersByRLOC16[0x0800] = r
+
+	rxInfo := buildMulticastLinkRequestRxInfo(peerAddr, &challenge, &version, &rloc)
+
+	err := h.HandleLinkRequest(rxInfo)
+	if err != nil {
+		t.Fatalf("HandleLinkRequest (multicast): %v", err)
+	}
+
+	// Should NOT have sent immediately.
+	if len(transport.sentMessages) != 0 {
+		t.Errorf("sent %d messages immediately, want 0 (should be delayed)", len(transport.sentMessages))
+	}
+
+	// Should have 1 pending accept.
+	if h.PendingAcceptCount() != 1 {
+		t.Errorf("pending accepts = %d, want 1", h.PendingAcceptCount())
+	}
+}
+
+func TestHandleLinkRequest_UnicastSendsImmediately(t *testing.T) {
+	t.Parallel()
+
+	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+
+	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
+	version := uint16(ThreadVersion)
+	rloc := uint16(0x0800)
+
+	r := &Router{
+		Neighbor: Neighbor{
+			MacAddr: peerAddr,
+			RLOC16:  0x0800,
+			State:   StateValid,
+		},
+	}
+	rl.routersByRLOC16[0x0800] = r
+
+	rxInfo := buildLinkRequestRxInfo(peerAddr, &challenge, &version, &rloc, nil)
+	// DstIP is already unicast (0xfe80...) from buildLinkRequestRxInfo.
+
+	err := h.HandleLinkRequest(rxInfo)
+	if err != nil {
+		t.Fatalf("HandleLinkRequest (unicast): %v", err)
+	}
+
+	if len(transport.sentMessages) < 1 {
+		t.Error("expected immediate send for unicast Link Request")
+	}
+	if h.PendingAcceptCount() != 0 {
+		t.Errorf("pending accepts = %d, want 0 for unicast", h.PendingAcceptCount())
+	}
+}
+
+func TestFlushPendingAccepts_SendsWhenDue(t *testing.T) {
+	t.Parallel()
+
+	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+
+	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
+	version := uint16(ThreadVersion)
+	rloc := uint16(0x0800)
+
+	r := &Router{
+		Neighbor: Neighbor{
+			MacAddr: peerAddr,
+			RLOC16:  0x0800,
+			State:   StateValid,
+		},
+	}
+	rl.routersByRLOC16[0x0800] = r
+
+	rxInfo := buildMulticastLinkRequestRxInfo(peerAddr, &challenge, &version, &rloc)
+	if err := h.HandleLinkRequest(rxInfo); err != nil {
+		t.Fatalf("HandleLinkRequest: %v", err)
+	}
+
+	// Force the pending accept to be due now.
+	if len(h.pendingAccepts) > 0 {
+		h.pendingAccepts[0].sendAt = time.Now().Add(-time.Millisecond)
+	}
+
+	sent, err := h.FlushPendingAccepts()
+	if err != nil {
+		t.Fatalf("FlushPendingAccepts: %v", err)
+	}
+	if sent != 1 {
+		t.Errorf("sent = %d, want 1", sent)
+	}
+	if len(transport.sentMessages) < 1 {
+		t.Error("expected message to be sent after flush")
+	}
+	if h.PendingAcceptCount() != 0 {
+		t.Errorf("remaining pending = %d, want 0", h.PendingAcceptCount())
+	}
+}
+
+func TestFlushPendingAccepts_KeepsNotYetDue(t *testing.T) {
+	t.Parallel()
+
+	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+
+	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
+	version := uint16(ThreadVersion)
+	rloc := uint16(0x0800)
+
+	r := &Router{
+		Neighbor: Neighbor{
+			MacAddr: peerAddr,
+			RLOC16:  0x0800,
+			State:   StateValid,
+		},
+	}
+	rl.routersByRLOC16[0x0800] = r
+
+	rxInfo := buildMulticastLinkRequestRxInfo(peerAddr, &challenge, &version, &rloc)
+	if err := h.HandleLinkRequest(rxInfo); err != nil {
+		t.Fatalf("HandleLinkRequest: %v", err)
+	}
+
+	// Set sendAt far in the future.
+	if len(h.pendingAccepts) > 0 {
+		h.pendingAccepts[0].sendAt = time.Now().Add(10 * time.Second)
+	}
+
+	sent, err := h.FlushPendingAccepts()
+	if err != nil {
+		t.Fatalf("FlushPendingAccepts: %v", err)
+	}
+	if sent != 0 {
+		t.Errorf("sent = %d, want 0 (not yet due)", sent)
+	}
+	if len(transport.sentMessages) != 0 {
+		t.Errorf("sent messages = %d, want 0", len(transport.sentMessages))
+	}
+	if h.PendingAcceptCount() != 1 {
+		t.Errorf("remaining pending = %d, want 1", h.PendingAcceptCount())
+	}
+}
+
+func TestSendAllPendingAccepts(t *testing.T) {
+	t.Parallel()
+
+	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+
+	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
+	version := uint16(ThreadVersion)
+	rloc := uint16(0x0800)
+
+	r := &Router{
+		Neighbor: Neighbor{
+			MacAddr: peerAddr,
+			RLOC16:  0x0800,
+			State:   StateValid,
+		},
+	}
+	rl.routersByRLOC16[0x0800] = r
+
+	// Queue two multicast requests.
+	for i := 0; i < 2; i++ {
+		rxInfo := buildMulticastLinkRequestRxInfo(peerAddr, &challenge, &version, &rloc)
+		if err := h.HandleLinkRequest(rxInfo); err != nil {
+			t.Fatalf("HandleLinkRequest #%d: %v", i, err)
+		}
+	}
+
+	if h.PendingAcceptCount() != 2 {
+		t.Fatalf("pending = %d, want 2", h.PendingAcceptCount())
+	}
+
+	sent, err := h.SendAllPendingAccepts()
+	if err != nil {
+		t.Fatalf("SendAllPendingAccepts: %v", err)
+	}
+	if sent != 2 {
+		t.Errorf("sent = %d, want 2", sent)
+	}
+	if len(transport.sentMessages) != 2 {
+		t.Errorf("transport messages = %d, want 2", len(transport.sentMessages))
+	}
+	if h.PendingAcceptCount() != 0 {
+		t.Errorf("remaining = %d, want 0", h.PendingAcceptCount())
+	}
+}
+
+func TestFlushPendingAccepts_RouterRemovedBetweenQueueAndFlush(t *testing.T) {
+	t.Parallel()
+
+	h, _, _, _, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+
+	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
+	version := uint16(ThreadVersion)
+	rloc := uint16(0x0800)
+
+	r := &Router{
+		Neighbor: Neighbor{
+			MacAddr: peerAddr,
+			RLOC16:  0x0800,
+			State:   StateValid,
+		},
+	}
+	rl.routersByRLOC16[0x0800] = r
+
+	rxInfo := buildMulticastLinkRequestRxInfo(peerAddr, &challenge, &version, &rloc)
+	if err := h.HandleLinkRequest(rxInfo); err != nil {
+		t.Fatalf("HandleLinkRequest: %v", err)
+	}
+
+	// Remove the router from the lookup to simulate it being evicted.
+	delete(rl.routersByRLOC16, 0x0800)
+
+	// Force due.
+	if len(h.pendingAccepts) > 0 {
+		h.pendingAccepts[0].sendAt = time.Now().Add(-time.Millisecond)
+	}
+
+	// Should still succeed — SendLinkAccept handles nil router gracefully.
+	sent, err := h.FlushPendingAccepts()
+	if err != nil {
+		t.Fatalf("FlushPendingAccepts with removed router: %v", err)
+	}
+	if sent != 1 {
+		t.Errorf("sent = %d, want 1", sent)
+	}
+	if h.PendingAcceptCount() != 0 {
+		t.Errorf("remaining = %d, want 0", h.PendingAcceptCount())
+	}
+}
