@@ -467,3 +467,97 @@ func TestSendAnnounce(t *testing.T) {
 		})
 	}
 }
+
+// TestAnnounceHandler_OnSignalCallback verifies that the OnSignal callback
+// is invoked with the correct channel and PAN ID when AnnounceActionSignal
+// is the outcome.
+func TestAnnounceHandler_OnSignalCallback(t *testing.T) {
+	h, _, _, _, _ := newAnnounceHandlerTestSetup(RoleRouter, 3)
+
+	var gotChannel, gotPanID uint16
+	var callCount int
+	h.OnSignal = func(channel uint16, panID uint16) {
+		gotChannel = channel
+		gotPanID = panID
+		callCount++
+	}
+
+	// Build a received Announce with a newer timestamp.
+	ts := &meshcop.Timestamp{}
+	ts.SetSeconds(100) // Newer than our zero-value local timestamp.
+	rx := buildAnnounceRxInfo(ptrUint16(25), ptrUint16(0xBEEF), ts)
+
+	err := h.HandleAnnounce(rx)
+	if err != nil {
+		t.Fatalf("HandleAnnounce returned error: %v", err)
+	}
+
+	if h.LastAction != AnnounceActionSignal {
+		t.Fatalf("LastAction = %d, want AnnounceActionSignal", h.LastAction)
+	}
+	if callCount != 1 {
+		t.Fatalf("OnSignal called %d times, want 1", callCount)
+	}
+	if gotChannel != 25 {
+		t.Errorf("OnSignal channel = %d, want 25", gotChannel)
+	}
+	if gotPanID != 0xBEEF {
+		t.Errorf("OnSignal panID = 0x%04X, want 0xBEEF", gotPanID)
+	}
+}
+
+// TestAnnounceHandler_OnSignalNotCalledForSendBack verifies the OnSignal
+// callback is NOT invoked when the action is SendBack.
+func TestAnnounceHandler_OnSignalNotCalledForSendBack(t *testing.T) {
+	h, m, _, _, _ := newAnnounceHandlerTestSetup(RoleRouter, 3)
+
+	// Ensure the device is FTD router-eligible so it triggers SendBack.
+	m.mu.Lock()
+	m.routerEligible = true
+	m.deviceMode = NewDeviceMode(ModeFullThreadDevice | ModeRxOnWhenIdle)
+	m.mu.Unlock()
+
+	var callCount int
+	h.OnSignal = func(channel uint16, panID uint16) {
+		callCount++
+	}
+
+	// Use a dataset mock that returns a newer local timestamp.
+	h.datasets = &mockDatasetWithTimestamp{seconds: 200}
+
+	ts := &meshcop.Timestamp{}
+	ts.SetSeconds(100) // Older than our local 200.
+	rx := buildAnnounceRxInfo(ptrUint16(15), ptrUint16(0x1234), ts)
+
+	_ = h.HandleAnnounce(rx)
+
+	if h.LastAction != AnnounceActionSendBack {
+		t.Fatalf("LastAction = %d, want AnnounceActionSendBack", h.LastAction)
+	}
+	if callCount != 0 {
+		t.Errorf("OnSignal called %d times, want 0 for SendBack", callCount)
+	}
+}
+
+// mockDatasetWithTimestamp implements DatasetProvider for test purposes.
+type mockDatasetWithTimestamp struct {
+	seconds uint64
+}
+
+func (m *mockDatasetWithTimestamp) GetActiveTimestamp() meshcop.Timestamp {
+	ts := meshcop.Timestamp{}
+	ts.SetSeconds(m.seconds)
+	return ts
+}
+
+func (m *mockDatasetWithTimestamp) GetPendingTimestamp() meshcop.Timestamp {
+	return meshcop.Timestamp{}
+}
+
+func (m *mockDatasetWithTimestamp) ReadActiveDataset() []byte {
+	return nil
+}
+
+func (m *mockDatasetWithTimestamp) ReadPendingDataset() []byte {
+	return nil
+}

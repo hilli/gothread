@@ -133,6 +133,12 @@ func (a *Attacher) HandleTimer() error {
 		a.hasCandidate = false
 		return fmt.Errorf("mle: attach timeout waiting for Child ID Response")
 
+	case AttachStateAnnounce:
+		// Announce processing complete — reset state and start a fresh attach.
+		a.mle.SetAttachState(AttachStateIdle)
+		a.hasCandidate = false
+		return a.Start(AttachAnyPartition)
+
 	default:
 		return fmt.Errorf("mle: unexpected attach state: %s", state)
 	}

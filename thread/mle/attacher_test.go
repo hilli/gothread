@@ -143,6 +143,28 @@ func TestAttacherHandleTimer_ChildIDTimeout(t *testing.T) {
 	}
 }
 
+func TestAttacherHandleTimer_AnnounceState(t *testing.T) {
+	t.Parallel()
+
+	a, _, _, _ := newTestAttacher()
+	_ = a.Start(AttachAnyPartition)
+
+	// Simulate transition to Announce state (as if processAnnounce set it).
+	a.mle.SetAttachState(AttachStateAnnounce)
+
+	err := a.HandleTimer()
+	if err != nil {
+		t.Fatalf("HandleTimer returned error: %v", err)
+	}
+
+	// After processing Announce, the attacher should begin a fresh attach
+	// (state transitions through Start → ParentRequest).
+	state := a.mle.GetAttachState()
+	if state == AttachStateAnnounce || state == AttachStateIdle {
+		t.Errorf("attach state = %s, want transition away from Announce/Idle", state)
+	}
+}
+
 // buildParentResponseTLVs creates TLV bytes for a Parent Response.
 func buildParentResponseTLVs(
 	challenge Challenge,

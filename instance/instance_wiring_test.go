@@ -21,6 +21,7 @@ import (
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/key"
+	"github.com/hilli/gothread/thread/link"
 	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
@@ -2212,39 +2213,32 @@ func TestFullRxPath_MLEReceiver_ConsumesMLEPort(t *testing.T) {
 }
 
 func TestLinkMarginCalculation(t *testing.T) {
-	// The link margin formula used in the MLE receiver is:
-	//   margin = clamp(RSSI + 130, 0, 255)
-	// This test verifies the formula across boundary values.
+	// The link margin is now computed via link.ComputeLinkMargin using
+	// the radio's receive sensitivity as noise floor. The mock radio
+	// returns -100 dBm, so margin = RSSI - (-100) = RSSI + 100,
+	// clamped to [0, 255].
 	tests := []struct {
 		name       string
 		rssi       int8
 		wantMargin uint8
 	}{
-		{"typical_good", -50, 80},
-		{"typical_weak", -90, 40},
-		{"boundary_low", -128, 0},     // guard: RSSI == -128 skips calc, margin stays 0
-		{"just_above_floor", -127, 3}, // -127 + 130 = 3
-		{"very_strong", -10, 120},     // -10 + 130 = 120
-		{"zero_rssi", 0, 130},         // 0 + 130 = 130
-		{"positive_rssi", 8, 138},     // 8 + 130 = 138
+		{"typical_good", -50, 50},
+		{"typical_weak", -90, 10},
+		{"boundary_low", -128, 0},     // -128 is InvalidRSSI → margin 0
+		{"just_above_floor", -127, 0}, // -127 + 100 < 0 → 0 (wait: -127-(-100)=-27 → clamped to 0)
+		{"at_noise_floor", -100, 0},   // -100 - (-100) = 0
+		{"very_strong", -10, 90},      // -10 + 100 = 90
+		{"zero_rssi", 0, 100},         // 0 + 100 = 100
+		{"positive_rssi", 8, 108},     // 8 + 100 = 108
 	}
 
+	noiseFloor := int8(-100)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rssi := tc.rssi
-			var linkMargin uint8
-			if rssi > -128 {
-				margin := int(rssi) + 130
-				if margin < 0 {
-					margin = 0
-				}
-				if margin > 255 {
-					margin = 255
-				}
-				linkMargin = uint8(margin)
-			}
-			if linkMargin != tc.wantMargin {
-				t.Errorf("linkMargin(%d) = %d, want %d", rssi, linkMargin, tc.wantMargin)
+			got := link.ComputeLinkMargin(noiseFloor, tc.rssi)
+			if got != tc.wantMargin {
+				t.Errorf("ComputeLinkMargin(%d, %d) = %d, want %d",
+					noiseFloor, tc.rssi, got, tc.wantMargin)
 			}
 		})
 	}
@@ -2349,5 +2343,73 @@ func TestEventLoop_StackNotifierProcessed_OnTask(t *testing.T) {
 	}
 	if !receivedEvents.Contains(cnotifier.EventRole) {
 		t.Errorf("receivedEvents = %v, want EventRole (%v)", receivedEvents, cnotifier.EventRole)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Parent address wiring
+// --------------------------------------------------------------------------
+
+func TestSyncParentAddress_ChildRole(t *testing.T) {
+	inst := New(Config{})
+
+	// Enable MLE and transition to Child with a parent RLOC16.
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateChild(0x4401) // any child RLOC16
+	parent := m.GetParent()
+	parent.RLOC16 = 0x4400
+
+	inst.syncParentAddress()
+
+	got := inst.mac.GetParentShortAddress()
+	if got != types.ShortAddress(0x4400) {
+		t.Errorf("parent short address = 0x%04X, want 0x4400", got)
+	}
+}
+
+func TestSyncParentAddress_NonChildRole(t *testing.T) {
+	inst := New(Config{})
+
+	// Set parent address while Child.
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+	_ = m.SetStateChild(0x4401)
+	parent := m.GetParent()
+	parent.RLOC16 = 0x4400
+	inst.syncParentAddress()
+
+	// Transition to Detached — parent address should be cleared.
+	_ = m.BecomeDetached()
+	inst.syncParentAddress()
+
+	got := inst.mac.GetParentShortAddress()
+	if got != 0 {
+		t.Errorf("parent short address = 0x%04X, want 0x0000 (cleared)", got)
+	}
+}
+
+// --------------------------------------------------------------------------
+// processAnnounce wiring
+// --------------------------------------------------------------------------
+
+func TestProcessAnnounce_SwitchesChannelAndPanID(t *testing.T) {
+	inst := New(Config{})
+
+	// Enable MLE so BecomeDetached succeeds.
+	m := inst.mleService.Mle()
+	_ = m.Enable()
+
+	inst.processAnnounce(20, 0xCAFE)
+
+	if ch := inst.mac.GetPanChannel(); ch != 20 {
+		t.Errorf("PanChannel = %d, want 20", ch)
+	}
+	if pid := inst.mac.GetPanID(); pid != types.PanID(0xCAFE) {
+		t.Errorf("PanID = 0x%04X, want 0xCAFE", pid)
+	}
+	// MLE should be Detached (BecomeDetached was called).
+	if !m.IsDetached() {
+		t.Errorf("MLE role should be Detached after processAnnounce")
 	}
 }

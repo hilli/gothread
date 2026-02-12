@@ -29,6 +29,7 @@ import (
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/key"
+	"github.com/hilli/gothread/thread/link"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/netdata"
@@ -113,37 +114,50 @@ func (n *notifier) register(cb NotifierCallback) {
 
 // timer represents a scheduled callback that fires after a delay.
 type timer struct {
-	fireAt time.Time
-	fn     func()
+	fireAt    time.Time
+	fn        func()
+	cancelled bool
 }
 
 // timerScheduler maintains a sorted list of pending timers.
 type timerScheduler struct {
-	timers []timer
+	timers []*timer
 }
 
 // schedule adds a timer that fires after delay, calling fn.
 func (ts *timerScheduler) schedule(delay time.Duration, fn func()) {
+	ts.scheduleWithCancel(delay, fn)
+}
+
+// scheduleWithCancel adds a timer that fires after delay, calling fn.
+// It returns a cancel function that, when called, prevents the timer
+// from firing. Calling cancel more than once is safe (no-op).
+func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) func() {
 	fireAt := time.Now().Add(delay)
+	t := &timer{fireAt: fireAt, fn: fn}
 	// Insert in sorted order (earliest first).
 	idx := 0
 	for idx < len(ts.timers) && ts.timers[idx].fireAt.Before(fireAt) {
 		idx++
 	}
-	ts.timers = append(ts.timers, timer{})
+	ts.timers = append(ts.timers, nil)
 	copy(ts.timers[idx+1:], ts.timers[idx:])
-	ts.timers[idx] = timer{fireAt: fireAt, fn: fn}
+	ts.timers[idx] = t
+	return func() { t.cancelled = true }
 }
 
-// processExpired fires all timers whose deadline has passed. Returns the
-// number of timers fired.
+// processExpired fires all timers whose deadline has passed, skipping
+// any that have been cancelled. Returns the number of timers fired.
 func (ts *timerScheduler) processExpired() int {
 	now := time.Now()
 	fired := 0
 	for len(ts.timers) > 0 && !ts.timers[0].fireAt.After(now) {
-		fn := ts.timers[0].fn
+		t := ts.timers[0]
 		ts.timers = ts.timers[1:]
-		fn()
+		if t.cancelled {
+			continue
+		}
+		t.fn()
 		fired++
 	}
 	return fired
@@ -338,6 +352,14 @@ type Instance struct {
 	// macSeqNum is the MAC-layer sequence number counter, incremented
 	// with each transmitted frame.
 	macSeqNum uint8
+
+	// subMacTimerCancel cancels the currently pending SubMac timer
+	// (if any). Used to implement SubMac.StopTimer.
+	subMacTimerCancel func()
+
+	// macTimerCancel cancels the currently pending Mac timer
+	// (if any). Used to implement Mac.StopTimer.
+	macTimerCancel func()
 }
 
 // New creates a new Instance with the given platform configuration.
@@ -397,17 +419,37 @@ func (inst *Instance) wireModules() {
 	bridge := &submacCallbackBridge{}
 
 	inst.subMac = submac.New(submac.Config{
-		Radio:         inst.platRadio,
-		Callbacks:     bridge,
-		ScheduleTimer: inst.scheduleTimerDirect,
-		StopTimer:     func() {}, // no-op; timers expire naturally
+		Radio:     inst.platRadio,
+		Callbacks: bridge,
+		ScheduleTimer: func(delay time.Duration, fn func()) {
+			if inst.subMacTimerCancel != nil {
+				inst.subMacTimerCancel()
+			}
+			inst.subMacTimerCancel = inst.timers.scheduleWithCancel(delay, fn)
+		},
+		StopTimer: func() {
+			if inst.subMacTimerCancel != nil {
+				inst.subMacTimerCancel()
+				inst.subMacTimerCancel = nil
+			}
+		},
 	})
 
 	inst.mac = mac.New(mac.Config{
-		SubMac:        inst.subMac,
-		Callbacks:     inst, // Instance implements mac.Callbacks
-		ScheduleTimer: inst.scheduleTimerDirect,
-		StopTimer:     func() {},
+		SubMac:    inst.subMac,
+		Callbacks: inst, // Instance implements mac.Callbacks
+		ScheduleTimer: func(delay time.Duration, fn func()) {
+			if inst.macTimerCancel != nil {
+				inst.macTimerCancel()
+			}
+			inst.macTimerCancel = inst.timers.scheduleWithCancel(delay, fn)
+		},
+		StopTimer: func() {
+			if inst.macTimerCancel != nil {
+				inst.macTimerCancel()
+				inst.macTimerCancel = nil
+			}
+		},
 		PostOperation: inst.postTask,
 	})
 
@@ -453,6 +495,11 @@ func (inst *Instance) wireModules() {
 		},
 	})
 
+	// Wire AnnounceHandler's OnSignal callback so that when a newer
+	// Announce is received, the instance switches channel/PAN and
+	// initiates a fresh attach.
+	inst.mleService.AnnounceHandler.OnSignal = inst.processAnnounce
+
 	// ---------------------------------------------------------------
 	// Tier 3 — Application layer
 	// ---------------------------------------------------------------
@@ -491,19 +538,10 @@ func (inst *Instance) wireModules() {
 		var linkMargin uint8
 		if mi.LinkInfo != nil {
 			srcExt = mi.LinkInfo.SrcExtAddr
-			// Link margin approximation: RSSI + 130 dBm noise floor offset,
-			// clamped to [0, 255]. This is a simplified model; real
-			// implementations use a calibrated noise floor per radio.
-			if mi.LinkInfo.RSSI > -128 {
-				margin := int(mi.LinkInfo.RSSI) + 130
-				if margin < 0 {
-					margin = 0
-				}
-				if margin > 255 {
-					margin = 255
-				}
-				linkMargin = uint8(margin)
-			}
+			// Compute link margin using the radio's actual receive
+			// sensitivity as the noise floor reference.
+			noiseFloor := inst.subMac.GetNoiseFloor()
+			linkMargin = link.ComputeLinkMargin(noiseFloor, mi.LinkInfo.RSSI)
 		}
 		_ = inst.mleService.HandleReceive(payload, srcExt, mi.PeerAddr, mi.SockAddr, linkMargin)
 		// Schedule attacher timer if the received message advanced the
@@ -688,9 +726,34 @@ func (inst *Instance) scheduleAttachTimer() {
 		delay := a.NextTimerDelay
 		inst.timers.schedule(delay, func() {
 			_ = a.HandleTimer()
+			inst.syncParentAddress()
 			inst.scheduleAttachTimer() // re-arm if needed
 		})
 	}
+}
+
+// syncParentAddress ensures the Mac layer's parent short address
+// matches the MLE parent's RLOC16 when we are in the Child role,
+// and is cleared otherwise.
+func (inst *Instance) syncParentAddress() {
+	m := inst.mleService.Mle()
+	if m.IsChild() {
+		parent := m.GetParent()
+		inst.mac.SetParentShortAddress(types.ShortAddress(parent.RLOC16))
+	} else {
+		inst.mac.SetParentShortAddress(0)
+	}
+}
+
+// processAnnounce is invoked by the AnnounceHandler when a received
+// Announce carries a newer or equal timestamp. The instance switches
+// to the announced channel/PAN, detaches, and starts a fresh attach.
+func (inst *Instance) processAnnounce(channel uint16, panID uint16) {
+	inst.mac.SetPanChannel(uint8(channel))
+	inst.mac.SetPanID(types.PanID(panID))
+	_ = inst.mleService.Mle().BecomeDetached()
+	inst.mleService.Attacher.Start(mle.AttachAnyPartition)
+	inst.scheduleAttachTimer()
 }
 
 // --------------------------------------------------------------------------
@@ -723,6 +786,9 @@ func (inst *Instance) handlePeriodicTick() {
 
 	// Neighbor aging and Link Accept countdown (Phase 31y/z).
 	inst.handleRouterNeighborTimers(m)
+
+	// Sync parent short address to MAC layer on role changes.
+	inst.syncParentAddress()
 
 	// Flush any pending Parent Response messages whose scheduled
 	// delay has elapsed (Phase 31aa).

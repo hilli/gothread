@@ -81,6 +81,12 @@ type AnnounceHandler struct {
 	// LastReceivedPanID records the PAN ID from the most recently
 	// received Announce.
 	LastReceivedPanID uint16
+
+	// OnSignal is an optional callback invoked when the handler
+	// determines that the received Announce carries a newer (or equal)
+	// timestamp and the upper layer should switch channel/PAN.
+	// The callback receives the channel and PAN ID from the Announce.
+	OnSignal func(channel uint16, panID uint16)
 }
 
 // NewAnnounceHandler creates a new AnnounceHandler and registers the
@@ -199,10 +205,12 @@ func (h *AnnounceHandler) HandleAnnounce(rxInfo *RxInfo) error {
 		return nil
 
 	default:
-		// Received timestamp is newer or equal — signal the upper layer.
-		// In a real implementation this would trigger
-		// ScheduleAnnounceAttach or signal the announce sender.
+		// Received timestamp is newer or equal — signal the upper layer
+		// to trigger a channel/PAN switch via the OnSignal callback.
 		h.LastAction = AnnounceActionSignal
+		if h.OnSignal != nil {
+			h.OnSignal(h.LastReceivedChannel, h.LastReceivedPanID)
+		}
 		return nil
 	}
 }

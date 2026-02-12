@@ -377,6 +377,60 @@ func TestTimerSchedulerProcessExpired(t *testing.T) {
 	}
 }
 
+func TestTimerSchedulerCancelPreventsFireing(t *testing.T) {
+	ts := &timerScheduler{}
+
+	var fired int
+	cancel := ts.scheduleWithCancel(0, func() { fired++ })
+	ts.schedule(0, func() { fired++ })
+
+	// Cancel the first timer before processing.
+	cancel()
+
+	count := ts.processExpired()
+	if count != 1 {
+		t.Errorf("processExpired() = %d, want 1 (one cancelled)", count)
+	}
+	if fired != 1 {
+		t.Errorf("fired = %d, want 1", fired)
+	}
+}
+
+func TestTimerSchedulerCancelIdempotent(t *testing.T) {
+	ts := &timerScheduler{}
+
+	cancel := ts.scheduleWithCancel(0, func() {})
+	cancel()
+	cancel() // second call should be safe
+	if ts.count() != 1 {
+		t.Errorf("count = %d, want 1 (cancelled timer still in list)", ts.count())
+	}
+	// processExpired should skip it
+	count := ts.processExpired()
+	if count != 0 {
+		t.Errorf("processExpired() = %d, want 0 (cancelled)", count)
+	}
+}
+
+func TestTimerSchedulerCancelDoesNotAffectOthers(t *testing.T) {
+	ts := &timerScheduler{}
+
+	var order []int
+	cancel1 := ts.scheduleWithCancel(0, func() { order = append(order, 1) })
+	ts.schedule(0, func() { order = append(order, 2) })
+	ts.schedule(0, func() { order = append(order, 3) })
+
+	cancel1()
+
+	count := ts.processExpired()
+	if count != 2 {
+		t.Errorf("processExpired() = %d, want 2", count)
+	}
+	if len(order) != 2 || order[0] != 2 || order[1] != 3 {
+		t.Errorf("order = %v, want [2, 3]", order)
+	}
+}
+
 // --------------------------------------------------------------------------
 // Event constant tests
 // --------------------------------------------------------------------------
