@@ -45,6 +45,10 @@ type ServiceConfig struct {
 	// NetworkInfo provides network identity data for discovery responses.
 	NetworkInfo NetworkInfoProvider
 
+	// Datasets provides operational dataset timestamps and raw TLV data
+	// for MLE handlers that need to include Active/Pending Dataset info.
+	Datasets DatasetProvider
+
 	// NeighborLookup resolves source extended addresses to neighbor entries.
 	// This is typically provided by the router/child table.
 	NeighborLookup func(addr types.ExtAddress) *Neighbor
@@ -139,10 +143,10 @@ func NewService(cfg ServiceConfig) *Service {
 	s.LinkHandlers = NewFtdLinkHandlers(mle, dispatcher, cfg.KeyProvider, cfg.RouterLookup, cfg.RouteData)
 	s.LinkRejectHandler = NewLinkRejectHandler(mle, dispatcher)
 	s.AdvertisementHandler = NewFtdAdvertisementHandler(mle, dispatcher, cfg.RouterOps)
-	s.AnnounceHandler = NewAnnounceHandler(mle, dispatcher, cfg.KeyProvider)
-	s.DataRequestHandler = NewDataRequestHandler(mle, dispatcher, cfg.KeyProvider, childTable)
+	s.AnnounceHandler = NewAnnounceHandler(mle, dispatcher, cfg.KeyProvider, cfg.Datasets)
+	s.DataRequestHandler = NewDataRequestHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Datasets)
 	s.ParentRequestHandler = NewParentRequestHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Connectivity)
-	s.ChildIDHandler = NewChildIDHandler(mle, dispatcher, cfg.KeyProvider, childTable)
+	s.ChildIDHandler = NewChildIDHandler(mle, dispatcher, cfg.KeyProvider, childTable, cfg.Datasets)
 	s.DiscoveryHandler = NewDiscoveryHandler(mle, dispatcher, cfg.NetworkInfo)
 
 	// ChildUpdateRouter is NOT registered on the dispatcher (see its doc comment).

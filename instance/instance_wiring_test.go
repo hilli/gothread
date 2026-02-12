@@ -38,6 +38,7 @@ var _ mle.RouteDataProvider = (*Instance)(nil)
 var _ mle.AdvertisementRouterOps = (*Instance)(nil)
 var _ mle.ConnectivityProvider = (*Instance)(nil)
 var _ mle.NetworkInfoProvider = (*Instance)(nil)
+var _ mle.DatasetProvider = (*Instance)(nil)
 var _ submac.Callbacks = (*submacCallbackBridge)(nil)
 
 // --------------------------------------------------------------------------
@@ -141,6 +142,48 @@ func TestWireModules_Tier1_KeyProviderDelegation(t *testing.T) {
 	_ = inst.GetCurrentMleKey()
 	_ = inst.GetTemporaryMleKey(0)
 	_ = inst.GetMacFrameCounter()
+}
+
+// --------------------------------------------------------------------------
+// Tier 1 — DatasetProvider delegation
+// --------------------------------------------------------------------------
+
+func TestWireModules_Tier1_DatasetManagersCreated(t *testing.T) {
+	inst := New(Config{})
+
+	if inst.activeDataset == nil {
+		t.Error("activeDataset should be created")
+	}
+	if inst.pendingDataset == nil {
+		t.Error("pendingDataset should be created")
+	}
+}
+
+func TestWireModules_Tier1_DatasetProviderEmptyTimestamps(t *testing.T) {
+	inst := New(Config{})
+
+	// With empty datasets, timestamps should be invalid (not yet configured).
+	activeTS := inst.GetActiveTimestamp()
+	if activeTS.IsValid() {
+		t.Error("GetActiveTimestamp() should return invalid timestamp for empty dataset")
+	}
+
+	pendingTS := inst.GetPendingTimestamp()
+	if pendingTS.IsValid() {
+		t.Error("GetPendingTimestamp() should return invalid timestamp for empty dataset")
+	}
+}
+
+func TestWireModules_Tier1_DatasetProviderEmptyRead(t *testing.T) {
+	inst := New(Config{})
+
+	// With empty datasets, Read should return nil.
+	if data := inst.ReadActiveDataset(); data != nil {
+		t.Errorf("ReadActiveDataset() = %v, want nil", data)
+	}
+	if data := inst.ReadPendingDataset(); data != nil {
+		t.Errorf("ReadPendingDataset() = %v, want nil", data)
+	}
 }
 
 // --------------------------------------------------------------------------

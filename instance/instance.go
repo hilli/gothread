@@ -21,6 +21,7 @@ import (
 	"github.com/hilli/gothread/mac"
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
+	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/icmp6"
 	"github.com/hilli/gothread/net/ip6"
@@ -236,6 +237,12 @@ type Instance struct {
 	// key rotation.
 	keyManager *key.Manager
 
+	// activeDataset manages the Active Operational Dataset.
+	activeDataset *meshcop.ActiveDatasetManager
+
+	// pendingDataset manages the Pending Operational Dataset.
+	pendingDataset *meshcop.PendingDatasetManager
+
 	// subMac implements CSMA-CA, retransmissions, and energy scanning.
 	subMac *submac.SubMac
 
@@ -348,6 +355,15 @@ func (inst *Instance) wireModules() {
 	inst.stackNotifier = cnotifier.New()
 	inst.keyManager = key.NewManager()
 
+	inst.activeDataset = meshcop.NewActiveDatasetManager(
+		meshcop.NewMemoryDatasetStore(),
+		func(dt meshcop.DatasetType) { inst.stackNotifier.Signal(cnotifier.Events(EventActiveDatasetChanged)) },
+	)
+	inst.pendingDataset = meshcop.NewPendingDatasetManager(
+		meshcop.NewMemoryDatasetStore(),
+		func(dt meshcop.DatasetType) { inst.stackNotifier.Signal(cnotifier.Events(EventPendingDatasetChanged)) },
+	)
+
 	if inst.platSettings != nil {
 		inst.stackSettings = csettings.New(&settingsDriverAdapter{ps: inst.platSettings})
 	}
@@ -398,6 +414,7 @@ func (inst *Instance) wireModules() {
 		RouterOps:    inst, // Instance delegates to routerTable
 		Connectivity: inst, // Instance provides connectivity data
 		NetworkInfo:  inst, // Instance provides network identity
+		Datasets:     inst, // Instance provides dataset access
 		NeighborLookup: func(addr types.ExtAddress) *mle.Neighbor {
 			n := inst.neighborTable.FindNeighborByExtAddress(addr, routing.FilterValid)
 			if n == nil {

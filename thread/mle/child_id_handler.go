@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/ip6"
 )
 
@@ -29,6 +30,7 @@ type ChildIDHandler struct {
 	dispatcher *Dispatcher
 	keyMgr     KeyProvider
 	childTable *ChildTable
+	datasets   DatasetProvider
 }
 
 // NewChildIDHandler creates a new ChildIDHandler and registers the
@@ -38,12 +40,14 @@ func NewChildIDHandler(
 	dispatcher *Dispatcher,
 	keyMgr KeyProvider,
 	childTable *ChildTable,
+	datasets DatasetProvider,
 ) *ChildIDHandler {
 	h := &ChildIDHandler{
 		mle:        mle,
 		dispatcher: dispatcher,
 		keyMgr:     keyMgr,
 		childTable: childTable,
+		datasets:   datasets,
 	}
 
 	dispatcher.RegisterHandler(CommandChildIDRequest, h.HandleChildIDRequest)
@@ -227,12 +231,16 @@ func (h *ChildIDHandler) SendChildIDResponse(child *Child) error {
 			// Omitted here — a real implementation fills it in.
 
 		case TLVActiveTimestamp:
-			// Active Timestamp would come from the dataset manager.
-			// Omitted here for simplicity.
+			ts := h.getActiveTimestamp()
+			if ts.IsValid() {
+				_ = msg.AppendActiveTimestampTLV(ts)
+			}
 
 		case TLVPendingTimestamp:
-			// Pending Timestamp would come from the dataset manager.
-			// Omitted here for simplicity.
+			ts := h.getPendingTimestamp()
+			if ts.IsValid() {
+				_ = msg.AppendPendingTimestampTLV(ts)
+			}
 
 		case TLVSupervisionInterval:
 			msg.AppendSupervisionIntervalTLV(child.SupervisionInterval)
@@ -249,4 +257,28 @@ func (h *ChildIDHandler) SendChildIDResponse(child *Child) error {
 	}
 
 	return nil
+}
+
+// --------------------------------------------------------------------------
+// Dataset helper methods
+// --------------------------------------------------------------------------
+
+// getActiveTimestamp returns the local Active Timestamp from the dataset
+// provider, or a zero-value Timestamp if no provider is configured.
+func (h *ChildIDHandler) getActiveTimestamp() *meshcop.Timestamp {
+	if h.datasets == nil {
+		return &meshcop.Timestamp{}
+	}
+	ts := h.datasets.GetActiveTimestamp()
+	return &ts
+}
+
+// getPendingTimestamp returns the local Pending Timestamp from the dataset
+// provider, or a zero-value Timestamp if no provider is configured.
+func (h *ChildIDHandler) getPendingTimestamp() *meshcop.Timestamp {
+	if h.datasets == nil {
+		return &meshcop.Timestamp{}
+	}
+	ts := h.datasets.GetPendingTimestamp()
+	return &ts
 }

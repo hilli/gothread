@@ -6,6 +6,7 @@ package mle
 
 import (
 	"github.com/hilli/gothread/mac/types"
+	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/thread/key"
 )
@@ -98,4 +99,26 @@ type KeyProvider interface {
 
 	// SetCurrentKeySequence updates the key sequence with the given flags.
 	SetCurrentKeySequence(seq uint32, flags key.SeqUpdateFlag)
+}
+
+// DatasetProvider abstracts access to the Active and Pending operational
+// datasets. MLE handlers use this to obtain real timestamps and dataset
+// TLV payloads instead of zero-value placeholders.
+//
+// In production, this is satisfied by the Instance struct which delegates
+// to meshcop.ActiveDatasetManager and meshcop.PendingDatasetManager.
+type DatasetProvider interface {
+	// GetActiveTimestamp returns the current Active Dataset timestamp.
+	GetActiveTimestamp() meshcop.Timestamp
+
+	// GetPendingTimestamp returns the current Pending Dataset timestamp.
+	GetPendingTimestamp() meshcop.Timestamp
+
+	// ReadActiveDataset returns the Active Dataset as raw TLV bytes,
+	// or nil if no dataset is configured.
+	ReadActiveDataset() []byte
+
+	// ReadPendingDataset returns the Pending Dataset as raw TLV bytes,
+	// or nil if no dataset is configured.
+	ReadPendingDataset() []byte
 }

@@ -67,6 +67,7 @@ type AnnounceHandler struct {
 	mle        *Mle
 	dispatcher *Dispatcher
 	keyMgr     KeyProvider
+	datasets   DatasetProvider
 
 	// LastAction records the action taken by the most recent
 	// HandleAnnounce call. Useful for testing and debugging.
@@ -87,11 +88,13 @@ func NewAnnounceHandler(
 	mle *Mle,
 	dispatcher *Dispatcher,
 	keyMgr KeyProvider,
+	datasets DatasetProvider,
 ) *AnnounceHandler {
 	h := &AnnounceHandler{
 		mle:        mle,
 		dispatcher: dispatcher,
 		keyMgr:     keyMgr,
+		datasets:   datasets,
 	}
 
 	dispatcher.RegisterHandler(CommandAnnounce, h.HandleAnnounce)
@@ -173,9 +176,7 @@ func (h *AnnounceHandler) HandleAnnounce(rxInfo *RxInfo) error {
 	}
 
 	// 6. Compare the received timestamp against our local Active Timestamp.
-	// A real implementation obtains this from the dataset manager; we use
-	// a zero-value placeholder.
-	localTS := &meshcop.Timestamp{}
+	localTS := h.getActiveTimestamp()
 
 	cmp := meshcop.Compare(receivedTS, localTS)
 
@@ -222,13 +223,13 @@ func (h *AnnounceHandler) SendAnnounce(channel uint16, mode AnnounceMode, dst ip
 	msg.AppendChannelTLV(0, channel)
 
 	// Active Timestamp TLV.
-	ts := &meshcop.Timestamp{}
+	var ts *meshcop.Timestamp
 	if mode == AnnounceOrphan {
+		ts = &meshcop.Timestamp{}
 		ts.SetToOrphanAnnounce()
+	} else {
+		ts = h.getActiveTimestamp()
 	}
-	// For AnnounceNormal, a real implementation would use the local
-	// active operational dataset timestamp. We use a zero-value
-	// placeholder for now.
 	if err := msg.AppendActiveTimestampTLV(ts); err != nil {
 		return fmt.Errorf("mle: send announce: %w", err)
 	}
@@ -242,4 +243,18 @@ func (h *AnnounceHandler) SendAnnounce(channel uint16, mode AnnounceMode, dst ip
 	}
 
 	return nil
+}
+
+// --------------------------------------------------------------------------
+// Dataset helper methods
+// --------------------------------------------------------------------------
+
+// getActiveTimestamp returns the local Active Timestamp from the dataset
+// provider, or a zero-value Timestamp if no provider is configured.
+func (h *AnnounceHandler) getActiveTimestamp() *meshcop.Timestamp {
+	if h.datasets == nil {
+		return &meshcop.Timestamp{}
+	}
+	ts := h.datasets.GetActiveTimestamp()
+	return &ts
 }

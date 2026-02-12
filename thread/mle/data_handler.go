@@ -28,6 +28,7 @@ type DataRequestHandler struct {
 	dispatcher *Dispatcher
 	keyMgr     KeyProvider
 	childTable *ChildTable
+	datasets   DatasetProvider
 }
 
 // NewDataRequestHandler creates a new DataRequestHandler and registers the
@@ -37,12 +38,14 @@ func NewDataRequestHandler(
 	dispatcher *Dispatcher,
 	keyMgr KeyProvider,
 	childTable *ChildTable,
+	datasets DatasetProvider,
 ) *DataRequestHandler {
 	h := &DataRequestHandler{
 		mle:        mle,
 		dispatcher: dispatcher,
 		keyMgr:     keyMgr,
 		childTable: childTable,
+		datasets:   datasets,
 	}
 
 	dispatcher.RegisterHandler(CommandDataRequest, h.HandleDataRequest)
@@ -91,15 +94,10 @@ func (h *DataRequestHandler) HandleDataRequest(rxInfo *RxInfo) error {
 
 	// 5. Check Active Timestamp: if the child's timestamp is absent or
 	// doesn't match ours, add TLVActiveDataset to the response list.
-	//
-	// Note: dataset management is not yet fully implemented. We use a
-	// zero-value timestamp as the local reference. A real implementation
-	// would obtain the active operational dataset's timestamp from a
-	// dataset manager.
 	if activeVal, hasActive := FindTLV(rxInfo.TLVs, TLVActiveTimestamp); hasActive {
 		childTS, err := ReadActiveTimestampTLV(activeVal)
 		if err == nil {
-			localTS := &meshcop.Timestamp{} // zero = placeholder
+			localTS := h.getActiveTimestamp()
 			if meshcop.Compare(childTS, localTS) != 0 {
 				requestedTLVs = appendIfMissing(requestedTLVs, TLVActiveDataset)
 			}
@@ -113,7 +111,7 @@ func (h *DataRequestHandler) HandleDataRequest(rxInfo *RxInfo) error {
 	if pendingVal, hasPending := FindTLV(rxInfo.TLVs, TLVPendingTimestamp); hasPending {
 		childTS, err := ReadPendingTimestampTLV(pendingVal)
 		if err == nil {
-			localTS := &meshcop.Timestamp{} // zero = placeholder
+			localTS := h.getPendingTimestamp()
 			if meshcop.Compare(childTS, localTS) != 0 {
 				requestedTLVs = appendIfMissing(requestedTLVs, TLVPendingDataset)
 			}
@@ -160,14 +158,13 @@ func (h *DataRequestHandler) SendDataResponse(dstIP ip6.Address, requestedTLVs [
 	msg.AppendLeaderDataTLV(h.mle.GetLeaderData())
 
 	// Always include Active Timestamp TLV.
-	// A real implementation would use the dataset manager's timestamp.
-	activeTS := &meshcop.Timestamp{}
+	activeTS := h.getActiveTimestamp()
 	if err := msg.AppendActiveTimestampTLV(activeTS); err != nil {
 		return fmt.Errorf("mle: send data response: %w", err)
 	}
 
 	// Always include Pending Timestamp TLV.
-	pendingTS := &meshcop.Timestamp{}
+	pendingTS := h.getPendingTimestamp()
 	if err := msg.AppendPendingTimestampTLV(pendingTS); err != nil {
 		return fmt.Errorf("mle: send data response: %w", err)
 	}
@@ -182,14 +179,10 @@ func (h *DataRequestHandler) SendDataResponse(dstIP ip6.Address, requestedTLVs [
 			msg.AppendNetworkDataTLV(nil)
 
 		case TLVActiveDataset:
-			// Active Dataset would come from the dataset manager.
-			// Append empty placeholder for now.
-			msg.appendTLV(TLVActiveDataset, nil)
+			msg.appendTLV(TLVActiveDataset, h.readActiveDataset())
 
 		case TLVPendingDataset:
-			// Pending Dataset would come from the dataset manager.
-			// Append empty placeholder for now.
-			msg.appendTLV(TLVPendingDataset, nil)
+			msg.appendTLV(TLVPendingDataset, h.readPendingDataset())
 		}
 	}
 
@@ -198,6 +191,48 @@ func (h *DataRequestHandler) SendDataResponse(dstIP ip6.Address, requestedTLVs [
 	}
 
 	return nil
+}
+
+// --------------------------------------------------------------------------
+// Dataset helper methods
+// --------------------------------------------------------------------------
+
+// getActiveTimestamp returns the local Active Timestamp from the dataset
+// provider, or a zero-value Timestamp if no provider is configured.
+func (h *DataRequestHandler) getActiveTimestamp() *meshcop.Timestamp {
+	if h.datasets == nil {
+		return &meshcop.Timestamp{}
+	}
+	ts := h.datasets.GetActiveTimestamp()
+	return &ts
+}
+
+// getPendingTimestamp returns the local Pending Timestamp from the dataset
+// provider, or a zero-value Timestamp if no provider is configured.
+func (h *DataRequestHandler) getPendingTimestamp() *meshcop.Timestamp {
+	if h.datasets == nil {
+		return &meshcop.Timestamp{}
+	}
+	ts := h.datasets.GetPendingTimestamp()
+	return &ts
+}
+
+// readActiveDataset returns the serialised Active Dataset bytes from the
+// dataset provider, or nil if no provider is configured.
+func (h *DataRequestHandler) readActiveDataset() []byte {
+	if h.datasets == nil {
+		return nil
+	}
+	return h.datasets.ReadActiveDataset()
+}
+
+// readPendingDataset returns the serialised Pending Dataset bytes from the
+// dataset provider, or nil if no provider is configured.
+func (h *DataRequestHandler) readPendingDataset() []byte {
+	if h.datasets == nil {
+		return nil
+	}
+	return h.datasets.ReadPendingDataset()
 }
 
 // appendIfMissing appends v to the slice if it is not already present.

@@ -16,6 +16,7 @@ import (
 	macframe "github.com/hilli/gothread/mac/frame"
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
+	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/udp"
@@ -652,6 +653,40 @@ func (inst *Instance) GetSteeringData() []byte {
 // IsNativeCommissioner reports whether native commissioning is enabled.
 func (inst *Instance) IsNativeCommissioner() bool {
 	return inst.nativeCommissioner
+}
+
+// --------------------------------------------------------------------------
+// Instance implements mle.DatasetProvider
+// --------------------------------------------------------------------------
+
+// GetActiveTimestamp returns the timestamp from the Active Operational Dataset.
+func (inst *Instance) GetActiveTimestamp() meshcop.Timestamp {
+	return inst.activeDataset.GetTimestamp()
+}
+
+// GetPendingTimestamp returns the timestamp from the Pending Operational Dataset.
+func (inst *Instance) GetPendingTimestamp() meshcop.Timestamp {
+	return inst.pendingDataset.GetTimestamp()
+}
+
+// ReadActiveDataset returns the serialised Active Operational Dataset, or
+// nil if the dataset is empty or an error occurs.
+func (inst *Instance) ReadActiveDataset() []byte {
+	ds, err := inst.activeDataset.Read()
+	if err != nil || ds == nil {
+		return nil
+	}
+	return ds.Bytes()
+}
+
+// ReadPendingDataset returns the serialised Pending Operational Dataset, or
+// nil if the dataset is empty or an error occurs.
+func (inst *Instance) ReadPendingDataset() []byte {
+	ds, err := inst.pendingDataset.Read()
+	if err != nil || ds == nil {
+		return nil
+	}
+	return ds.Bytes()
 }
 
 // --------------------------------------------------------------------------
