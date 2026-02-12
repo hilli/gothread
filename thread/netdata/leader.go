@@ -113,6 +113,18 @@ func (l *Leader) StableVersion() uint8 { return l.stableVersion }
 // Data returns the raw network data bytes.
 func (l *Leader) Data() []byte { return l.data.Data() }
 
+// StableData returns only the stable subset of the network data. Stable
+// TLVs are those with the stable bit set in the TLV header. The returned
+// slice is a freshly allocated copy.
+func (l *Leader) StableData() []byte {
+	var stable MutableNetworkData
+	stable.CopyFrom(&l.data, true)
+	// Return a copy so callers don't alias our internal buffer.
+	out := make([]byte, stable.Len())
+	copy(out, stable.Data())
+	return out
+}
+
 // Len returns the length of the network data.
 func (l *Leader) Len() int { return l.data.Len() }
 

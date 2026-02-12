@@ -502,8 +502,8 @@ func (m *Mle) BecomeRouter() error {
 		if !m.routerEligible {
 			return goterrors.ErrNotCapable
 		}
-		// In a real implementation, this would send an Address Solicit.
-		// The role change happens when the response arrives.
+		// FTD devices use BecomeRouterFtd which sends an Address Solicit
+		// and transitions the role when the response arrives.
 		return nil
 	default:
 		return goterrors.ErrInvalidState
@@ -525,8 +525,8 @@ func (m *Mle) BecomeLeader() error {
 		return goterrors.ErrNotCapable
 	}
 
-	// In a real implementation this would set up the leader data,
-	// allocate a router ID, and call setRole(RoleLeader).
+	// FTD devices use BecomeLeaderFtd which sets up the leader data,
+	// allocates a router ID, and calls setRole(RoleLeader).
 	return nil
 }
 

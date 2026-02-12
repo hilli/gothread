@@ -29,8 +29,10 @@ import (
 // Request/Response messages received from the parent, and provides
 // methods to send Data Requests and Child Update messages to the parent.
 type ChildHandlers struct {
-	mle        *Mle
-	dispatcher *Dispatcher
+	mle         *Mle
+	dispatcher  *Dispatcher
+	datasets    DatasetProvider
+	networkData NetworkDataProvider
 
 	// pendingChallenge holds a challenge sent in a Child Update Request
 	// (when re-establishing a link with the parent). If empty, no
@@ -41,10 +43,12 @@ type ChildHandlers struct {
 
 // NewChildHandlers creates a new ChildHandlers instance and registers
 // the handler functions with the dispatcher.
-func NewChildHandlers(mle *Mle, dispatcher *Dispatcher) *ChildHandlers {
+func NewChildHandlers(mle *Mle, dispatcher *Dispatcher, datasets DatasetProvider, networkData NetworkDataProvider) *ChildHandlers {
 	ch := &ChildHandlers{
-		mle:        mle,
-		dispatcher: dispatcher,
+		mle:         mle,
+		dispatcher:  dispatcher,
+		datasets:    datasets,
+		networkData: networkData,
 	}
 
 	dispatcher.RegisterHandler(CommandDataResponse, ch.HandleDataResponse)
@@ -89,7 +93,7 @@ func (ch *ChildHandlers) HandleAdvertisement(rxInfo *RxInfo) error {
 
 	// Child path: only process advertisements from our parent.
 	if !ch.mle.IsChild() {
-		// Router/Leader paths are handled in Phase 12c.
+		// Router/Leader paths are handled in FtdAdvertisementHandler.
 		return nil
 	}
 
@@ -458,9 +462,16 @@ func (ch *ChildHandlers) SendDataRequest() error {
 	msg.AppendTLVRequestTLV(requestedTLVs)
 
 	// Include our timestamps so the parent knows what versions we have.
-	// Note: In a full implementation these would come from the MeshCoP
-	// dataset manager. For now we send the TLVs with zero timestamps
-	// to indicate we have no dataset information.
+	if ch.datasets != nil {
+		ts := ch.datasets.GetActiveTimestamp()
+		if ts.IsValid() {
+			_ = msg.AppendActiveTimestampTLV(&ts)
+		}
+		pts := ch.datasets.GetPendingTimestamp()
+		if pts.IsValid() {
+			_ = msg.AppendPendingTimestampTLV(&pts)
+		}
+	}
 
 	dstIP := parentLinkLocalIP(parent.MacAddr)
 	return ch.dispatcher.SendMessage(msg, dstIP)
@@ -540,9 +551,24 @@ func (ch *ChildHandlers) appendRequestedTLV(msg *Message, tlvType uint8) {
 		msg.AppendLinkFrameCounterTLV(ch.dispatcher.keyMgr.GetMacFrameCounter())
 	case TLVMleFrameCounter:
 		msg.AppendMleFrameCounterTLV(ch.dispatcher.keyMgr.GetMleFrameCounter())
-		// Other TLV types (NetworkData, AddressRegistration, etc.)
-		// are not handled here — they require additional context
-		// that will be added in future phases.
+	case TLVNetworkData:
+		if ch.networkData != nil {
+			msg.AppendNetworkDataTLV(ch.networkData.GetNetworkData(false))
+		}
+	case TLVActiveTimestamp:
+		if ch.datasets != nil {
+			ts := ch.datasets.GetActiveTimestamp()
+			if ts.IsValid() {
+				_ = msg.AppendActiveTimestampTLV(&ts)
+			}
+		}
+	case TLVPendingTimestamp:
+		if ch.datasets != nil {
+			ts := ch.datasets.GetPendingTimestamp()
+			if ts.IsValid() {
+				_ = msg.AppendPendingTimestampTLV(&ts)
+			}
+		}
 	}
 }
 

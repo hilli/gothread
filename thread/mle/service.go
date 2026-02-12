@@ -146,7 +146,7 @@ func NewService(cfg ServiceConfig) *Service {
 	dispatcher.RegisterHandler(CommandParentResponse, s.Attacher.HandleParentResponse)
 	dispatcher.RegisterHandler(CommandChildIDResponse, s.Attacher.HandleChildIDResponse)
 
-	s.ChildHandlers = NewChildHandlers(mle, dispatcher)
+	s.ChildHandlers = NewChildHandlers(mle, dispatcher, cfg.Datasets, cfg.NetworkData)
 	s.LinkHandlers = NewFtdLinkHandlers(mle, dispatcher, cfg.KeyProvider, cfg.RouterLookup, cfg.RouteData)
 	s.LinkRejectHandler = NewLinkRejectHandler(mle, dispatcher)
 	s.AdvertisementHandler = NewFtdAdvertisementHandler(mle, dispatcher, cfg.RouterOps)

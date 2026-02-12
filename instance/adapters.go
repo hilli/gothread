@@ -626,12 +626,15 @@ func (inst *Instance) GetConnectivityTLV() mle.ConnectivityTLV {
 		leaderCost = inst.routerTable.GetPathCostToLeader(leaderRLOC16)
 	}
 	return mle.ConnectivityTLV{
-		LinkQuality3:  uint8(inst.routerTable.GetNeighborCount(3)),
-		LinkQuality2:  uint8(inst.routerTable.GetNeighborCount(2)),
-		LinkQuality1:  uint8(inst.routerTable.GetNeighborCount(1)),
-		ActiveRouters: uint8(inst.routerTable.GetActiveRouterCount()),
-		IDSequence:    inst.routerTable.GetRouterIDSequence(),
-		LeaderCost:    leaderCost,
+		Flags:            inst.parentPriority << 6,
+		LinkQuality3:     uint8(inst.routerTable.GetNeighborCount(3)),
+		LinkQuality2:     uint8(inst.routerTable.GetNeighborCount(2)),
+		LinkQuality1:     uint8(inst.routerTable.GetNeighborCount(1)),
+		ActiveRouters:    uint8(inst.routerTable.GetActiveRouterCount()),
+		IDSequence:       inst.routerTable.GetRouterIDSequence(),
+		LeaderCost:       leaderCost,
+		SEDBufferSize:    inst.sedBufferSize,
+		SEDDatagramCount: inst.sedDatagramCount,
 	}
 }
 
@@ -697,12 +700,14 @@ func (inst *Instance) ReadPendingDataset() []byte {
 // Instance implements mle.NetworkDataProvider
 // --------------------------------------------------------------------------
 
-// GetNetworkData returns the current network data bytes. The stableOnly
-// parameter is accepted for interface compatibility but is not yet used;
-// the full network data is always returned.
+// GetNetworkData returns the current network data bytes. When stableOnly
+// is true, only TLVs with the stable bit set are included.
 func (inst *Instance) GetNetworkData(stableOnly bool) []byte {
 	if inst.netdataLeader == nil {
 		return nil
+	}
+	if stableOnly {
+		return inst.netdataLeader.StableData()
 	}
 	return inst.netdataLeader.Data()
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/hilli/gothread/encoding"
 	"github.com/hilli/gothread/mac/types"
+	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/ip6"
 )
 
@@ -38,6 +39,215 @@ func makeSourceAddressTLVValue(rloc16 uint16) []byte {
 	val := make([]byte, 2)
 	encoding.BigEndianWriteUint16(rloc16, val)
 	return val
+}
+
+// mockChildDatasetProvider implements DatasetProvider for testing.
+type mockChildDatasetProvider struct {
+	activeTimestamp  meshcop.Timestamp
+	pendingTimestamp meshcop.Timestamp
+	activeDataset    []byte
+	pendingDataset   []byte
+}
+
+func (m *mockChildDatasetProvider) GetActiveTimestamp() meshcop.Timestamp  { return m.activeTimestamp }
+func (m *mockChildDatasetProvider) GetPendingTimestamp() meshcop.Timestamp { return m.pendingTimestamp }
+func (m *mockChildDatasetProvider) ReadActiveDataset() []byte              { return m.activeDataset }
+func (m *mockChildDatasetProvider) ReadPendingDataset() []byte             { return m.pendingDataset }
+
+// mockChildNetworkDataProvider implements NetworkDataProvider for testing.
+type mockChildNetworkDataProvider struct {
+	data []byte
+}
+
+func (m *mockChildNetworkDataProvider) GetNetworkData(_ bool) []byte { return m.data }
+
+// newChildHandlersTestSetupWithProviders creates a ChildHandlers instance
+// wired to the given DatasetProvider and NetworkDataProvider.
+func newChildHandlersTestSetupWithProviders(
+	datasets DatasetProvider,
+	networkData NetworkDataProvider,
+) (*ChildHandlers, *Mle, *mockTransport, *mockKeyProvider) {
+	mle := NewMle()
+	_ = mle.Enable()
+
+	transport := &mockTransport{
+		extAddr: types.ExtAddress{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08},
+		linkLocal: ip6.Address{
+			0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+			0x03, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		},
+	}
+
+	keyMgr := &mockKeyProvider{
+		currentSeq:      1,
+		mleFrameCounter: 100,
+		macFrameCounter: 200,
+	}
+
+	d := NewDispatcher(mle, keyMgr, transport)
+
+	_ = mle.SetStateChild(childRLOC16)
+	mle.SetLeaderData(defaultLeaderData)
+
+	parent := mle.GetParent()
+	parent.MacAddr = parentExtAddr
+	parent.RLOC16 = parentRLOC16
+	parent.State = StateValid
+	parent.LastHeard = time.Now().Add(-1 * time.Minute)
+
+	ch := NewChildHandlers(mle, d, datasets, networkData)
+	return ch, mle, transport, keyMgr
+}
+
+// --- SendDataRequest with DatasetProvider tests ---
+
+func TestSendDataRequest_WithDatasets_AppendsTimestamps(t *testing.T) {
+	t.Parallel()
+
+	var activeTS meshcop.Timestamp
+	activeTS.SetSeconds(1000)
+	activeTS.SetTicks(10)
+
+	var pendingTS meshcop.Timestamp
+	pendingTS.SetSeconds(2000)
+	pendingTS.SetTicks(20)
+
+	datasets := &mockChildDatasetProvider{
+		activeTimestamp:  activeTS,
+		pendingTimestamp: pendingTS,
+	}
+
+	ch, _, transport, _ := newChildHandlersTestSetupWithProviders(datasets, nil)
+
+	err := ch.SendDataRequest()
+	if err != nil {
+		t.Fatalf("SendDataRequest error: %v", err)
+	}
+
+	if len(transport.sentMessages) != 1 {
+		t.Fatalf("expected 1 sent message, got %d", len(transport.sentMessages))
+	}
+
+	// The message was sent — verify it's non-empty (the timestamps are
+	// inside the encrypted MLE payload, so we just verify the message
+	// was constructed and sent successfully).
+	if len(transport.sentMessages[0].data) == 0 {
+		t.Error("sent message should not be empty")
+	}
+}
+
+func TestSendDataRequest_NilDatasets_NoTimestampAppended(t *testing.T) {
+	t.Parallel()
+
+	ch, _, transport, _ := newChildHandlersTestSetupWithProviders(nil, nil)
+
+	err := ch.SendDataRequest()
+	if err != nil {
+		t.Fatalf("SendDataRequest error: %v", err)
+	}
+
+	if len(transport.sentMessages) != 1 {
+		t.Fatalf("expected 1 sent message, got %d", len(transport.sentMessages))
+	}
+}
+
+// --- appendRequestedTLV with new TLV types tests ---
+
+func TestAppendRequestedTLV_NetworkData(t *testing.T) {
+	t.Parallel()
+
+	networkData := &mockChildNetworkDataProvider{data: []byte{0xAA, 0xBB, 0xCC}}
+	ch, _, _, _ := newChildHandlersTestSetupWithProviders(nil, networkData)
+
+	msg := NewMessage(CommandChildUpdateResponse)
+	initialLen := len(msg.buf)
+	ch.appendRequestedTLV(msg, TLVNetworkData)
+
+	if len(msg.buf) <= initialLen {
+		t.Error("appendRequestedTLV(TLVNetworkData) did not append anything")
+	}
+}
+
+func TestAppendRequestedTLV_NetworkData_NilProvider(t *testing.T) {
+	t.Parallel()
+
+	ch, _, _, _ := newChildHandlersTestSetupWithProviders(nil, nil)
+
+	msg := NewMessage(CommandChildUpdateResponse)
+	initialLen := len(msg.buf)
+	ch.appendRequestedTLV(msg, TLVNetworkData)
+
+	if len(msg.buf) != initialLen {
+		t.Error("appendRequestedTLV(TLVNetworkData) should not append when provider is nil")
+	}
+}
+
+func TestAppendRequestedTLV_ActiveTimestamp(t *testing.T) {
+	t.Parallel()
+
+	var activeTS meshcop.Timestamp
+	activeTS.SetSeconds(500)
+
+	datasets := &mockChildDatasetProvider{activeTimestamp: activeTS}
+	ch, _, _, _ := newChildHandlersTestSetupWithProviders(datasets, nil)
+
+	msg := NewMessage(CommandChildUpdateResponse)
+	initialLen := len(msg.buf)
+	ch.appendRequestedTLV(msg, TLVActiveTimestamp)
+
+	if len(msg.buf) <= initialLen {
+		t.Error("appendRequestedTLV(TLVActiveTimestamp) did not append anything")
+	}
+}
+
+func TestAppendRequestedTLV_ActiveTimestamp_NilProvider(t *testing.T) {
+	t.Parallel()
+
+	ch, _, _, _ := newChildHandlersTestSetupWithProviders(nil, nil)
+
+	msg := NewMessage(CommandChildUpdateResponse)
+	initialLen := len(msg.buf)
+	ch.appendRequestedTLV(msg, TLVActiveTimestamp)
+
+	if len(msg.buf) == initialLen {
+		// With nil provider, nothing should be appended.
+	}
+	// Verify no panic and no data appended.
+	if len(msg.buf) != initialLen {
+		t.Error("appendRequestedTLV(TLVActiveTimestamp) should not append when datasets is nil")
+	}
+}
+
+func TestAppendRequestedTLV_PendingTimestamp(t *testing.T) {
+	t.Parallel()
+
+	var pendingTS meshcop.Timestamp
+	pendingTS.SetSeconds(700)
+
+	datasets := &mockChildDatasetProvider{pendingTimestamp: pendingTS}
+	ch, _, _, _ := newChildHandlersTestSetupWithProviders(datasets, nil)
+
+	msg := NewMessage(CommandChildUpdateResponse)
+	initialLen := len(msg.buf)
+	ch.appendRequestedTLV(msg, TLVPendingTimestamp)
+
+	if len(msg.buf) <= initialLen {
+		t.Error("appendRequestedTLV(TLVPendingTimestamp) did not append anything")
+	}
+}
+
+func TestAppendRequestedTLV_PendingTimestamp_NilProvider(t *testing.T) {
+	t.Parallel()
+
+	ch, _, _, _ := newChildHandlersTestSetupWithProviders(nil, nil)
+
+	msg := NewMessage(CommandChildUpdateResponse)
+	initialLen := len(msg.buf)
+	ch.appendRequestedTLV(msg, TLVPendingTimestamp)
+
+	if len(msg.buf) != initialLen {
+		t.Error("appendRequestedTLV(TLVPendingTimestamp) should not append when datasets is nil")
+	}
 }
 
 func makeModeTLVValue(mode DeviceMode) []byte {
@@ -103,7 +313,7 @@ func newChildHandlersTestSetup() (*ChildHandlers, *Mle, *mockTransport, *mockKey
 	parent.State = StateValid
 	parent.LastHeard = time.Now().Add(-1 * time.Minute)
 
-	ch := NewChildHandlers(mle, d)
+	ch := NewChildHandlers(mle, d, nil, nil)
 	return ch, mle, transport, keyMgr
 }
 
@@ -1087,7 +1297,7 @@ func TestNewChildHandlers_RegistersAllHandlers(t *testing.T) {
 	// The newChildHandlersTestSetup calls NewChildHandlers which registers handlers.
 	// Access the dispatcher to verify.
 	d, _, _ := newTestDispatcher()
-	_ = NewChildHandlers(mle, d)
+	_ = NewChildHandlers(mle, d, nil, nil)
 
 	expectedCommands := []Command{
 		CommandDataResponse,

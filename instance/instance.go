@@ -183,6 +183,14 @@ type Config struct {
 	Logger platform.Logger
 	// Radio provides IEEE 802.15.4 radio access.
 	Radio radio.Radio
+
+	// ParentPriority is the parent priority value (0-3) placed in the
+	// top 2 bits of the Connectivity TLV Flags byte.
+	ParentPriority uint8
+	// SEDBufferSize is the SED buffer size advertised in the Connectivity TLV.
+	SEDBufferSize uint16
+	// SEDDatagramCount is the SED datagram count advertised in the Connectivity TLV.
+	SEDDatagramCount uint8
 }
 
 // --------------------------------------------------------------------------
@@ -313,6 +321,15 @@ type Instance struct {
 	// rloc16 is the 16-bit Routing Locator of this device.
 	rloc16 uint16
 
+	// parentPriority is the parent priority (0-3) for Connectivity TLV Flags.
+	parentPriority uint8
+
+	// sedBufferSize is the SED buffer size for Connectivity TLV.
+	sedBufferSize uint16
+
+	// sedDatagramCount is the SED datagram count for Connectivity TLV.
+	sedDatagramCount uint8
+
 	// pendingTxMsg holds the TxMessage currently being transmitted by the
 	// MAC layer, so HandleSentFrame can report completion back to the
 	// mesh forwarder.
@@ -328,16 +345,19 @@ type Instance struct {
 // construction. Call Start() to begin the event loop.
 func New(config Config) *Instance {
 	inst := &Instance{
-		alarm:        config.Alarm,
-		entropy:      config.Entropy,
-		platSettings: config.Settings,
-		logger:       config.Logger,
-		platRadio:    config.Radio,
-		taskCh:       make(chan func(), 256),
-		stopCh:       make(chan struct{}),
-		doneCh:       make(chan struct{}),
-		timers:       &timerScheduler{},
-		notifier:     &notifier{},
+		alarm:            config.Alarm,
+		entropy:          config.Entropy,
+		platSettings:     config.Settings,
+		logger:           config.Logger,
+		platRadio:        config.Radio,
+		taskCh:           make(chan func(), 256),
+		stopCh:           make(chan struct{}),
+		doneCh:           make(chan struct{}),
+		timers:           &timerScheduler{},
+		notifier:         &notifier{},
+		parentPriority:   config.ParentPriority,
+		sedBufferSize:    config.SEDBufferSize,
+		sedDatagramCount: config.SEDDatagramCount,
 	}
 
 	inst.wireModules()
@@ -668,10 +688,12 @@ func (inst *Instance) eventLoop() {
 			// After running a task, process any timers and notifier events.
 			inst.timers.processExpired()
 			inst.notifier.process()
+			inst.stackNotifier.Process()
 
 		case <-timerCh:
 			inst.timers.processExpired()
 			inst.notifier.process()
+			inst.stackNotifier.Process()
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"testing"
 
+	cnotifier "github.com/hilli/gothread/common/notifier"
 	"github.com/hilli/gothread/encoding"
 	"github.com/hilli/gothread/mac"
 	macframe "github.com/hilli/gothread/mac/frame"
@@ -212,7 +213,7 @@ func TestWireModules_NetworkDataProvider_EmptyLeader(t *testing.T) {
 		t.Errorf("GetNetworkData(false) = %v, want empty with fresh leader", data)
 	}
 
-	// stableOnly=true should also work (returns same data for now).
+	// stableOnly=true should also return empty for a fresh leader.
 	data = inst.GetNetworkData(true)
 	if len(data) != 0 {
 		t.Errorf("GetNetworkData(true) = %v, want empty with fresh leader", data)
@@ -2246,5 +2247,107 @@ func TestLinkMarginCalculation(t *testing.T) {
 				t.Errorf("linkMargin(%d) = %d, want %d", rssi, linkMargin, tc.wantMargin)
 			}
 		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// Phase 31l: ConnectivityTLV Flags/SEDBufferSize/SEDDatagramCount
+// --------------------------------------------------------------------------
+
+func TestConnectivityTLV_FlagsAndSEDFields(t *testing.T) {
+	inst := New(Config{
+		ParentPriority:   2,
+		SEDBufferSize:    512,
+		SEDDatagramCount: 4,
+	})
+
+	tlv := inst.GetConnectivityTLV()
+
+	// ParentPriority=2 → Flags = 2 << 6 = 0x80 (bits 7-6 = 10)
+	wantFlags := uint8(2 << 6)
+	if tlv.Flags != wantFlags {
+		t.Errorf("Flags = 0x%02X, want 0x%02X", tlv.Flags, wantFlags)
+	}
+
+	if tlv.SEDBufferSize != 512 {
+		t.Errorf("SEDBufferSize = %d, want 512", tlv.SEDBufferSize)
+	}
+
+	if tlv.SEDDatagramCount != 4 {
+		t.Errorf("SEDDatagramCount = %d, want 4", tlv.SEDDatagramCount)
+	}
+}
+
+func TestConnectivityTLV_DefaultZeroValues(t *testing.T) {
+	inst := New(Config{})
+
+	tlv := inst.GetConnectivityTLV()
+
+	if tlv.Flags != 0 {
+		t.Errorf("Flags = 0x%02X, want 0x00 (default)", tlv.Flags)
+	}
+	if tlv.SEDBufferSize != 0 {
+		t.Errorf("SEDBufferSize = %d, want 0 (default)", tlv.SEDBufferSize)
+	}
+	if tlv.SEDDatagramCount != 0 {
+		t.Errorf("SEDDatagramCount = %d, want 0 (default)", tlv.SEDDatagramCount)
+	}
+}
+
+func TestConnectivityTLV_MaxParentPriority(t *testing.T) {
+	inst := New(Config{
+		ParentPriority: 3,
+	})
+
+	tlv := inst.GetConnectivityTLV()
+
+	// ParentPriority=3 → Flags = 3 << 6 = 0xC0
+	wantFlags := uint8(3 << 6)
+	if tlv.Flags != wantFlags {
+		t.Errorf("Flags = 0x%02X, want 0x%02X", tlv.Flags, wantFlags)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Phase 31o: stackNotifier.Process wired into event loop
+// --------------------------------------------------------------------------
+
+func TestEventLoop_StackNotifierProcessed_OnTask(t *testing.T) {
+	inst := New(Config{})
+
+	// Register a callback on the stackNotifier.
+	callbackFired := false
+	var receivedEvents cnotifier.Events
+	inst.stackNotifier.RegisterCallback(func(events cnotifier.Events) {
+		callbackFired = true
+		receivedEvents = events
+	})
+
+	// Signal an event on the stackNotifier.
+	inst.stackNotifier.Signal(cnotifier.EventRole)
+
+	// Post a no-op task to the event loop. When the task runs,
+	// the event loop should call stackNotifier.Process() which
+	// fires our callback.
+	done := make(chan struct{})
+	inst.taskCh <- func() {
+		// no-op task — the event loop processes notifiers after this
+	}
+
+	// Start the event loop.
+	inst.Start()
+	defer inst.Stop()
+
+	// Wait for the task to be processed.
+	inst.PostTask(func() {
+		close(done)
+	})
+	<-done
+
+	if !callbackFired {
+		t.Error("stackNotifier callback should fire after task processing")
+	}
+	if !receivedEvents.Contains(cnotifier.EventRole) {
+		t.Errorf("receivedEvents = %v, want EventRole (%v)", receivedEvents, cnotifier.EventRole)
 	}
 }

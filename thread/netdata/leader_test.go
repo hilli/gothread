@@ -204,6 +204,75 @@ func TestLeaderOnChangedCallback(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// StableData
+// ---------------------------------------------------------------------------
+
+func TestLeaderStableData(t *testing.T) {
+	t.Parallel()
+	rc := newMockRouterChecker(1, 2)
+	l := NewLeader(rc)
+
+	prefix1 := testPrefix64(0x00, 0x01)
+	prefix2 := testPrefix64(0x00, 0x02)
+	rloc1 := uint16(0x0400) // router ID 1
+	rloc2 := uint16(0x0800) // router ID 2
+
+	// Register a stable HasRoute from one router and an unstable one from another.
+	regStable := buildRegistration(prefix1, rloc1, RoutePreferenceHigh, true)
+	regUnstable := buildRegistration(prefix2, rloc2, RoutePreferenceLow, false)
+
+	if err := l.RegisterNetworkData(rloc1, regStable); err != nil {
+		t.Fatalf("register stable: %v", err)
+	}
+	if err := l.RegisterNetworkData(rloc2, regUnstable); err != nil {
+		t.Fatalf("register unstable: %v", err)
+	}
+
+	// Full data should contain both.
+	fullData := l.Data()
+	if len(fullData) == 0 {
+		t.Fatal("full data should not be empty")
+	}
+
+	// StableData should contain only the stable prefix.
+	stableData := l.StableData()
+	if len(stableData) == 0 {
+		t.Fatal("stable data should not be empty")
+	}
+	if len(stableData) >= len(fullData) {
+		t.Fatalf("stable data (%d bytes) should be smaller than full data (%d bytes)",
+			len(stableData), len(fullData))
+	}
+
+	// Parse stable data — should only contain the stable prefix route.
+	it := NewIterator(stableData)
+	route, err := it.NextExternalRoute()
+	if err != nil {
+		t.Fatalf("NextExternalRoute on stable data: %v", err)
+	}
+	if !route.Prefix.IsEqual(prefix1) {
+		t.Fatalf("stable route prefix mismatch: got %v, want %v", route.Prefix, prefix1)
+	}
+
+	// Should be no more routes in stable data.
+	_, err = it.NextExternalRoute()
+	if err == nil {
+		t.Fatal("expected no more routes in stable data")
+	}
+}
+
+func TestLeaderStableDataEmpty(t *testing.T) {
+	t.Parallel()
+	rc := newMockRouterChecker(1)
+	l := NewLeader(rc)
+
+	stableData := l.StableData()
+	if len(stableData) != 0 {
+		t.Fatalf("StableData() = %d bytes, want 0 for empty leader", len(stableData))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // RegisterNetworkData — HasRoute
 // ---------------------------------------------------------------------------
 
