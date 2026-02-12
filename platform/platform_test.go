@@ -32,33 +32,52 @@ type mockEntropy struct{}
 
 func (m *mockEntropy) Fill(_ []byte) error { return nil }
 
-type mockSettings struct{ store map[SettingsKey][]byte }
+type mockSettings struct{ store map[SettingsKey][][]byte }
 
-func (m *mockSettings) Get(key SettingsKey) ([]byte, error) {
-	v, ok := m.store[key]
-	if !ok {
+func (m *mockSettings) Get(key SettingsKey, index int) ([]byte, error) {
+	entries, ok := m.store[key]
+	if !ok || len(entries) == 0 {
 		return nil, ErrSettingsNotFound
 	}
-	return v, nil
+	if index < 0 || index >= len(entries) {
+		return nil, ErrSettingsNotFound
+	}
+	return entries[index], nil
 }
 
 func (m *mockSettings) Set(key SettingsKey, value []byte) error {
-	m.store[key] = value
+	m.store[key] = [][]byte{value}
 	return nil
 }
 
 func (m *mockSettings) Add(key SettingsKey, value []byte) error {
-	m.store[key] = append(m.store[key], value...)
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	m.store[key] = append(m.store[key], cp)
 	return nil
 }
 
-func (m *mockSettings) Delete(key SettingsKey) error {
-	delete(m.store, key)
+func (m *mockSettings) Delete(key SettingsKey, index int) error {
+	entries, ok := m.store[key]
+	if !ok || len(entries) == 0 {
+		return ErrSettingsNotFound
+	}
+	if index == -1 {
+		delete(m.store, key)
+		return nil
+	}
+	if index < 0 || index >= len(entries) {
+		return ErrSettingsNotFound
+	}
+	m.store[key] = append(entries[:index], entries[index+1:]...)
+	if len(m.store[key]) == 0 {
+		delete(m.store, key)
+	}
 	return nil
 }
 
 func (m *mockSettings) Wipe() error {
-	m.store = make(map[SettingsKey][]byte)
+	m.store = make(map[SettingsKey][][]byte)
 	return nil
 }
 
@@ -96,14 +115,14 @@ func TestAlarmGetNow(t *testing.T) {
 }
 
 func TestSettingsRoundTrip(t *testing.T) {
-	s := &mockSettings{store: make(map[SettingsKey][]byte)}
+	s := &mockSettings{store: make(map[SettingsKey][][]byte)}
 
 	data := []byte{0x01, 0x02, 0x03}
 	if err := s.Set(SettingsKeyActiveDataset, data); err != nil {
 		t.Fatalf("Set() error: %v", err)
 	}
 
-	got, err := s.Get(SettingsKeyActiveDataset)
+	got, err := s.Get(SettingsKeyActiveDataset, 0)
 	if err != nil {
 		t.Fatalf("Get() error: %v", err)
 	}
@@ -118,30 +137,30 @@ func TestSettingsRoundTrip(t *testing.T) {
 }
 
 func TestSettingsNotFound(t *testing.T) {
-	s := &mockSettings{store: make(map[SettingsKey][]byte)}
-	_, err := s.Get(SettingsKeyNetworkInfo)
+	s := &mockSettings{store: make(map[SettingsKey][][]byte)}
+	_, err := s.Get(SettingsKeyNetworkInfo, 0)
 	if err == nil {
 		t.Fatal("Get() on missing key should return error")
 	}
 }
 
 func TestSettingsDelete(t *testing.T) {
-	s := &mockSettings{store: make(map[SettingsKey][]byte)}
+	s := &mockSettings{store: make(map[SettingsKey][][]byte)}
 	_ = s.Set(SettingsKeyChildInfo, []byte{0xff})
-	_ = s.Delete(SettingsKeyChildInfo)
-	_, err := s.Get(SettingsKeyChildInfo)
+	_ = s.Delete(SettingsKeyChildInfo, -1)
+	_, err := s.Get(SettingsKeyChildInfo, 0)
 	if err == nil {
 		t.Fatal("Get() after Delete() should return error")
 	}
 }
 
 func TestSettingsWipe(t *testing.T) {
-	s := &mockSettings{store: make(map[SettingsKey][]byte)}
+	s := &mockSettings{store: make(map[SettingsKey][][]byte)}
 	_ = s.Set(SettingsKeyActiveDataset, []byte{1})
 	_ = s.Set(SettingsKeyPendingDataset, []byte{2})
 	_ = s.Wipe()
-	_, err1 := s.Get(SettingsKeyActiveDataset)
-	_, err2 := s.Get(SettingsKeyPendingDataset)
+	_, err1 := s.Get(SettingsKeyActiveDataset, 0)
+	_, err2 := s.Get(SettingsKeyPendingDataset, 0)
 	if err1 == nil || err2 == nil {
 		t.Fatal("Get() after Wipe() should return error for all keys")
 	}

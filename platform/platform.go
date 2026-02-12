@@ -108,19 +108,25 @@ const (
 )
 
 // Settings provides persistent non-volatile storage for Thread settings.
+// Keys that hold multiple values (e.g. ChildInfo) use index-based access:
+// Get and Delete accept an index parameter (0-based). An index of -1
+// passed to Delete removes all entries for that key.
 type Settings interface {
-	// Get reads the setting identified by key. Returns the value bytes
-	// or an error if the key does not exist.
-	Get(key SettingsKey) ([]byte, error)
+	// Get reads the entry at index for the setting identified by key.
+	// For single-value keys, use index 0. Returns the value bytes or
+	// an error if the key/index does not exist.
+	Get(key SettingsKey, index int) ([]byte, error)
 
-	// Set writes (or overwrites) the setting identified by key.
+	// Set writes (or overwrites) a single-value setting identified by
+	// key, replacing any existing list entries.
 	Set(key SettingsKey, value []byte) error
 
 	// Add appends a value to a list-type setting identified by key.
 	Add(key SettingsKey, value []byte) error
 
-	// Delete removes the setting identified by key.
-	Delete(key SettingsKey) error
+	// Delete removes the entry at index for the setting identified by
+	// key. An index of -1 deletes all entries for that key.
+	Delete(key SettingsKey, index int) error
 
 	// Wipe removes all settings (factory reset).
 	Wipe() error

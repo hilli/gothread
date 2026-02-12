@@ -94,12 +94,12 @@ func (a *settingsDriverAdapter) Add(key uint16, value []byte) error {
 	return a.ps.Add(platform.SettingsKey(key), value)
 }
 
-func (a *settingsDriverAdapter) Delete(key uint16, _ int) error {
-	return a.ps.Delete(platform.SettingsKey(key))
+func (a *settingsDriverAdapter) Delete(key uint16, index int) error {
+	return a.ps.Delete(platform.SettingsKey(key), index)
 }
 
-func (a *settingsDriverAdapter) Get(key uint16, _ int) ([]byte, error) {
-	return a.ps.Get(platform.SettingsKey(key))
+func (a *settingsDriverAdapter) Get(key uint16, index int) ([]byte, error) {
+	return a.ps.Get(platform.SettingsKey(key), index)
 }
 
 func (a *settingsDriverAdapter) Set(key uint16, value []byte) error {

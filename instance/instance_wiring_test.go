@@ -608,7 +608,7 @@ func TestWireModules_Tier3_RouterCheckerAdapter(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestSettingsDriverAdapter(t *testing.T) {
-	ms := &mockSettings{store: make(map[uint16][]byte)}
+	ms := &mockSettings{store: make(map[uint16][][]byte)}
 	adapter := &settingsDriverAdapter{ps: ms}
 
 	if err := adapter.Init(); err != nil {
@@ -1670,46 +1670,71 @@ func TestSendCoAP_MetadataPopulated(t *testing.T) {
 
 // mockSettings implements platform.Settings for testing.
 type mockSettings struct {
-	store map[uint16][]byte
+	store map[uint16][][]byte
 }
 
-func (ms *mockSettings) Get(key platform.SettingsKey) ([]byte, error) {
+func (ms *mockSettings) Get(key platform.SettingsKey, index int) ([]byte, error) {
 	k := uint16(key)
 	if ms.store == nil {
 		return nil, errNotFound
 	}
-	data, ok := ms.store[k]
-	if !ok {
+	entries, ok := ms.store[k]
+	if !ok || len(entries) == 0 {
 		return nil, errNotFound
 	}
-	cp := make([]byte, len(data))
-	copy(cp, data)
+	if index < 0 || index >= len(entries) {
+		return nil, errNotFound
+	}
+	cp := make([]byte, len(entries[index]))
+	copy(cp, entries[index])
 	return cp, nil
 }
 
 func (ms *mockSettings) Set(key platform.SettingsKey, value []byte) error {
 	if ms.store == nil {
-		ms.store = make(map[uint16][]byte)
+		ms.store = make(map[uint16][][]byte)
 	}
 	cp := make([]byte, len(value))
 	copy(cp, value)
-	ms.store[uint16(key)] = cp
+	ms.store[uint16(key)] = [][]byte{cp}
 	return nil
 }
 
 func (ms *mockSettings) Add(key platform.SettingsKey, value []byte) error {
-	return ms.Set(key, value)
+	if ms.store == nil {
+		ms.store = make(map[uint16][][]byte)
+	}
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	ms.store[uint16(key)] = append(ms.store[uint16(key)], cp)
+	return nil
 }
 
-func (ms *mockSettings) Delete(key platform.SettingsKey) error {
-	if ms.store != nil {
-		delete(ms.store, uint16(key))
+func (ms *mockSettings) Delete(key platform.SettingsKey, index int) error {
+	k := uint16(key)
+	if ms.store == nil {
+		return nil
+	}
+	entries, ok := ms.store[k]
+	if !ok || len(entries) == 0 {
+		return nil
+	}
+	if index == -1 {
+		delete(ms.store, k)
+		return nil
+	}
+	if index < 0 || index >= len(entries) {
+		return errNotFound
+	}
+	ms.store[k] = append(entries[:index], entries[index+1:]...)
+	if len(ms.store[k]) == 0 {
+		delete(ms.store, k)
 	}
 	return nil
 }
 
 func (ms *mockSettings) Wipe() error {
-	ms.store = make(map[uint16][]byte)
+	ms.store = make(map[uint16][][]byte)
 	return nil
 }
 
