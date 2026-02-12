@@ -414,6 +414,13 @@ func (inst *Instance) wireModules() {
 	// Now wire Mac as the SubMac's callback receiver.
 	bridge.target = inst.mac
 
+	// Wire frame counter callback: when the MAC consumes a frame
+	// counter, forward it to the key manager so it can persist
+	// the high-water mark.
+	inst.mac.SetOnFrameCounterUsed(func(counter uint32) {
+		inst.keyManager.MacFrameCounterUsed(counter)
+	})
+
 	// ---------------------------------------------------------------
 	// Tier 2 — Routing / MLE / Network
 	// ---------------------------------------------------------------
@@ -499,6 +506,14 @@ func (inst *Instance) wireModules() {
 			}
 		}
 		_ = inst.mleService.HandleReceive(payload, srcExt, mi.PeerAddr, mi.SockAddr, linkMargin)
+		// Schedule attacher timer if the received message advanced the
+		// attach state machine.
+		inst.scheduleAttachTimer()
+		// If the child detected stale network data, send a Data Request.
+		if m := inst.mleService.Mle(); m.IsDataRequestPending() && m.IsChild() {
+			m.SetDataRequestPending(false)
+			_ = inst.mleService.ChildHandlers.SendDataRequest()
+		}
 		return true
 	})
 	_ = inst.udpManager.AddReceiver(mleReceiver)
@@ -660,6 +675,23 @@ func (inst *Instance) SetRLOC16(rloc16 uint16) { inst.rloc16 = rloc16 }
 
 // RLOC16 returns the 16-bit Routing Locator of this device.
 func (inst *Instance) RLOC16() uint16 { return inst.rloc16 }
+
+// --------------------------------------------------------------------------
+// Internal helpers
+// --------------------------------------------------------------------------
+
+// scheduleAttachTimer schedules a self-re-arming timer for the MLE
+// Attacher state machine.
+func (inst *Instance) scheduleAttachTimer() {
+	a := inst.mleService.Attacher
+	if a.NextTimerDelay > 0 {
+		delay := a.NextTimerDelay
+		inst.timers.schedule(delay, func() {
+			_ = a.HandleTimer()
+			inst.scheduleAttachTimer() // re-arm if needed
+		})
+	}
+}
 
 // --------------------------------------------------------------------------
 // Event loop

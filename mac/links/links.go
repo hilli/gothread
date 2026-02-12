@@ -259,6 +259,8 @@ type Links struct {
 	shortAddr types.ShortAddress
 	extAddr   types.ExtAddress
 	panID     types.PanID
+
+	lastTxRetries uint8
 }
 
 // New creates a new Links. At least one radio must be non-nil.
@@ -459,9 +461,14 @@ func (l *Links) GetNoiseFloor() int8 {
 	return r.GetReceiveSensitivity()
 }
 
-// GetTransmitRetries returns 0. In the full implementation this would
-// query the sub-MAC for the number of retries on the last frame.
-// Currently returns 0 as a placeholder.
+// GetTransmitRetries returns the number of retries used for the last
+// transmitted frame.
 func (l *Links) GetTransmitRetries() uint8 {
-	return 0
+	return l.lastTxRetries
+}
+
+// SetLastTxRetries sets the number of retries used for the last
+// transmitted frame.
+func (l *Links) SetLastTxRetries(retries uint8) {
+	l.lastTxRetries = retries
 }

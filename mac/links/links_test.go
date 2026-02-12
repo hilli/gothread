@@ -470,6 +470,18 @@ func TestLinksGetNoiseFloor(t *testing.T) {
 func TestLinksGetTransmitRetries(t *testing.T) {
 	l := New(nil, nil)
 	if l.GetTransmitRetries() != 0 {
-		t.Errorf("expected 0 retries, got %d", l.GetTransmitRetries())
+		t.Errorf("expected 0 retries initially, got %d", l.GetTransmitRetries())
+	}
+}
+
+func TestLinksSetLastTxRetries(t *testing.T) {
+	l := New(nil, nil)
+	l.SetLastTxRetries(5)
+	if got := l.GetTransmitRetries(); got != 5 {
+		t.Errorf("GetTransmitRetries() = %d, want 5", got)
+	}
+	l.SetLastTxRetries(0)
+	if got := l.GetTransmitRetries(); got != 0 {
+		t.Errorf("GetTransmitRetries() = %d, want 0 after reset", got)
 	}
 }

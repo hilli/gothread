@@ -217,6 +217,17 @@ type Mac struct {
 	// Transmit state
 	transmitPending bool
 
+	// Transmission counters
+	txTotal    uint32
+	txSuccess  uint32
+	txRetry    uint32
+	txNoAck    uint32
+	ccaSuccess uint32
+	ccaFailure uint32
+
+	// Callbacks
+	onFrameCounterUsed func(uint32)
+
 	// Enabled state
 	enabled bool
 }
@@ -844,13 +855,42 @@ func (m *Mac) TransmitDone(frame *radio.Frame, _ *radio.Frame, err error) {
 }
 
 // RecordFrameTransmitStatus is called after each TX attempt for stats.
-func (m *Mac) RecordFrameTransmitStatus(_ *radio.Frame, _ error, _ uint8, _ bool) {
-	// Statistics tracking placeholder.
+func (m *Mac) RecordFrameTransmitStatus(_ *radio.Frame, txErr error, retryCount uint8, willRetry bool) {
+	m.txTotal++
+	if txErr == nil {
+		m.txSuccess++
+	} else if !willRetry {
+		m.txNoAck++
+	}
+	m.txRetry += uint32(retryCount)
 }
 
 // RecordCcaStatus is called after each CCA attempt for statistics.
-func (m *Mac) RecordCcaStatus(_ bool, _ uint8) {
-	// Statistics tracking placeholder.
+func (m *Mac) RecordCcaStatus(success bool, _ uint8) {
+	if success {
+		m.ccaSuccess++
+	} else {
+		m.ccaFailure++
+	}
+}
+
+// GetCounters returns the current transmission/CCA counters.
+func (m *Mac) GetCounters() (txTotal, txSuccess, txRetry, txNoAck, ccaSuccess, ccaFailure uint32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.txTotal, m.txSuccess, m.txRetry, m.txNoAck, m.ccaSuccess, m.ccaFailure
+}
+
+// ResetCounters resets all transmission/CCA counters to zero.
+func (m *Mac) ResetCounters() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.txTotal = 0
+	m.txSuccess = 0
+	m.txRetry = 0
+	m.txNoAck = 0
+	m.ccaSuccess = 0
+	m.ccaFailure = 0
 }
 
 // EnergyScanDone is called by the SubMac when an energy scan on a single
@@ -873,8 +913,16 @@ func (m *Mac) EnergyScanDone(maxRSSI int8) {
 }
 
 // FrameCounterUsed is called when a frame counter is consumed.
-func (m *Mac) FrameCounterUsed(_ uint32) {
-	// Frame counter management placeholder.
+func (m *Mac) FrameCounterUsed(counter uint32) {
+	if m.onFrameCounterUsed != nil {
+		m.onFrameCounterUsed(counter)
+	}
+}
+
+// SetOnFrameCounterUsed sets a callback that is invoked whenever a
+// frame counter value is consumed during transmission.
+func (m *Mac) SetOnFrameCounterUsed(fn func(uint32)) {
+	m.onFrameCounterUsed = fn
 }
 
 // --------------------------------------------------------------------------

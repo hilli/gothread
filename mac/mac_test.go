@@ -803,6 +803,95 @@ func TestFrameCounterUsedNoPanic(_ *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// TX/CCA counters
+// --------------------------------------------------------------------------
+
+func TestTxCounters(t *testing.T) {
+	m, _, _, _, _ := newTestMac(radio.CapNone)
+
+	// Record some transmit statuses (called from locked context in real code,
+	// but safe to call directly in test since no contention).
+	m.RecordFrameTransmitStatus(nil, nil, 0, false)             // success, 0 retries
+	m.RecordFrameTransmitStatus(nil, nil, 2, false)             // success, 2 retries
+	m.RecordFrameTransmitStatus(nil, submac.ErrAbort, 3, true)  // error, will retry
+	m.RecordFrameTransmitStatus(nil, submac.ErrAbort, 1, false) // error, no retry => noAck
+
+	txTotal, txSuccess, txRetry, txNoAck, _, _ := m.GetCounters()
+	if txTotal != 4 {
+		t.Errorf("txTotal = %d, want 4", txTotal)
+	}
+	if txSuccess != 2 {
+		t.Errorf("txSuccess = %d, want 2", txSuccess)
+	}
+	if txRetry != 6 { // 0+2+3+1
+		t.Errorf("txRetry = %d, want 6", txRetry)
+	}
+	if txNoAck != 1 {
+		t.Errorf("txNoAck = %d, want 1", txNoAck)
+	}
+}
+
+func TestCcaCounters(t *testing.T) {
+	m, _, _, _, _ := newTestMac(radio.CapNone)
+
+	m.RecordCcaStatus(true, 11)
+	m.RecordCcaStatus(true, 11)
+	m.RecordCcaStatus(false, 11)
+
+	_, _, _, _, ccaSuccess, ccaFailure := m.GetCounters()
+	if ccaSuccess != 2 {
+		t.Errorf("ccaSuccess = %d, want 2", ccaSuccess)
+	}
+	if ccaFailure != 1 {
+		t.Errorf("ccaFailure = %d, want 1", ccaFailure)
+	}
+}
+
+func TestResetCounters(t *testing.T) {
+	m, _, _, _, _ := newTestMac(radio.CapNone)
+
+	m.RecordFrameTransmitStatus(nil, nil, 1, false)
+	m.RecordCcaStatus(true, 11)
+
+	m.ResetCounters()
+
+	txTotal, txSuccess, txRetry, txNoAck, ccaSuccess, ccaFailure := m.GetCounters()
+	if txTotal != 0 || txSuccess != 0 || txRetry != 0 || txNoAck != 0 || ccaSuccess != 0 || ccaFailure != 0 {
+		t.Errorf("counters not zero after reset: %d %d %d %d %d %d",
+			txTotal, txSuccess, txRetry, txNoAck, ccaSuccess, ccaFailure)
+	}
+}
+
+// --------------------------------------------------------------------------
+// FrameCounterUsed callback
+// --------------------------------------------------------------------------
+
+func TestFrameCounterUsedCallback(t *testing.T) {
+	m, _, _, _, _ := newTestMac(radio.CapNone)
+
+	var called bool
+	var gotCounter uint32
+	m.SetOnFrameCounterUsed(func(counter uint32) {
+		called = true
+		gotCounter = counter
+	})
+
+	m.FrameCounterUsed(99)
+	if !called {
+		t.Error("onFrameCounterUsed callback was not called")
+	}
+	if gotCounter != 99 {
+		t.Errorf("callback received counter = %d, want 99", gotCounter)
+	}
+}
+
+func TestFrameCounterUsedNilCallback(t *testing.T) {
+	m, _, _, _, _ := newTestMac(radio.CapNone)
+	// Should not panic when no callback is set.
+	m.FrameCounterUsed(42)
+}
+
+// --------------------------------------------------------------------------
 // parseBeacon
 // --------------------------------------------------------------------------
 
