@@ -252,11 +252,10 @@ func (h *FtdAdvertisementHandler) handleAdvertisementOnFtd(
 			peerSingleton = IsSingleton(routeMask)
 		}
 
-		localIDSet := h.routerOps.GetRouterIDSequence()
-		_ = localIDSet // Sequence used for other purposes, not for singleton check.
+		localSingleton := h.routerOps.GetActiveRouterCount() == 1
 
 		cmp := ComparePartitions(
-			false, // assume local is not singleton for now
+			localSingleton,
 			currentLeaderData,
 			peerSingleton,
 			leaderData,

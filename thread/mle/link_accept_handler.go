@@ -133,13 +133,13 @@ func (h *FtdLinkHandlers) handleLinkAcceptVariant(rxInfo *RxInfo, isAcceptAndReq
 		hasLinkMargin = true
 	}
 
-	// Leader Data — optional. Parsed but not currently acted upon beyond
-	// the initial link establishment.
+	// Leader Data — optional. If present, update local leader data.
 	if ldVal, ok := FindTLV(rxInfo.TLVs, TLVLeaderData); ok {
-		_, err = ReadLeaderDataTLV(ldVal)
+		ld, err := ReadLeaderDataTLV(ldVal)
 		if err != nil {
 			return fmt.Errorf("mle: %s: %w", cmdName, err)
 		}
+		h.mle.SetLeaderData(ld)
 	}
 
 	// Route64 — optional.
