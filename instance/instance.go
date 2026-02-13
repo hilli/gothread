@@ -1127,6 +1127,7 @@ func (inst *Instance) wireModules() {
 	// Border Router / Routing Manager subsystem
 	// ---------------------------------------------------------------
 	inst.routingManager = router.NewRoutingManager()
+	inst.routingManager.Init(inst.mac.GetExtAddress())
 	inst.omrPrefixMgr = router.NewOmrPrefixManager()
 	inst.onLinkPrefixMgr = router.NewOnLinkPrefixManager()
 	inst.routePublisher = router.NewRoutePublisher()
@@ -1244,7 +1245,7 @@ func (inst *Instance) wireModules() {
 	// ---------------------------------------------------------------
 	inst.dhcp6pdClient = dhcp6pd.NewClient(
 		&dhcp6pdPlatformAdapter{inst: inst},
-		[8]byte{}, // TODO: use real extended address
+		inst.mac.GetExtAddress(),
 	)
 
 	// ---------------------------------------------------------------
@@ -2147,6 +2148,8 @@ func (inst *Instance) startPeriodicTick() {
 // handlePeriodicTick is called once per second from the timer scheduler.
 // It drives all time-based state machines and then re-arms itself.
 func (inst *Instance) handlePeriodicTick() {
+	now := time.Now()
+
 	// Router ID reuse delay counters.
 	inst.routerTable.HandleTimeTick()
 
@@ -2212,7 +2215,7 @@ func (inst *Instance) handlePeriodicTick() {
 
 	// Address Resolver — drive retry/timeout timers for pending EID queries.
 	if inst.addrResolver != nil {
-		inst.addrResolver.HandleTimer(time.Now())
+		inst.addrResolver.HandleTimer(now)
 	}
 
 	// Network Data Notifier — check if local data needs to be synced
@@ -2242,13 +2245,94 @@ func (inst *Instance) handlePeriodicTick() {
 	// Time Sync — check synchronization status.
 	if inst.timeSyncService != nil {
 		// Pass current time in ms (modulo uint32 is fine for relative deltas).
-		inst.timeSyncService.HandleTimer(uint32(time.Now().UnixMilli()))
+		inst.timeSyncService.HandleTimer(uint32(now.UnixMilli()))
 	}
 
 	// SNTP Client — check for timed-out queries and retransmissions.
 	if inst.sntpClient != nil {
 		inst.sntpClient.HandleTimer()
 	}
+
+	// Backbone Router Manager — expire multicast listeners and advance DAD.
+	if inst.bbrManager != nil {
+		inst.bbrManager.HandleTimer(now.UnixMilli())
+	}
+
+	// ND Proxy Table — advance DAD timers for proxied addresses.
+	if inst.ndProxyTable != nil {
+		inst.ndProxyTable.HandleTimer(now.UnixMilli())
+	}
+
+	// Border Routing Manager — process RA/prefix operations.
+	if inst.routingManager != nil {
+		inst.routingManager.HandleTimer()
+	}
+
+	// Factory Diagnostics — advance diagnostic transmissions.
+	if inst.diagsModule != nil {
+		inst.diagsModule.HandleTimer()
+	}
+
+	// DNS Client — retry/timeout for outstanding DNS queries.
+	if inst.dnsClient != nil {
+		inst.dnsClient.HandleTimer()
+	}
+
+	// DSO Connections — drive keep-alive / inactivity timers.
+	if inst.dso != nil {
+		for _, conn := range inst.dso.GetClientConnections() {
+			conn.HandleTimer()
+		}
+		for _, conn := range inst.dso.GetServerConnections() {
+			conn.HandleTimer()
+		}
+	}
+
+	// DUA Manager — retry DUA registrations for BBR.
+	if inst.duaManager != nil {
+		inst.duaManager.HandleTimer()
+	}
+
+	// MLR Manager — retry multicast listener registrations for BBR.
+	if inst.mlrManager != nil {
+		inst.mlrManager.HandleTimer()
+	}
+
+	// Energy Scan Server — advance management energy scan.
+	if inst.energyScanServer != nil {
+		inst.energyScanServer.HandleTimer()
+	}
+
+	// PAN ID Query Server — advance management PAN ID scan.
+	if inst.panIdQueryServer != nil {
+		inst.panIdQueryServer.HandleTimer()
+	}
+
+	// Channel Monitor — sample channel quality metrics.
+	if inst.channelMonitor != nil {
+		inst.channelMonitor.HandleTimer()
+	}
+
+	// Channel Manager — apply pending channel changes.
+	if inst.channelManager != nil {
+		inst.channelManager.HandleTimer()
+	}
+
+	// Jam Detector — check for signal jamming.
+	if inst.jamDetector != nil {
+		inst.jamDetector.HandleTimer()
+	}
+
+	// Ping Sender — drive ICMPv6 echo request retransmissions.
+	if inst.pingSender != nil {
+		inst.pingSender.HandleTimer()
+	}
+
+	// Link Metrics Manager — advance automated link metrics probes.
+	if inst.linkMetricsManager != nil {
+		inst.linkMetricsManager.HandleTimer()
+	}
+
 	// Re-arm for the next tick.
 	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
 }

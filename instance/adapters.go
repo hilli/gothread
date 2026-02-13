@@ -2029,20 +2029,64 @@ func (a *mgmtPanIdScannerAdapter) ScanForPanId(channel uint16, panId uint16) (bo
 var _ diags.RadioControl = (*diagsRadioControlAdapter)(nil)
 
 type diagsRadioControlAdapter struct {
-	inst *Instance
+	inst    *Instance
+	channel uint16
 }
 
-func (a *diagsRadioControlAdapter) SetChannel(channel uint16) error { return nil }
-func (a *diagsRadioControlAdapter) GetChannel() uint16 { return 0 }
-func (a *diagsRadioControlAdapter) SetTxPower(power int8) error { return nil }
-func (a *diagsRadioControlAdapter) GetTxPower() (int8, error) { return 0, nil }
+func (a *diagsRadioControlAdapter) SetChannel(channel uint16) error {
+	a.channel = channel
+	return nil
+}
+func (a *diagsRadioControlAdapter) GetChannel() uint16 { return a.channel }
+func (a *diagsRadioControlAdapter) SetTxPower(power int8) error {
+	if a.inst.platRadio == nil {
+		return nil
+	}
+	return a.inst.platRadio.SetTransmitPower(power)
+}
+func (a *diagsRadioControlAdapter) GetTxPower() (int8, error) {
+	if a.inst.platRadio == nil {
+		return 0, nil
+	}
+	return a.inst.platRadio.GetTransmitPower()
+}
 func (a *diagsRadioControlAdapter) Transmit(payload []byte) error { return nil }
-func (a *diagsRadioControlAdapter) StartReceive() error { return nil }
-func (a *diagsRadioControlAdapter) StopReceive() error { return nil }
-func (a *diagsRadioControlAdapter) GetRssi() (int8, error) { return -128, nil }
-func (a *diagsRadioControlAdapter) Sleep() error { return nil }
-func (a *diagsRadioControlAdapter) Enable() error { return nil }
-func (a *diagsRadioControlAdapter) Disable() error { return nil }
+func (a *diagsRadioControlAdapter) StartReceive() error {
+	if a.inst.platRadio == nil {
+		return nil
+	}
+	return a.inst.platRadio.Receive(uint8(a.channel))
+}
+func (a *diagsRadioControlAdapter) StopReceive() error {
+	if a.inst.platRadio == nil {
+		return nil
+	}
+	return a.inst.platRadio.Sleep()
+}
+func (a *diagsRadioControlAdapter) GetRssi() (int8, error) {
+	if a.inst.platRadio == nil {
+		return -128, nil
+	}
+	return a.inst.platRadio.GetRSSI(), nil
+}
+func (a *diagsRadioControlAdapter) Sleep() error {
+	if a.inst.platRadio == nil {
+		return nil
+	}
+	return a.inst.platRadio.Sleep()
+}
+func (a *diagsRadioControlAdapter) Enable() error {
+	if a.inst.platRadio == nil {
+		return nil
+	}
+	return a.inst.platRadio.Enable()
+}
+func (a *diagsRadioControlAdapter) Disable() error {
+	if a.inst.platRadio == nil {
+		return nil
+	}
+	return a.inst.platRadio.Disable()
+}
 
 // ---------------------------------------------------------------------------
 // meshcopScannerAdapter satisfies seeker.Scanner.
@@ -2270,8 +2314,13 @@ func (a *commissionerAddressingAdapter) MeshLocalPrefix() ip6.NetworkPrefix {
 func (a *commissionerAddressingAdapter) RLOC16() uint16 {
 	return a.inst.mleService.Mle().RLOC16()
 }
-func (a *commissionerAddressingAdapter) LeaderRLOC16() uint16 { return 0 }
-func (a *commissionerAddressingAdapter) IsAttached() bool { return false }
+func (a *commissionerAddressingAdapter) LeaderRLOC16() uint16 {
+	ld := a.inst.mleService.Mle().GetLeaderData()
+	return mle.RLOC16FromRouterID(ld.LeaderRouterID)
+}
+func (a *commissionerAddressingAdapter) IsAttached() bool {
+	return a.inst.mleService.Mle().IsAttached()
+}
 
 // ---------------------------------------------------------------------------
 // joinerTransportAdapter satisfies meshcop.JoinerTransport.
@@ -2299,11 +2348,24 @@ var _ meshcop.JoinerRadio = (*joinerRadioAdapter)(nil)
 
 type joinerRadioAdapter struct{ inst *Instance }
 
-func (a *joinerRadioAdapter) GetIeeeEUI64() types.ExtAddress { return types.ExtAddress{} }
-func (a *joinerRadioAdapter) SetChannel(channel uint8) {}
-func (a *joinerRadioAdapter) SetPanID(panID uint16) {}
-func (a *joinerRadioAdapter) GetChannel() uint8 { return 0 }
-func (a *joinerRadioAdapter) GetPanID() uint16 { return 0 }
+func (a *joinerRadioAdapter) GetIeeeEUI64() types.ExtAddress {
+	if a.inst.platRadio == nil {
+		return types.ExtAddress{}
+	}
+	return types.ExtAddress(a.inst.platRadio.GetIEEEEui64())
+}
+func (a *joinerRadioAdapter) SetChannel(channel uint8) {
+	a.inst.mac.SetPanChannel(channel)
+}
+func (a *joinerRadioAdapter) SetPanID(panID uint16) {
+	a.inst.mac.SetPanID(types.PanID(panID))
+}
+func (a *joinerRadioAdapter) GetChannel() uint8 {
+	return a.inst.mac.GetPanChannel()
+}
+func (a *joinerRadioAdapter) GetPanID() uint16 {
+	return uint16(a.inst.mac.GetPanID())
+}
 
 // ---------------------------------------------------------------------------
 // joinerScannerAdapter satisfies meshcop.JoinerScanner.
@@ -2326,7 +2388,10 @@ var _ meshcop.JoinerDatasetSaver = (*joinerDatasetSaverAdapter)(nil)
 
 type joinerDatasetSaverAdapter struct{ inst *Instance }
 
-func (a *joinerDatasetSaverAdapter) SaveDataset(info meshcop.Info) error { return nil }
+func (a *joinerDatasetSaverAdapter) SaveDataset(info meshcop.Info) error {
+	a.inst.activeDataset.SaveLocalFromInfo(&info)
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // joinerRouterTransportAdapter satisfies meshcop.JoinerRouterTransport.
@@ -2369,7 +2434,9 @@ func (a *joinerRouterAddressingAdapter) MeshLocalPrefix() ip6.NetworkPrefix {
 	return ip6.NetworkPrefix(a.inst.meshLocalPrefix)
 }
 func (a *joinerRouterAddressingAdapter) RLOC16() uint16 { return a.inst.mleService.Mle().RLOC16() }
-func (a *joinerRouterAddressingAdapter) IsFullThreadDevice() bool { return true }
+func (a *joinerRouterAddressingAdapter) IsFullThreadDevice() bool {
+	return a.inst.mleService.Mle().IsFullThreadDevice()
+}
 
 // ---------------------------------------------------------------------------
 // joinerRouterNetworkDataAdapter satisfies meshcop.JoinerRouterNetworkData.
@@ -2391,8 +2458,12 @@ var _ meshcop.JoinerRouterKeyManager = (*joinerRouterKeyManagerAdapter)(nil)
 
 type joinerRouterKeyManagerAdapter struct{ inst *Instance }
 
-func (a *joinerRouterKeyManagerAdapter) SetKEK(kek [16]byte) {}
-func (a *joinerRouterKeyManagerAdapter) GetCurrentKeySequence() uint32 { return 0 }
+func (a *joinerRouterKeyManagerAdapter) SetKEK(kek [16]byte) {
+	a.inst.keyManager.SetKek(key.Kek(kek))
+}
+func (a *joinerRouterKeyManagerAdapter) GetCurrentKeySequence() uint32 {
+	return a.inst.keyManager.GetCurrentKeySequence()
+}
 
 // ---------------------------------------------------------------------------
 // joinerRouterDatasetReaderAdapter satisfies meshcop.JoinerRouterDatasetReader.
@@ -2403,7 +2474,11 @@ var _ meshcop.JoinerRouterDatasetReader = (*joinerRouterDatasetReaderAdapter)(ni
 type joinerRouterDatasetReaderAdapter struct{ inst *Instance }
 
 func (a *joinerRouterDatasetReaderAdapter) ReadActiveDataset() (meshcop.Dataset, error) {
-	return meshcop.Dataset{}, nil
+	ds, err := a.inst.activeDataset.Read()
+	if err != nil {
+		return meshcop.Dataset{}, err
+	}
+	return *ds, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2414,9 +2489,26 @@ var _ meshcop.DatasetStore = (*datasetStoreAdapter)(nil)
 
 type datasetStoreAdapter struct{ inst *Instance }
 
-func (a *datasetStoreAdapter) ReadDataset(dt meshcop.DatasetType) (*meshcop.Dataset, error) { return nil, nil }
-func (a *datasetStoreAdapter) SaveDataset(dt meshcop.DatasetType, ds *meshcop.Dataset) error { return nil }
-func (a *datasetStoreAdapter) DeleteDataset(dt meshcop.DatasetType) error { return nil }
+func (a *datasetStoreAdapter) ReadDataset(dt meshcop.DatasetType) (*meshcop.Dataset, error) {
+	if dt == meshcop.DatasetActive {
+		return a.inst.activeDataset.Read()
+	}
+	return a.inst.pendingDataset.Read()
+}
+func (a *datasetStoreAdapter) SaveDataset(dt meshcop.DatasetType, ds *meshcop.Dataset) error {
+	if dt == meshcop.DatasetActive {
+		return a.inst.activeDataset.Save(ds)
+	}
+	return a.inst.pendingDataset.Save(ds)
+}
+func (a *datasetStoreAdapter) DeleteDataset(dt meshcop.DatasetType) error {
+	if dt == meshcop.DatasetActive {
+		a.inst.activeDataset.Clear()
+	} else {
+		a.inst.pendingDataset.Clear()
+	}
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // utilsEnergyScannerAdapter satisfies utils.EnergyScanner.
@@ -2448,7 +2540,12 @@ var _ utils.RssiReader = (*utilsRssiReaderAdapter)(nil)
 
 type utilsRssiReaderAdapter struct{ inst *Instance }
 
-func (a *utilsRssiReaderAdapter) GetRssi() (int8, error) { return -128, nil }
+func (a *utilsRssiReaderAdapter) GetRssi() (int8, error) {
+	if a.inst.platRadio == nil {
+		return -128, nil
+	}
+	return a.inst.platRadio.GetRSSI(), nil
+}
 
 // ---------------------------------------------------------------------------
 // utilsIcmpSenderAdapter satisfies utils.IcmpSender.
@@ -2480,7 +2577,18 @@ var _ utils.NeighborProvider = (*utilsNeighborProviderAdapter)(nil)
 
 type utilsNeighborProviderAdapter struct{ inst *Instance }
 
-func (a *utilsNeighborProviderAdapter) GetNeighborExtAddresses() []types.ExtAddress { return nil }
+func (a *utilsNeighborProviderAdapter) GetNeighborExtAddresses() []types.ExtAddress {
+	var addrs []types.ExtAddress
+	for _, r := range a.inst.routerTable.Routers() {
+		if r.IsStateValid() {
+			addrs = append(addrs, r.ExtAddress)
+		}
+	}
+	for _, c := range a.inst.childTable.Children(routing.FilterValid) {
+		addrs = append(addrs, c.ExtAddress)
+	}
+	return addrs
+}
 
 // ---------------------------------------------------------------------------
 // utilsEapConfiguratorAdapter satisfies utils.EapConfigurator.
