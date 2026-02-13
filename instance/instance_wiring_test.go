@@ -4287,3 +4287,201 @@ func TestBorderAgentAccessor(t *testing.T) {
 		t.Error("BorderAgent() should return the same pointer")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DUA Manager wiring
+// ---------------------------------------------------------------------------
+
+func TestDuaManager_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.duaManager == nil {
+		t.Fatal("duaManager should be created during wireModules")
+	}
+}
+
+func TestDuaManagerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.DuaManager()
+	if got == nil {
+		t.Fatal("DuaManager() accessor should return non-nil")
+	}
+	if got != inst.duaManager {
+		t.Error("DuaManager() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MLR Manager wiring
+// ---------------------------------------------------------------------------
+
+func TestMlrManager_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.mlrManager == nil {
+		t.Fatal("mlrManager should be created during wireModules")
+	}
+}
+
+func TestMlrManagerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.MlrManager()
+	if got == nil {
+		t.Fatal("MlrManager() accessor should return non-nil")
+	}
+	if got != inst.mlrManager {
+		t.Error("MlrManager() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Energy Scan Server wiring
+// ---------------------------------------------------------------------------
+
+func TestEnergyScanServer_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.energyScanServer == nil {
+		t.Fatal("energyScanServer should be created during wireModules")
+	}
+}
+
+func TestEnergyScanServerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.EnergyScanServer()
+	if got == nil {
+		t.Fatal("EnergyScanServer() accessor should return non-nil")
+	}
+	if got != inst.energyScanServer {
+		t.Error("EnergyScanServer() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PAN ID Query Server wiring
+// ---------------------------------------------------------------------------
+
+func TestPanIdQueryServer_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.panIdQueryServer == nil {
+		t.Fatal("panIdQueryServer should be created during wireModules")
+	}
+}
+
+func TestPanIdQueryServerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.PanIdQueryServer()
+	if got == nil {
+		t.Fatal("PanIdQueryServer() accessor should return non-nil")
+	}
+	if got != inst.panIdQueryServer {
+		t.Error("PanIdQueryServer() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Anycast Locator wiring
+// ---------------------------------------------------------------------------
+
+func TestAnycastLocator_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.anycastLocator == nil {
+		t.Fatal("anycastLocator should be created during wireModules")
+	}
+}
+
+func TestAnycastLocatorAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.AnycastLocator()
+	if got == nil {
+		t.Fatal("AnycastLocator() accessor should return non-nil")
+	}
+	if got != inst.anycastLocator {
+		t.Error("AnycastLocator() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Factory Diagnostics wiring
+// ---------------------------------------------------------------------------
+
+func TestDiagsModule_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.diagsModule == nil {
+		t.Fatal("diagsModule should be created during wireModules")
+	}
+}
+
+func TestDiagsModuleAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.DiagnosticsModule()
+	if got == nil {
+		t.Fatal("DiagnosticsModule() accessor should return non-nil")
+	}
+	if got != inst.diagsModule {
+		t.Error("DiagnosticsModule() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NAT64 Translator wiring
+// ---------------------------------------------------------------------------
+
+func TestNat64Translator_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.nat64Translator == nil {
+		t.Fatal("nat64Translator should be created during wireModules")
+	}
+}
+
+func TestNat64TranslatorAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.Nat64Translator()
+	if got == nil {
+		t.Fatal("Nat64Translator() accessor should return non-nil")
+	}
+	if got != inst.nat64Translator {
+		t.Error("Nat64Translator() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TCP Stack wiring
+// ---------------------------------------------------------------------------
+
+func TestTcpStack_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.tcpStack == nil {
+		t.Fatal("tcpStack should be created during wireModules")
+	}
+}
+
+func TestTcpStackAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.TcpStack()
+	if got == nil {
+		t.Fatal("TcpStack() accessor should return non-nil")
+	}
+	if got != inst.tcpStack {
+		t.Error("TcpStack() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MeshCoP Seeker wiring
+// ---------------------------------------------------------------------------
+
+func TestMeshcopSeeker_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.meshcopSeeker == nil {
+		t.Fatal("meshcopSeeker should be created during wireModules")
+	}
+}
+
+func TestMeshcopSeekerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.MeshcopSeeker()
+	if got == nil {
+		t.Fatal("MeshcopSeeker() accessor should return non-nil")
+	}
+	if got != inst.meshcopSeeker {
+		t.Error("MeshcopSeeker() should return the same pointer")
+	}
+}

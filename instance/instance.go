@@ -26,8 +26,10 @@ import (
 	"github.com/hilli/gothread/backbone"
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/meshcop/border"
+	"github.com/hilli/gothread/meshcop/seeker"
 	"github.com/hilli/gothread/meshcop/dtls"
 	"github.com/hilli/gothread/net/coaps"
+	"github.com/hilli/gothread/diags"
 	"github.com/hilli/gothread/border/router"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/dhcp6"
@@ -35,14 +37,17 @@ import (
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/dns"
 	"github.com/hilli/gothread/net/dnssd"
+	"github.com/hilli/gothread/net/nat64"
 	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/ndagent"
 	"github.com/hilli/gothread/net/slaac"
 	"github.com/hilli/gothread/net/sntp"
+	"github.com/hilli/gothread/net/tcp"
 	"github.com/hilli/gothread/net/srp"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
+	"github.com/hilli/gothread/thread/bbr"
 	"github.com/hilli/gothread/thread/addrresolver"
 	"github.com/hilli/gothread/thread/announce"
 	"github.com/hilli/gothread/thread/key"
@@ -51,6 +56,7 @@ import (
 	"github.com/hilli/gothread/thread/diag"
 	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/linkmetrics"
+	"github.com/hilli/gothread/thread/mgmt"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/netdata"
@@ -490,6 +496,33 @@ type Instance struct {
 
 	// borderAgent manages the MeshCoP Border Agent (Commissioner proxy).
 	borderAgent *border.Agent
+
+	// duaManager manages DUA (Domain Unicast Address) registrations for BBR.
+	duaManager *bbr.DuaManager
+
+	// mlrManager manages MLR (Multicast Listener Registration) for BBR.
+	mlrManager *bbr.MlrManager
+
+	// energyScanServer handles Thread Management energy scan requests.
+	energyScanServer *mgmt.EnergyScanServer
+
+	// panIdQueryServer handles Thread Management PAN ID query requests.
+	panIdQueryServer *mgmt.PanIdQueryServer
+
+	// anycastLocator resolves anycast ALOC addresses to RLOC addresses.
+	anycastLocator *mgmt.AnycastLocator
+
+	// diagsModule provides factory diagnostics (radio test modes).
+	diagsModule *diags.Diags
+
+	// nat64Translator provides NAT64 translation for IPv4 connectivity.
+	nat64Translator *nat64.Translator
+
+	// tcpStack provides TCP socket support.
+	tcpStack *tcp.TCP
+
+	// meshcopSeeker discovers MeshCoP-compatible networks.
+	meshcopSeeker *seeker.Seeker
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -1016,6 +1049,39 @@ func (inst *Instance) wireModules() {
 	)
 
 	// ---------------------------------------------------------------
+	// BBR DUA and MLR Managers
+	// ---------------------------------------------------------------
+	inst.duaManager = bbr.NewDuaManager()
+	inst.mlrManager = bbr.NewMlrManager()
+
+	// ---------------------------------------------------------------
+	// Thread Management services
+	// ---------------------------------------------------------------
+	inst.energyScanServer = mgmt.NewEnergyScanServer(&mgmtEnergyScannerAdapter{inst: inst})
+	inst.panIdQueryServer = mgmt.NewPanIdQueryServer(&mgmtPanIdScannerAdapter{inst: inst})
+	inst.anycastLocator = mgmt.NewAnycastLocator()
+
+	// ---------------------------------------------------------------
+	// Factory Diagnostics
+	// ---------------------------------------------------------------
+	inst.diagsModule = diags.NewDiags(&diagsRadioControlAdapter{inst: inst})
+
+	// ---------------------------------------------------------------
+	// NAT64 Translator
+	// ---------------------------------------------------------------
+	inst.nat64Translator = nat64.NewTranslator()
+
+	// ---------------------------------------------------------------
+	// TCP Stack
+	// ---------------------------------------------------------------
+	inst.tcpStack = tcp.New()
+
+	// ---------------------------------------------------------------
+	// MeshCoP Seeker
+	// ---------------------------------------------------------------
+	inst.meshcopSeeker = seeker.NewSeeker(&meshcopScannerAdapter{inst: inst})
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1473,6 +1539,33 @@ func (inst *Instance) CoapsSession() *coaps.Session { return inst.coapsSession }
 
 // BorderAgent returns the MeshCoP Border Agent.
 func (inst *Instance) BorderAgent() *border.Agent { return inst.borderAgent }
+
+// DuaManager returns the DUA registration manager.
+func (inst *Instance) DuaManager() *bbr.DuaManager { return inst.duaManager }
+
+// MlrManager returns the MLR registration manager.
+func (inst *Instance) MlrManager() *bbr.MlrManager { return inst.mlrManager }
+
+// EnergyScanServer returns the Thread Management energy scan server.
+func (inst *Instance) EnergyScanServer() *mgmt.EnergyScanServer { return inst.energyScanServer }
+
+// PanIdQueryServer returns the Thread Management PAN ID query server.
+func (inst *Instance) PanIdQueryServer() *mgmt.PanIdQueryServer { return inst.panIdQueryServer }
+
+// AnycastLocator returns the anycast ALOC resolver.
+func (inst *Instance) AnycastLocator() *mgmt.AnycastLocator { return inst.anycastLocator }
+
+// DiagnosticsModule returns the factory diagnostics module.
+func (inst *Instance) DiagnosticsModule() *diags.Diags { return inst.diagsModule }
+
+// Nat64Translator returns the NAT64 translator.
+func (inst *Instance) Nat64Translator() *nat64.Translator { return inst.nat64Translator }
+
+// TcpStack returns the TCP stack.
+func (inst *Instance) TcpStack() *tcp.TCP { return inst.tcpStack }
+
+// MeshcopSeeker returns the MeshCoP network seeker.
+func (inst *Instance) MeshcopSeeker() *seeker.Seeker { return inst.meshcopSeeker }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

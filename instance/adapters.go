@@ -21,9 +21,12 @@ import (
 	"github.com/hilli/gothread/meshcop/border"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/backbone"
+	"github.com/hilli/gothread/diags"
+	"github.com/hilli/gothread/meshcop/seeker"
 	"github.com/hilli/gothread/net/dnssd"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/ndagent"
+	"github.com/hilli/gothread/thread/mgmt"
 	"github.com/hilli/gothread/net/srp"
 	"github.com/hilli/gothread/net/dhcp6"
 	"github.com/hilli/gothread/net/mpl"
@@ -1977,4 +1980,75 @@ func (a *borderAgentNetworkInfoAdapter) AddUnicastAddress(addr [16]byte) {
 
 func (a *borderAgentNetworkInfoAdapter) RemoveUnicastAddress(addr [16]byte) {
 	// TODO: Remove address from netif
+}
+
+// ---------------------------------------------------------------------------
+// mgmtEnergyScannerAdapter satisfies mgmt.EnergyScanner.
+// ---------------------------------------------------------------------------
+
+var _ mgmt.EnergyScanner = (*mgmtEnergyScannerAdapter)(nil)
+
+type mgmtEnergyScannerAdapter struct {
+	inst *Instance
+}
+
+func (a *mgmtEnergyScannerAdapter) EnergyScan(channel uint16, duration uint16) (int8, error) {
+	// TODO: Perform energy scan via radio platform
+	return -128, nil
+}
+
+// ---------------------------------------------------------------------------
+// mgmtPanIdScannerAdapter satisfies mgmt.PanIdScanner.
+// ---------------------------------------------------------------------------
+
+var _ mgmt.PanIdScanner = (*mgmtPanIdScannerAdapter)(nil)
+
+type mgmtPanIdScannerAdapter struct {
+	inst *Instance
+}
+
+func (a *mgmtPanIdScannerAdapter) ScanForPanId(channel uint16, panId uint16) (bool, error) {
+	// TODO: Scan for PAN ID via radio platform
+	return false, nil
+}
+
+// ---------------------------------------------------------------------------
+// diagsRadioControlAdapter satisfies diags.RadioControl.
+// ---------------------------------------------------------------------------
+
+var _ diags.RadioControl = (*diagsRadioControlAdapter)(nil)
+
+type diagsRadioControlAdapter struct {
+	inst *Instance
+}
+
+func (a *diagsRadioControlAdapter) SetChannel(channel uint16) error { return nil }
+func (a *diagsRadioControlAdapter) GetChannel() uint16 { return 0 }
+func (a *diagsRadioControlAdapter) SetTxPower(power int8) error { return nil }
+func (a *diagsRadioControlAdapter) GetTxPower() (int8, error) { return 0, nil }
+func (a *diagsRadioControlAdapter) Transmit(payload []byte) error { return nil }
+func (a *diagsRadioControlAdapter) StartReceive() error { return nil }
+func (a *diagsRadioControlAdapter) StopReceive() error { return nil }
+func (a *diagsRadioControlAdapter) GetRssi() (int8, error) { return -128, nil }
+func (a *diagsRadioControlAdapter) Sleep() error { return nil }
+func (a *diagsRadioControlAdapter) Enable() error { return nil }
+func (a *diagsRadioControlAdapter) Disable() error { return nil }
+
+// ---------------------------------------------------------------------------
+// meshcopScannerAdapter satisfies seeker.Scanner.
+// ---------------------------------------------------------------------------
+
+var _ seeker.Scanner = (*meshcopScannerAdapter)(nil)
+
+type meshcopScannerAdapter struct {
+	inst *Instance
+}
+
+func (a *meshcopScannerAdapter) StartScan(callback func(result *seeker.DiscoverResult)) error {
+	// TODO: Start MeshCoP discovery scan via MLE
+	return nil
+}
+
+func (a *meshcopScannerAdapter) StopScan() {
+	// TODO: Stop MeshCoP discovery scan
 }
