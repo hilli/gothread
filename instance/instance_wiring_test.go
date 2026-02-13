@@ -4133,3 +4133,91 @@ func TestRoutePublisherAccessor(t *testing.T) {
 		t.Error("RoutePublisher() should return the same pointer as inst.routePublisher")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Multicast Listeners Table wiring
+// ---------------------------------------------------------------------------
+
+func TestMulticastListeners_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.multicastListeners == nil {
+		t.Fatal("multicastListeners should be created during wireModules")
+	}
+}
+
+func TestMulticastListenersAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.MulticastListenersTable()
+	if got == nil {
+		t.Fatal("MulticastListenersTable() accessor should return non-nil")
+	}
+	if got != inst.multicastListeners {
+		t.Error("MulticastListenersTable() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ND Proxy Table wiring
+// ---------------------------------------------------------------------------
+
+func TestNdProxyTable_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.ndProxyTable == nil {
+		t.Fatal("ndProxyTable should be created during wireModules")
+	}
+}
+
+func TestNdProxyTableAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.NdProxyTable()
+	if got == nil {
+		t.Fatal("NdProxyTable() accessor should return non-nil")
+	}
+	if got != inst.ndProxyTable {
+		t.Error("NdProxyTable() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Border TXT Data wiring
+// ---------------------------------------------------------------------------
+
+func TestBorderTxtData_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.borderTxtData == nil {
+		t.Fatal("borderTxtData should be created during wireModules")
+	}
+}
+
+func TestBorderTxtDataAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.BorderTxtData()
+	if got == nil {
+		t.Fatal("BorderTxtData() accessor should return non-nil")
+	}
+	if got != inst.borderTxtData {
+		t.Error("BorderTxtData() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DNS-SD Module wiring
+// ---------------------------------------------------------------------------
+
+func TestDnssdModule_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dnssdModule == nil {
+		t.Fatal("dnssdModule should be created during wireModules")
+	}
+}
+
+func TestDnssdModuleAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.DnssdModule()
+	if got == nil {
+		t.Fatal("DnssdModule() accessor should return non-nil")
+	}
+	if got != inst.dnssdModule {
+		t.Error("DnssdModule() should return the same pointer")
+	}
+}

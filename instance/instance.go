@@ -32,6 +32,7 @@ import (
 	"github.com/hilli/gothread/net/icmp6"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/dns"
+	"github.com/hilli/gothread/net/dnssd"
 	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/ndagent"
 	"github.com/hilli/gothread/net/slaac"
@@ -466,6 +467,18 @@ type Instance struct {
 
 	// routePublisher publishes external routes into Thread Network Data.
 	routePublisher *router.RoutePublisher
+
+	// multicastListeners tracks multicast listener registrations for BBR.
+	multicastListeners *backbone.MulticastListenersTable
+
+	// ndProxyTable tracks ND proxy entries for DUA addresses.
+	ndProxyTable *backbone.NdProxyTable
+
+	// borderTxtData holds TXT record data for mDNS service advertisement.
+	borderTxtData *border.TxtData
+
+	// dnssdModule provides DNS-SD service registration and discovery.
+	dnssdModule *dnssd.Module
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -958,6 +971,22 @@ func (inst *Instance) wireModules() {
 	inst.routePublisher = router.NewRoutePublisher()
 
 	// ---------------------------------------------------------------
+	// Backbone data tables
+	// ---------------------------------------------------------------
+	inst.multicastListeners = backbone.NewMulticastListenersTable()
+	inst.ndProxyTable = backbone.NewNdProxyTable()
+
+	// ---------------------------------------------------------------
+	// Border Agent TXT data
+	// ---------------------------------------------------------------
+	inst.borderTxtData = border.NewTxtData()
+
+	// ---------------------------------------------------------------
+	// DNS-SD Module
+	// ---------------------------------------------------------------
+	inst.dnssdModule = dnssd.NewModule(&dnssdPlatformAdapter{inst: inst})
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1394,6 +1423,18 @@ func (inst *Instance) OnLinkPrefixManager() *router.OnLinkPrefixManager { return
 
 // RoutePublisher returns the external route publisher.
 func (inst *Instance) RoutePublisher() *router.RoutePublisher { return inst.routePublisher }
+
+// MulticastListenersTable returns the BBR multicast listeners table.
+func (inst *Instance) MulticastListenersTable() *backbone.MulticastListenersTable { return inst.multicastListeners }
+
+// NdProxyTable returns the BBR ND proxy table.
+func (inst *Instance) NdProxyTable() *backbone.NdProxyTable { return inst.ndProxyTable }
+
+// BorderTxtData returns the border agent TXT record data.
+func (inst *Instance) BorderTxtData() *border.TxtData { return inst.borderTxtData }
+
+// DnssdModule returns the DNS-SD service discovery module.
+func (inst *Instance) DnssdModule() *dnssd.Module { return inst.dnssdModule }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

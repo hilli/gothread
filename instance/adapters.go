@@ -20,6 +20,7 @@ import (
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/backbone"
+	"github.com/hilli/gothread/net/dnssd"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/ndagent"
 	"github.com/hilli/gothread/net/srp"
@@ -1805,3 +1806,26 @@ func (a *bbrManagerDepsAdapter) GetDomainPrefix() (ip6.Prefix, bool) {
 	}
 	return a.inst.bbrLeader.GetDomainPrefix(), true
 }
+
+// ---------------------------------------------------------------------------
+// dnssdPlatformAdapter satisfies dnssd.Platform (stub for all 13 methods).
+// ---------------------------------------------------------------------------
+
+var _ dnssd.Platform = (*dnssdPlatformAdapter)(nil)
+
+type dnssdPlatformAdapter struct {
+	inst *Instance
+}
+
+func (a *dnssdPlatformAdapter) RegisterService(info dnssd.ServiceInfo) error { return nil }
+func (a *dnssdPlatformAdapter) UnregisterService(instanceName, serviceType string) error { return nil }
+func (a *dnssdPlatformAdapter) RegisterHost(info dnssd.HostInfo) error { return nil }
+func (a *dnssdPlatformAdapter) UnregisterHost(hostName string) error { return nil }
+func (a *dnssdPlatformAdapter) RegisterKey(record dnssd.KeyRecord) error { return nil }
+func (a *dnssdPlatformAdapter) UnregisterKey(name string) error { return nil }
+func (a *dnssdPlatformAdapter) StartBrowse(serviceType string) error { return nil }
+func (a *dnssdPlatformAdapter) StopBrowse(serviceType string) error { return nil }
+func (a *dnssdPlatformAdapter) StartResolve(instanceName, serviceType string) error { return nil }
+func (a *dnssdPlatformAdapter) StopResolve(instanceName, serviceType string) error { return nil }
+func (a *dnssdPlatformAdapter) StartResolveHost(hostName string) error { return nil }
+func (a *dnssdPlatformAdapter) StopResolveHost(hostName string) error { return nil }
