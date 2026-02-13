@@ -24,6 +24,7 @@ import (
 	"github.com/hilli/gothread/mac/filter"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/meshcop"
+	"github.com/hilli/gothread/meshcop/border"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/dhcp6"
 	"github.com/hilli/gothread/net/icmp6"
@@ -32,6 +33,7 @@ import (
 	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/slaac"
 	"github.com/hilli/gothread/net/sntp"
+	"github.com/hilli/gothread/net/srp"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
@@ -422,6 +424,18 @@ type Instance struct {
 
 	// dnsClient provides DNS name resolution (A/AAAA queries, service browse/resolve).
 	dnsClient *dns.Client
+
+	// dso manages DNS Stateful Operations (DSO) connections.
+	dso *dns.DSO
+
+	// srpServer handles SRP (Service Registration Protocol) registrations.
+	srpServer *srp.Server
+
+	// srpClient registers services via SRP.
+	srpClient *srp.Client
+
+	// ephemeralKeyMgr manages ephemeral key commissioning sessions.
+	ephemeralKeyMgr *border.EphemeralKeyManager
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -874,6 +888,22 @@ func (inst *Instance) wireModules() {
 	})
 
 	// ---------------------------------------------------------------
+	// DNS Stateful Operations (DSO)
+	// ---------------------------------------------------------------
+	inst.dso = dns.NewDSO()
+
+	// ---------------------------------------------------------------
+	// SRP Server and Client
+	// ---------------------------------------------------------------
+	inst.srpServer = srp.NewServer()
+	inst.srpClient = srp.NewClient(&srpUDPSenderAdapter{inst: inst})
+
+	// ---------------------------------------------------------------
+	// Ephemeral Key Manager (Border Agent)
+	// ---------------------------------------------------------------
+	inst.ephemeralKeyMgr = border.NewEphemeralKeyManager()
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1271,6 +1301,18 @@ func (inst *Instance) SntpClient() *sntp.Client { return inst.sntpClient }
 
 // DnsClient returns the DNS client for name resolution.
 func (inst *Instance) DnsClient() *dns.Client { return inst.dnsClient }
+
+// DSO returns the DNS Stateful Operations manager.
+func (inst *Instance) DSO() *dns.DSO { return inst.dso }
+
+// SrpServer returns the SRP server.
+func (inst *Instance) SrpServer() *srp.Server { return inst.srpServer }
+
+// SrpClient returns the SRP client.
+func (inst *Instance) SrpClient() *srp.Client { return inst.srpClient }
+
+// EphemeralKeyManager returns the ephemeral key manager.
+func (inst *Instance) EphemeralKeyManager() *border.EphemeralKeyManager { return inst.ephemeralKeyMgr }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

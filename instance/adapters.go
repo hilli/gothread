@@ -20,6 +20,7 @@ import (
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/srp"
 	"github.com/hilli/gothread/net/dhcp6"
 	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/udp"
@@ -1676,5 +1677,20 @@ type dhcp6ServerTransportAdapter struct {
 
 func (a *dhcp6ServerTransportAdapter) Send(payload []byte, dst ip6.Address, dstPort uint16) error {
 	// TODO: Send DHCPv6 server response via UDP
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+var _ srp.UDPSender = (*srpUDPSenderAdapter)(nil)
+
+// srpUDPSenderAdapter wraps Instance to satisfy srp.UDPSender.
+// ---------------------------------------------------------------------------
+
+type srpUDPSenderAdapter struct {
+	inst *Instance
+}
+
+func (s *srpUDPSenderAdapter) Send(data []byte, dest ip6.SockAddr) error {
+	// TODO: Send SRP update via UDP to dest
 	return nil
 }

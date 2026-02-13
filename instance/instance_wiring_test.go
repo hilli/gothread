@@ -3847,3 +3847,91 @@ func TestDiagProvider_GetConnectivity(t *testing.T) {
 		t.Errorf("expected ActiveRouters = 0, got %d", conn.ActiveRouters)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DNS DSO wiring
+// ---------------------------------------------------------------------------
+
+func TestDso_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dso == nil {
+		t.Fatal("dso should be created during wireModules")
+	}
+}
+
+func TestDsoAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.DSO()
+	if got == nil {
+		t.Fatal("DSO() accessor should return non-nil")
+	}
+	if got != inst.dso {
+		t.Error("DSO() should return the same pointer as inst.dso")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SRP Server wiring
+// ---------------------------------------------------------------------------
+
+func TestSrpServer_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.srpServer == nil {
+		t.Fatal("srpServer should be created during wireModules")
+	}
+}
+
+func TestSrpServerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.SrpServer()
+	if got == nil {
+		t.Fatal("SrpServer() accessor should return non-nil")
+	}
+	if got != inst.srpServer {
+		t.Error("SrpServer() should return the same pointer as inst.srpServer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SRP Client wiring
+// ---------------------------------------------------------------------------
+
+func TestSrpClient_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.srpClient == nil {
+		t.Fatal("srpClient should be created during wireModules")
+	}
+}
+
+func TestSrpClientAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.SrpClient()
+	if got == nil {
+		t.Fatal("SrpClient() accessor should return non-nil")
+	}
+	if got != inst.srpClient {
+		t.Error("SrpClient() should return the same pointer as inst.srpClient")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ephemeral Key Manager wiring
+// ---------------------------------------------------------------------------
+
+func TestEphemeralKeyMgr_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.ephemeralKeyMgr == nil {
+		t.Fatal("ephemeralKeyMgr should be created during wireModules")
+	}
+}
+
+func TestEphemeralKeyMgrAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.EphemeralKeyManager()
+	if got == nil {
+		t.Fatal("EphemeralKeyManager() accessor should return non-nil")
+	}
+	if got != inst.ephemeralKeyMgr {
+		t.Error("EphemeralKeyManager() should return the same pointer as inst.ephemeralKeyMgr")
+	}
+}
