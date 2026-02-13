@@ -27,6 +27,7 @@ import (
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/meshcop/border"
 	"github.com/hilli/gothread/meshcop/seeker"
+	"github.com/hilli/gothread/meshcop/tcat"
 	"github.com/hilli/gothread/mac/datapoll"
 	"github.com/hilli/gothread/mac/links"
 	"github.com/hilli/gothread/mac/raw"
@@ -34,7 +35,10 @@ import (
 	"github.com/hilli/gothread/meshcop/dtls"
 	"github.com/hilli/gothread/net/coaps"
 	"github.com/hilli/gothread/diags"
+	borderinfra "github.com/hilli/gothread/border"
 	"github.com/hilli/gothread/border/dhcp6pd"
+	"github.com/hilli/gothread/border/multiail"
+	"github.com/hilli/gothread/border/tracker"
 	"github.com/hilli/gothread/border/router"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/dhcp6"
@@ -76,6 +80,7 @@ import (
 	"github.com/hilli/gothread/thread/radioselector"
 	"github.com/hilli/gothread/thread/timesync"
 	"github.com/hilli/gothread/thread/tmf"
+	"github.com/hilli/gothread/utils"
 )
 
 // --------------------------------------------------------------------------
@@ -569,8 +574,72 @@ type Instance struct {
 	// dnssdServer provides DNS-SD query server.
 	dnssdServer *dnssdserver.Server
 
+
 	// srpAdvProxy provides SRP Advertising Proxy.
 	srpAdvProxy *srpadv.AdvProxy
+
+	// infraIf represents the infrastructure network interface.
+	infraIf *borderinfra.InfraIf
+
+	// rxRaTracker tracks Router Advertisements from infrastructure.
+	rxRaTracker *borderinfra.RxRaTracker
+
+	// multiailDetector detects multiple active internet links.
+	multiailDetector *multiail.Detector
+
+	// borderTracker2 tracks border router info from network data.
+	borderTracker2 *tracker.Tracker
+
+	// commissioner manages the native Commissioner role.
+	commissioner *meshcop.Commissioner
+
+	// joinerClient manages the Joiner role.
+	joinerClient *meshcop.JoinerClient
+
+	// joinerRouter relays joiner DTLS traffic (FTD).
+	joinerRouter *meshcop.JoinerRouter
+
+	// leaderCommissioner manages leader-side commissioner sessions.
+	leaderCommissioner *meshcop.LeaderCommissioner
+
+	// datasetUpdater coordinates pending dataset application.
+	datasetUpdater *meshcop.DatasetUpdater
+
+	// energyScanClient sends commissioner energy scan requests.
+	energyScanClient *meshcop.EnergyScanClient
+
+	// announceBeginClient sends commissioner announce begin requests.
+	announceBeginClient *meshcop.AnnounceBeginClient
+
+	// panIdQueryClient sends commissioner PAN ID query requests.
+	panIdQueryClient *meshcop.PanIdQueryClient
+
+	// tcatAgent provides BLE-based TCAT commissioning.
+	tcatAgent *tcat.Agent
+
+	// channelMonitor monitors channel quality.
+	channelMonitor *utils.ChannelMonitor
+
+	// channelManager manages channel changes.
+	channelManager *utils.ChannelManager
+
+	// jamDetector detects signal jamming.
+	jamDetector *utils.JamDetector
+
+	// pingSender sends ICMPv6 echo requests.
+	pingSender *utils.PingSender
+
+	// historyTracker records event history for debugging.
+	historyTracker *utils.Tracker
+
+	// meshDiag provides mesh topology diagnostics.
+	meshDiag *utils.MeshDiag
+
+	// linkMetricsManager manages automated link metrics.
+	linkMetricsManager *utils.LinkMetricsManager
+
+	// powerCalibration manages radio TX power calibration.
+	powerCalibration *utils.PowerCalibration
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -1197,6 +1266,94 @@ func (inst *Instance) wireModules() {
 	inst.srpAdvProxy = srpadv.NewAdvProxy(&srpAdvDnssdPlatformAdapter{inst: inst})
 
 	// ---------------------------------------------------------------
+	// Infrastructure Interface and Router Advertisement tracking
+	// ---------------------------------------------------------------
+	inst.infraIf = borderinfra.NewInfraIf(&infraIfPlatformAdapter{inst: inst}, &infraIfCallbacksAdapter{inst: inst})
+	inst.rxRaTracker = borderinfra.NewRxRaTracker()
+
+	// ---------------------------------------------------------------
+	// Multi-AIL Detector and Border Tracker
+	// ---------------------------------------------------------------
+	inst.multiailDetector = multiail.NewDetector()
+	inst.borderTracker2 = tracker.NewTracker()
+
+	// ---------------------------------------------------------------
+	// MeshCoP Commissioner
+	// ---------------------------------------------------------------
+	inst.commissioner = meshcop.NewCommissioner(
+		&commissionerTransportAdapter{inst: inst},
+		&commissionerAddressingAdapter{inst: inst},
+		nil, // state callback
+		nil, // joiner callback
+	)
+
+	// ---------------------------------------------------------------
+	// MeshCoP Joiner Client
+	// ---------------------------------------------------------------
+	inst.joinerClient = meshcop.NewJoinerClient(
+		&joinerTransportAdapter{inst: inst},
+		&joinerRadioAdapter{inst: inst},
+		&joinerScannerAdapter{inst: inst},
+		&joinerDatasetSaverAdapter{inst: inst},
+	)
+
+	// ---------------------------------------------------------------
+	// MeshCoP Joiner Router (FTD relay)
+	// ---------------------------------------------------------------
+	inst.joinerRouter = meshcop.NewJoinerRouter(
+		&joinerRouterTransportAdapter{inst: inst},
+		&joinerRouterSocketAdapter{inst: inst},
+		&joinerRouterAddressingAdapter{inst: inst},
+		&joinerRouterNetworkDataAdapter{inst: inst},
+		&joinerRouterKeyManagerAdapter{inst: inst},
+		&joinerRouterDatasetReaderAdapter{inst: inst},
+	)
+
+	// ---------------------------------------------------------------
+	// MeshCoP Leader Commissioner
+	// ---------------------------------------------------------------
+	inst.leaderCommissioner = meshcop.NewLeaderCommissioner(nil)
+
+	// ---------------------------------------------------------------
+	// MeshCoP Dataset Updater
+	// ---------------------------------------------------------------
+	inst.datasetUpdater = meshcop.NewDatasetUpdater(
+		inst.activeDataset,
+		inst.pendingDataset,
+		&datasetStoreAdapter{inst: inst},
+	)
+
+	// ---------------------------------------------------------------
+	// Commissioner Diagnostic Clients
+	// ---------------------------------------------------------------
+	commTransport := &commissionerTransportAdapter{inst: inst}
+	commAddressing := &commissionerAddressingAdapter{inst: inst}
+	commSessionID := func() uint16 { return inst.commissioner.GetSessionID() }
+	inst.energyScanClient = meshcop.NewEnergyScanClient(commTransport, commAddressing, commSessionID)
+	inst.announceBeginClient = meshcop.NewAnnounceBeginClient(commTransport, commAddressing, commSessionID)
+	inst.panIdQueryClient = meshcop.NewPanIdQueryClient(commTransport, commAddressing, commSessionID)
+
+	// ---------------------------------------------------------------
+	// TCAT Agent
+	// ---------------------------------------------------------------
+	inst.tcatAgent = tcat.NewAgent()
+
+	// ---------------------------------------------------------------
+	// Utility modules
+	// ---------------------------------------------------------------
+	inst.channelMonitor = utils.NewChannelMonitor(&utilsEnergyScannerAdapter{inst: inst})
+	inst.channelManager = utils.NewChannelManager(inst.channelMonitor, &utilsNetworkDataUpdaterAdapter{inst: inst})
+	inst.jamDetector = utils.NewJamDetector(&utilsRssiReaderAdapter{inst: inst})
+	inst.pingSender = utils.NewPingSender(&utilsIcmpSenderAdapter{inst: inst})
+	inst.historyTracker = utils.NewTracker()
+	inst.meshDiag = utils.NewMeshDiag(&utilsDiagSenderAdapter{inst: inst})
+	inst.linkMetricsManager = utils.NewLinkMetricsManager(
+		&utilsNeighborProviderAdapter{inst: inst},
+		&utilsEapConfiguratorAdapter{inst: inst},
+	)
+	inst.powerCalibration = utils.NewPowerCalibration()
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1717,6 +1874,69 @@ func (inst *Instance) DnssdServer() *dnssdserver.Server { return inst.dnssdServe
 
 // SrpAdvProxy returns the SRP Advertising Proxy.
 func (inst *Instance) SrpAdvProxy() *srpadv.AdvProxy { return inst.srpAdvProxy }
+
+// InfraIf returns the infrastructure network interface.
+func (inst *Instance) InfraIf() *borderinfra.InfraIf { return inst.infraIf }
+
+// RxRaTracker returns the Router Advertisement tracker.
+func (inst *Instance) RxRaTracker() *borderinfra.RxRaTracker { return inst.rxRaTracker }
+
+// MultiailDetector returns the multi-AIL detector.
+func (inst *Instance) MultiailDetector() *multiail.Detector { return inst.multiailDetector }
+
+// BorderTracker2 returns the network-data border router tracker.
+func (inst *Instance) BorderTracker2() *tracker.Tracker { return inst.borderTracker2 }
+
+// Commissioner returns the native Commissioner.
+func (inst *Instance) Commissioner() *meshcop.Commissioner { return inst.commissioner }
+
+// JoinerClient returns the Joiner client.
+func (inst *Instance) JoinerClient() *meshcop.JoinerClient { return inst.joinerClient }
+
+// JoinerRouter returns the Joiner Router relay.
+func (inst *Instance) JoinerRouter() *meshcop.JoinerRouter { return inst.joinerRouter }
+
+// LeaderCommissioner returns the leader-side commissioner manager.
+func (inst *Instance) LeaderCommissioner() *meshcop.LeaderCommissioner { return inst.leaderCommissioner }
+
+// DatasetUpdater returns the dataset update coordinator.
+func (inst *Instance) DatasetUpdater() *meshcop.DatasetUpdater { return inst.datasetUpdater }
+
+// EnergyScanClient returns the commissioner energy scan client.
+func (inst *Instance) EnergyScanClient() *meshcop.EnergyScanClient { return inst.energyScanClient }
+
+// AnnounceBeginClient returns the commissioner announce begin client.
+func (inst *Instance) AnnounceBeginClient() *meshcop.AnnounceBeginClient { return inst.announceBeginClient }
+
+// PanIdQueryClient returns the commissioner PAN ID query client.
+func (inst *Instance) PanIdQueryClient() *meshcop.PanIdQueryClient { return inst.panIdQueryClient }
+
+// TcatAgent returns the TCAT agent.
+func (inst *Instance) TcatAgent() *tcat.Agent { return inst.tcatAgent }
+
+// ChannelMonitor returns the channel quality monitor.
+func (inst *Instance) ChannelMonitor() *utils.ChannelMonitor { return inst.channelMonitor }
+
+// ChannelManager returns the channel manager.
+func (inst *Instance) ChannelManager() *utils.ChannelManager { return inst.channelManager }
+
+// JamDetector returns the signal jam detector.
+func (inst *Instance) JamDetector() *utils.JamDetector { return inst.jamDetector }
+
+// PingSender returns the ICMPv6 ping sender.
+func (inst *Instance) PingSender() *utils.PingSender { return inst.pingSender }
+
+// HistoryTracker returns the event history tracker.
+func (inst *Instance) HistoryTracker() *utils.Tracker { return inst.historyTracker }
+
+// MeshDiag returns the mesh topology diagnostics module.
+func (inst *Instance) MeshDiag() *utils.MeshDiag { return inst.meshDiag }
+
+// LinkMetricsManager returns the automated link metrics manager.
+func (inst *Instance) LinkMetricsManager() *utils.LinkMetricsManager { return inst.linkMetricsManager }
+
+// PowerCalibration returns the TX power calibration module.
+func (inst *Instance) PowerCalibration() *utils.PowerCalibration { return inst.powerCalibration }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

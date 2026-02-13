@@ -29,8 +29,10 @@ import (
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/ndagent"
 	"github.com/hilli/gothread/thread/mgmt"
+	"github.com/hilli/gothread/utils"
 	"github.com/hilli/gothread/radio/ble"
 	"github.com/hilli/gothread/radio/trel"
+	borderinfra "github.com/hilli/gothread/border"
 	"github.com/hilli/gothread/border/dhcp6pd"
 	"github.com/hilli/gothread/net/srp"
 	"github.com/hilli/gothread/net/srpadv"
@@ -2211,3 +2213,282 @@ func (a *srpAdvDnssdPlatformAdapter) RegisterHost(name string, addresses [][16]b
 func (a *srpAdvDnssdPlatformAdapter) UnregisterHost(name string) error {
 	return nil
 }
+
+
+// ---------------------------------------------------------------------------
+// infraIfPlatformAdapter satisfies borderinfra.InfraIfPlatform.
+// ---------------------------------------------------------------------------
+
+var _ borderinfra.InfraIfPlatform = (*infraIfPlatformAdapter)(nil)
+
+type infraIfPlatformAdapter struct{ inst *Instance }
+
+func (a *infraIfPlatformAdapter) SendIcmp6Nd(ifIndex uint32, dest ip6.Address, buf []byte) error { return nil }
+func (a *infraIfPlatformAdapter) HasAddress(ifIndex uint32, addr ip6.Address) bool { return false }
+func (a *infraIfPlatformAdapter) DiscoverNat64Prefix(ifIndex uint32) error { return nil }
+func (a *infraIfPlatformAdapter) GetLinkLayerAddress(ifIndex uint32) []byte { return nil }
+
+// ---------------------------------------------------------------------------
+// infraIfCallbacksAdapter satisfies borderinfra.InfraIfCallbacks.
+// ---------------------------------------------------------------------------
+
+var _ borderinfra.InfraIfCallbacks = (*infraIfCallbacksAdapter)(nil)
+
+type infraIfCallbacksAdapter struct{ inst *Instance }
+
+func (a *infraIfCallbacksAdapter) HandleInfraIfStateChanged() {}
+func (a *infraIfCallbacksAdapter) HandleReceiveIcmp6Nd(ifIndex uint32, src ip6.Address, icmpType uint8, buf []byte) {}
+
+// ---------------------------------------------------------------------------
+// commissionerTransportAdapter satisfies meshcop.CommissionerTransport.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.CommissionerTransport = (*commissionerTransportAdapter)(nil)
+
+type commissionerTransportAdapter struct{ inst *Instance }
+
+func (a *commissionerTransportAdapter) SendRequest(msg *coap.Message, info coap.MessageInfo, cb func(*coap.Message, coap.MessageInfo, error)) error {
+	return nil
+}
+func (a *commissionerTransportAdapter) SendResponse(code coap.Code, req *coap.Message, info coap.MessageInfo) error {
+	return nil
+}
+func (a *commissionerTransportAdapter) RegisterHandler(uriPath string, handler func(*coap.Message, coap.MessageInfo)) {}
+func (a *commissionerTransportAdapter) UnregisterHandler(uriPath string) {}
+
+// ---------------------------------------------------------------------------
+// commissionerAddressingAdapter satisfies meshcop.CommissionerAddressing.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.CommissionerAddressing = (*commissionerAddressingAdapter)(nil)
+
+type commissionerAddressingAdapter struct{ inst *Instance }
+
+func (a *commissionerAddressingAdapter) MeshLocalPrefix() ip6.NetworkPrefix {
+	return ip6.NetworkPrefix(a.inst.meshLocalPrefix)
+}
+func (a *commissionerAddressingAdapter) RLOC16() uint16 {
+	return a.inst.mleService.Mle().RLOC16()
+}
+func (a *commissionerAddressingAdapter) LeaderRLOC16() uint16 { return 0 }
+func (a *commissionerAddressingAdapter) IsAttached() bool { return false }
+
+// ---------------------------------------------------------------------------
+// joinerTransportAdapter satisfies meshcop.JoinerTransport.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.JoinerTransport = (*joinerTransportAdapter)(nil)
+
+type joinerTransportAdapter struct{ inst *Instance }
+
+func (a *joinerTransportAdapter) Connect(addr [16]byte, port uint16, pskd string, cb func(connected bool)) error {
+	return nil
+}
+func (a *joinerTransportAdapter) Send(data []byte) error { return nil }
+func (a *joinerTransportAdapter) SetReceiveHandler(handler func(data []byte)) {}
+func (a *joinerTransportAdapter) Disconnect() {}
+func (a *joinerTransportAdapter) RegisterHandler(uri string, handler func(msg *coap.Message, info coap.MessageInfo)) {}
+func (a *joinerTransportAdapter) UnregisterHandler(uri string) {}
+func (a *joinerTransportAdapter) SendResponse(code coap.Code, req *coap.Message, info coap.MessageInfo) {}
+
+// ---------------------------------------------------------------------------
+// joinerRadioAdapter satisfies meshcop.JoinerRadio.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.JoinerRadio = (*joinerRadioAdapter)(nil)
+
+type joinerRadioAdapter struct{ inst *Instance }
+
+func (a *joinerRadioAdapter) GetIeeeEUI64() types.ExtAddress { return types.ExtAddress{} }
+func (a *joinerRadioAdapter) SetChannel(channel uint8) {}
+func (a *joinerRadioAdapter) SetPanID(panID uint16) {}
+func (a *joinerRadioAdapter) GetChannel() uint8 { return 0 }
+func (a *joinerRadioAdapter) GetPanID() uint16 { return 0 }
+
+// ---------------------------------------------------------------------------
+// joinerScannerAdapter satisfies meshcop.JoinerScanner.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.JoinerScanner = (*joinerScannerAdapter)(nil)
+
+type joinerScannerAdapter struct{ inst *Instance }
+
+func (a *joinerScannerAdapter) StartScan(callback func(result *meshcop.JoinerScanResult)) error {
+	return nil
+}
+func (a *joinerScannerAdapter) StopScan() {}
+
+// ---------------------------------------------------------------------------
+// joinerDatasetSaverAdapter satisfies meshcop.JoinerDatasetSaver.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.JoinerDatasetSaver = (*joinerDatasetSaverAdapter)(nil)
+
+type joinerDatasetSaverAdapter struct{ inst *Instance }
+
+func (a *joinerDatasetSaverAdapter) SaveDataset(info meshcop.Info) error { return nil }
+
+// ---------------------------------------------------------------------------
+// joinerRouterTransportAdapter satisfies meshcop.JoinerRouterTransport.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.JoinerRouterTransport = (*joinerRouterTransportAdapter)(nil)
+
+type joinerRouterTransportAdapter struct{ inst *Instance }
+
+func (a *joinerRouterTransportAdapter) SendMessage(msg *coap.Message, info coap.MessageInfo) error { return nil }
+func (a *joinerRouterTransportAdapter) SendRequest(msg *coap.Message, info coap.MessageInfo, cb func(*coap.Message, coap.MessageInfo, error)) error {
+	return nil
+}
+func (a *joinerRouterTransportAdapter) RegisterHandler(uri string, handler func(msg *coap.Message, info coap.MessageInfo)) {}
+func (a *joinerRouterTransportAdapter) UnregisterHandler(uri string) {}
+
+// ---------------------------------------------------------------------------
+// joinerRouterSocketAdapter satisfies meshcop.JoinerRouterUDPSocket.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.JoinerRouterUDPSocket = (*joinerRouterSocketAdapter)(nil)
+
+type joinerRouterSocketAdapter struct{ inst *Instance }
+
+func (a *joinerRouterSocketAdapter) Open(port uint16) error { return nil }
+func (a *joinerRouterSocketAdapter) Close() error { return nil }
+func (a *joinerRouterSocketAdapter) IsBound() bool { return false }
+func (a *joinerRouterSocketAdapter) Send(data []byte, peerAddr [16]byte, peerPort uint16) error { return nil }
+func (a *joinerRouterSocketAdapter) SetReceiveHandler(handler func(data []byte, peerAddr [16]byte, peerPort uint16)) {}
+
+// ---------------------------------------------------------------------------
+// joinerRouterAddressingAdapter satisfies meshcop.JoinerRouterAddressing.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.JoinerRouterAddressing = (*joinerRouterAddressingAdapter)(nil)
+
+type joinerRouterAddressingAdapter struct{ inst *Instance }
+
+func (a *joinerRouterAddressingAdapter) MeshLocalPrefix() ip6.NetworkPrefix {
+	return ip6.NetworkPrefix(a.inst.meshLocalPrefix)
+}
+func (a *joinerRouterAddressingAdapter) RLOC16() uint16 { return a.inst.mleService.Mle().RLOC16() }
+func (a *joinerRouterAddressingAdapter) IsFullThreadDevice() bool { return true }
+
+// ---------------------------------------------------------------------------
+// joinerRouterNetworkDataAdapter satisfies meshcop.JoinerRouterNetworkData.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.JoinerRouterNetworkData = (*joinerRouterNetworkDataAdapter)(nil)
+
+type joinerRouterNetworkDataAdapter struct{ inst *Instance }
+
+func (a *joinerRouterNetworkDataAdapter) IsJoiningAllowed() bool { return false }
+func (a *joinerRouterNetworkDataAdapter) FindBorderAgentRLOC() (uint16, bool) { return 0, false }
+func (a *joinerRouterNetworkDataAdapter) FindJoinerUDPPort() (uint16, bool) { return 0, false }
+
+// ---------------------------------------------------------------------------
+// joinerRouterKeyManagerAdapter satisfies meshcop.JoinerRouterKeyManager.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.JoinerRouterKeyManager = (*joinerRouterKeyManagerAdapter)(nil)
+
+type joinerRouterKeyManagerAdapter struct{ inst *Instance }
+
+func (a *joinerRouterKeyManagerAdapter) SetKEK(kek [16]byte) {}
+func (a *joinerRouterKeyManagerAdapter) GetCurrentKeySequence() uint32 { return 0 }
+
+// ---------------------------------------------------------------------------
+// joinerRouterDatasetReaderAdapter satisfies meshcop.JoinerRouterDatasetReader.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.JoinerRouterDatasetReader = (*joinerRouterDatasetReaderAdapter)(nil)
+
+type joinerRouterDatasetReaderAdapter struct{ inst *Instance }
+
+func (a *joinerRouterDatasetReaderAdapter) ReadActiveDataset() (meshcop.Dataset, error) {
+	return meshcop.Dataset{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// datasetStoreAdapter satisfies meshcop.DatasetStore for DatasetUpdater.
+// ---------------------------------------------------------------------------
+
+var _ meshcop.DatasetStore = (*datasetStoreAdapter)(nil)
+
+type datasetStoreAdapter struct{ inst *Instance }
+
+func (a *datasetStoreAdapter) ReadDataset(dt meshcop.DatasetType) (*meshcop.Dataset, error) { return nil, nil }
+func (a *datasetStoreAdapter) SaveDataset(dt meshcop.DatasetType, ds *meshcop.Dataset) error { return nil }
+func (a *datasetStoreAdapter) DeleteDataset(dt meshcop.DatasetType) error { return nil }
+
+// ---------------------------------------------------------------------------
+// utilsEnergyScannerAdapter satisfies utils.EnergyScanner.
+// ---------------------------------------------------------------------------
+
+var _ utils.EnergyScanner = (*utilsEnergyScannerAdapter)(nil)
+
+type utilsEnergyScannerAdapter struct{ inst *Instance }
+
+func (a *utilsEnergyScannerAdapter) EnergyScan(channel uint16, duration uint16) (int8, error) {
+	return -128, nil
+}
+
+// ---------------------------------------------------------------------------
+// utilsNetworkDataUpdaterAdapter satisfies utils.NetworkDataUpdater.
+// ---------------------------------------------------------------------------
+
+var _ utils.NetworkDataUpdater = (*utilsNetworkDataUpdaterAdapter)(nil)
+
+type utilsNetworkDataUpdaterAdapter struct{ inst *Instance }
+
+func (a *utilsNetworkDataUpdaterAdapter) RequestChannelChange(channel uint16) error { return nil }
+
+// ---------------------------------------------------------------------------
+// utilsRssiReaderAdapter satisfies utils.RssiReader.
+// ---------------------------------------------------------------------------
+
+var _ utils.RssiReader = (*utilsRssiReaderAdapter)(nil)
+
+type utilsRssiReaderAdapter struct{ inst *Instance }
+
+func (a *utilsRssiReaderAdapter) GetRssi() (int8, error) { return -128, nil }
+
+// ---------------------------------------------------------------------------
+// utilsIcmpSenderAdapter satisfies utils.IcmpSender.
+// ---------------------------------------------------------------------------
+
+var _ utils.IcmpSender = (*utilsIcmpSenderAdapter)(nil)
+
+type utilsIcmpSenderAdapter struct{ inst *Instance }
+
+func (a *utilsIcmpSenderAdapter) SendEchoRequest(dest, source [16]byte, payload []byte, hopLimit uint8, sequence uint16) error {
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// utilsDiagSenderAdapter satisfies utils.DiagSender.
+// ---------------------------------------------------------------------------
+
+var _ utils.DiagSender = (*utilsDiagSenderAdapter)(nil)
+
+type utilsDiagSenderAdapter struct{ inst *Instance }
+
+func (a *utilsDiagSenderAdapter) SendDiagnosticGet(dest [16]byte, tlvTypes []uint8) error { return nil }
+
+// ---------------------------------------------------------------------------
+// utilsNeighborProviderAdapter satisfies utils.NeighborProvider.
+// ---------------------------------------------------------------------------
+
+var _ utils.NeighborProvider = (*utilsNeighborProviderAdapter)(nil)
+
+type utilsNeighborProviderAdapter struct{ inst *Instance }
+
+func (a *utilsNeighborProviderAdapter) GetNeighborExtAddresses() []types.ExtAddress { return nil }
+
+// ---------------------------------------------------------------------------
+// utilsEapConfiguratorAdapter satisfies utils.EapConfigurator.
+// ---------------------------------------------------------------------------
+
+var _ utils.EapConfigurator = (*utilsEapConfiguratorAdapter)(nil)
+
+type utilsEapConfiguratorAdapter struct{ inst *Instance }
+
+func (a *utilsEapConfiguratorAdapter) ConfigureEap(extAddr types.ExtAddress) error { return nil }
+func (a *utilsEapConfiguratorAdapter) UnregisterEap(extAddr types.ExtAddress) error { return nil }
