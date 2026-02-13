@@ -27,9 +27,14 @@ import (
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/meshcop/border"
 	"github.com/hilli/gothread/meshcop/seeker"
+	"github.com/hilli/gothread/mac/datapoll"
+	"github.com/hilli/gothread/mac/links"
+	"github.com/hilli/gothread/mac/raw"
+	"github.com/hilli/gothread/mac/wakeup"
 	"github.com/hilli/gothread/meshcop/dtls"
 	"github.com/hilli/gothread/net/coaps"
 	"github.com/hilli/gothread/diags"
+	"github.com/hilli/gothread/border/dhcp6pd"
 	"github.com/hilli/gothread/border/router"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/dhcp6"
@@ -37,6 +42,8 @@ import (
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/dns"
 	"github.com/hilli/gothread/net/dnssd"
+	"github.com/hilli/gothread/net/dnssdserver"
+	"github.com/hilli/gothread/net/mdns"
 	"github.com/hilli/gothread/net/nat64"
 	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/ndagent"
@@ -44,9 +51,12 @@ import (
 	"github.com/hilli/gothread/net/sntp"
 	"github.com/hilli/gothread/net/tcp"
 	"github.com/hilli/gothread/net/srp"
+	"github.com/hilli/gothread/net/srpadv"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
+	"github.com/hilli/gothread/radio/ble"
+	"github.com/hilli/gothread/radio/trel"
 	"github.com/hilli/gothread/thread/bbr"
 	"github.com/hilli/gothread/thread/addrresolver"
 	"github.com/hilli/gothread/thread/announce"
@@ -60,6 +70,7 @@ import (
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/netdata"
+	"github.com/hilli/gothread/thread/peer"
 	"github.com/hilli/gothread/thread/routing"
 	"github.com/hilli/gothread/thread/supervision"
 	"github.com/hilli/gothread/thread/radioselector"
@@ -521,8 +532,45 @@ type Instance struct {
 	// tcpStack provides TCP socket support.
 	tcpStack *tcp.TCP
 
+
 	// meshcopSeeker discovers MeshCoP-compatible networks.
 	meshcopSeeker *seeker.Seeker
+
+	// wakeupScheduler manages wake-up TX scheduling.
+	wakeupScheduler *wakeup.Scheduler
+
+	// peerTable tracks Thread peer devices.
+	peerTable *peer.PeerTable
+
+	// linkRaw provides raw link-layer frame access.
+	linkRaw *raw.LinkRaw
+
+	// bleSecure provides BLE secure transport.
+	bleSecure *ble.BleSecure
+
+	// trelLink provides Thread Radio Encapsulation Link.
+	trelLink *trel.Link
+
+	// macLinks manages multi-radio link selection.
+	macLinks *links.Links
+
+	// dataPollHandler2 handles data poll frames (FTD/parent side).
+	dataPollHandler2 *datapoll.Handler
+
+	// dataPollSender2 manages data poll scheduling (SED/child side).
+	dataPollSender2 *datapoll.Sender
+
+	// dhcp6pdClient provides DHCPv6 Prefix Delegation.
+	dhcp6pdClient *dhcp6pd.Client
+
+	// mdnsCore provides mDNS service discovery.
+	mdnsCore *mdns.Core
+
+	// dnssdServer provides DNS-SD query server.
+	dnssdServer *dnssdserver.Server
+
+	// srpAdvProxy provides SRP Advertising Proxy.
+	srpAdvProxy *srpadv.AdvProxy
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -1082,6 +1130,73 @@ func (inst *Instance) wireModules() {
 	inst.meshcopSeeker = seeker.NewSeeker(&meshcopScannerAdapter{inst: inst})
 
 	// ---------------------------------------------------------------
+	// Wake-up Scheduler (no dependencies)
+	// ---------------------------------------------------------------
+	inst.wakeupScheduler = wakeup.NewDefaultScheduler()
+
+	// ---------------------------------------------------------------
+	// Thread Peer Table
+	// ---------------------------------------------------------------
+	inst.peerTable = peer.NewPeerTable(0)
+
+	// ---------------------------------------------------------------
+	// Raw Link-Layer Access
+	// ---------------------------------------------------------------
+	inst.linkRaw = raw.New(inst.platRadio)
+
+	// ---------------------------------------------------------------
+	// BLE Secure Transport
+	// ---------------------------------------------------------------
+	inst.bleSecure = ble.NewBleSecure(&blePlatformAdapter{inst: inst})
+
+	// ---------------------------------------------------------------
+	// TREL Link
+	// ---------------------------------------------------------------
+	inst.trelLink = trel.NewLink(&trelPlatformAdapter{inst: inst}, &trelCallbacksAdapter{inst: inst})
+
+	// ---------------------------------------------------------------
+	// Multi-Radio Link Manager
+	// ---------------------------------------------------------------
+	inst.macLinks = links.New(inst.platRadio, nil) // TREL link connected when radio.Radio adapter is added
+
+	// ---------------------------------------------------------------
+	// Data Poll Handler and Sender
+	// ---------------------------------------------------------------
+	inst.dataPollHandler2 = datapoll.NewHandler(&dataPollHandlerCallbacksAdapter{inst: inst})
+	inst.dataPollSender2 = datapoll.NewSender(
+		&dataPollSenderCallbacksAdapter{inst: inst},
+		func(d time.Duration, fn func()) func() {
+			return inst.timers.scheduleWithCancel(d, fn)
+		},
+	)
+
+	// ---------------------------------------------------------------
+	// DHCPv6 Prefix Delegation Client
+	// ---------------------------------------------------------------
+	inst.dhcp6pdClient = dhcp6pd.NewClient(
+		&dhcp6pdPlatformAdapter{inst: inst},
+		[8]byte{}, // TODO: use real extended address
+	)
+
+	// ---------------------------------------------------------------
+	// mDNS Core
+	// ---------------------------------------------------------------
+	inst.mdnsCore = mdns.NewCore(
+		&mdnsPlatformAdapter{inst: inst},
+		mdns.Config{HostName: "gothread"},
+	)
+
+	// ---------------------------------------------------------------
+	// DNS-SD Query Server
+	// ---------------------------------------------------------------
+	inst.dnssdServer = dnssdserver.NewServer(&dnssdServiceResolverAdapter{inst: inst})
+
+	// ---------------------------------------------------------------
+	// SRP Advertising Proxy
+	// ---------------------------------------------------------------
+	inst.srpAdvProxy = srpadv.NewAdvProxy(&srpAdvDnssdPlatformAdapter{inst: inst})
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1566,6 +1681,42 @@ func (inst *Instance) TcpStack() *tcp.TCP { return inst.tcpStack }
 
 // MeshcopSeeker returns the MeshCoP network seeker.
 func (inst *Instance) MeshcopSeeker() *seeker.Seeker { return inst.meshcopSeeker }
+
+// WakeupScheduler returns the wake-up TX scheduler.
+func (inst *Instance) WakeupScheduler() *wakeup.Scheduler { return inst.wakeupScheduler }
+
+// PeerTable returns the Thread peer table.
+func (inst *Instance) PeerTable() *peer.PeerTable { return inst.peerTable }
+
+// LinkRaw returns the raw link-layer accessor.
+func (inst *Instance) LinkRaw() *raw.LinkRaw { return inst.linkRaw }
+
+// BleSecure returns the BLE secure transport.
+func (inst *Instance) BleSecure() *ble.BleSecure { return inst.bleSecure }
+
+// TrelLink returns the TREL link.
+func (inst *Instance) TrelLink() *trel.Link { return inst.trelLink }
+
+// MacLinks returns the multi-radio link manager.
+func (inst *Instance) MacLinks() *links.Links { return inst.macLinks }
+
+// DataPollHandler2 returns the data poll handler (FTD).
+func (inst *Instance) DataPollHandler2() *datapoll.Handler { return inst.dataPollHandler2 }
+
+// DataPollSender2 returns the data poll sender (SED).
+func (inst *Instance) DataPollSender2() *datapoll.Sender { return inst.dataPollSender2 }
+
+// Dhcp6pdClient returns the DHCPv6 Prefix Delegation client.
+func (inst *Instance) Dhcp6pdClient() *dhcp6pd.Client { return inst.dhcp6pdClient }
+
+// MdnsCore returns the mDNS core service.
+func (inst *Instance) MdnsCore() *mdns.Core { return inst.mdnsCore }
+
+// DnssdServer returns the DNS-SD query server.
+func (inst *Instance) DnssdServer() *dnssdserver.Server { return inst.dnssdServer }
+
+// SrpAdvProxy returns the SRP Advertising Proxy.
+func (inst *Instance) SrpAdvProxy() *srpadv.AdvProxy { return inst.srpAdvProxy }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

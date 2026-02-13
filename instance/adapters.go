@@ -10,6 +10,7 @@ package instance
 // packages that cannot import each other.
 
 import (
+	"net"
 	"time"
 	"math/bits"
 
@@ -23,11 +24,18 @@ import (
 	"github.com/hilli/gothread/backbone"
 	"github.com/hilli/gothread/diags"
 	"github.com/hilli/gothread/meshcop/seeker"
+	"github.com/hilli/gothread/mac/datapoll"
 	"github.com/hilli/gothread/net/dnssd"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/ndagent"
 	"github.com/hilli/gothread/thread/mgmt"
+	"github.com/hilli/gothread/radio/ble"
+	"github.com/hilli/gothread/radio/trel"
+	"github.com/hilli/gothread/border/dhcp6pd"
 	"github.com/hilli/gothread/net/srp"
+	"github.com/hilli/gothread/net/srpadv"
+	"github.com/hilli/gothread/net/dnssdserver"
+	"github.com/hilli/gothread/net/mdns"
 	"github.com/hilli/gothread/net/dhcp6"
 	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/udp"
@@ -2051,4 +2059,155 @@ func (a *meshcopScannerAdapter) StartScan(callback func(result *seeker.DiscoverR
 
 func (a *meshcopScannerAdapter) StopScan() {
 	// TODO: Stop MeshCoP discovery scan
+}
+
+
+// ---------------------------------------------------------------------------
+// blePlatformAdapter satisfies ble.Platform.
+// ---------------------------------------------------------------------------
+
+var _ ble.Platform = (*blePlatformAdapter)(nil)
+
+type blePlatformAdapter struct {
+	inst *Instance
+}
+
+func (a *blePlatformAdapter) BleEnable() error            { return nil }
+func (a *blePlatformAdapter) BleDisable() error           { return nil }
+func (a *blePlatformAdapter) GapConnect(addr []byte) error { return nil }
+func (a *blePlatformAdapter) GapDisconnect() error        { return nil }
+func (a *blePlatformAdapter) BleSend(data []byte) error   { return nil }
+
+// ---------------------------------------------------------------------------
+// trelPlatformAdapter satisfies trel.Platform.
+// ---------------------------------------------------------------------------
+
+var _ trel.Platform = (*trelPlatformAdapter)(nil)
+
+type trelPlatformAdapter struct {
+	inst *Instance
+}
+
+func (a *trelPlatformAdapter) Enable() (uint16, error)                        { return 0, nil }
+func (a *trelPlatformAdapter) Disable() error                                 { return nil }
+func (a *trelPlatformAdapter) Send(data []byte, dst ip6.SockAddr) error       { return nil }
+func (a *trelPlatformAdapter) RegisterService(port uint16, txt []byte) error  { return nil }
+
+// ---------------------------------------------------------------------------
+// trelCallbacksAdapter satisfies radio.Callbacks for TREL link.
+// ---------------------------------------------------------------------------
+
+var _ radio.Callbacks = (*trelCallbacksAdapter)(nil)
+
+type trelCallbacksAdapter struct {
+	inst *Instance
+}
+
+func (a *trelCallbacksAdapter) HandleReceiveDone(frame *radio.Frame, err error)                    {}
+func (a *trelCallbacksAdapter) HandleTransmitStarted(frame *radio.Frame)                           {}
+func (a *trelCallbacksAdapter) HandleTransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error) {}
+func (a *trelCallbacksAdapter) HandleEnergyScanDone(maxRSSI int8)                                  {}
+
+// ---------------------------------------------------------------------------
+// dataPollHandlerCallbacksAdapter satisfies datapoll.HandlerCallbacks.
+// ---------------------------------------------------------------------------
+
+var _ datapoll.HandlerCallbacks = (*dataPollHandlerCallbacksAdapter)(nil)
+
+type dataPollHandlerCallbacksAdapter struct {
+	inst *Instance
+}
+
+func (a *dataPollHandlerCallbacksAdapter) HandleDataPoll(childShortAddr uint16) bool { return false }
+func (a *dataPollHandlerCallbacksAdapter) HandleFrameChange(childShortAddr uint16, change datapoll.FrameChange) {}
+
+// ---------------------------------------------------------------------------
+// dataPollSenderCallbacksAdapter satisfies datapoll.SenderCallbacks.
+// ---------------------------------------------------------------------------
+
+var _ datapoll.SenderCallbacks = (*dataPollSenderCallbacksAdapter)(nil)
+
+type dataPollSenderCallbacksAdapter struct {
+	inst *Instance
+}
+
+func (a *dataPollSenderCallbacksAdapter) SendDataPoll() error { return nil }
+
+// ---------------------------------------------------------------------------
+// dhcp6pdPlatformAdapter satisfies dhcp6pd.Platform.
+// ---------------------------------------------------------------------------
+
+var _ dhcp6pd.Platform = (*dhcp6pdPlatformAdapter)(nil)
+
+type dhcp6pdPlatformAdapter struct {
+	inst *Instance
+}
+
+func (a *dhcp6pdPlatformAdapter) SendDhcp6(payload []byte, dst [16]byte) error { return nil }
+func (a *dhcp6pdPlatformAdapter) SetDhcp6ListeningEnabled(enabled bool)         {}
+
+// ---------------------------------------------------------------------------
+// mdnsPlatformAdapter satisfies mdns.Platform.
+// ---------------------------------------------------------------------------
+
+var _ mdns.Platform = (*mdnsPlatformAdapter)(nil)
+
+type mdnsPlatformAdapter struct {
+	inst *Instance
+}
+
+func (a *mdnsPlatformAdapter) SendMulticast(data []byte) error                              { return nil }
+func (a *mdnsPlatformAdapter) SendUnicast(data []byte, dst net.IP, port uint16) error       { return nil }
+func (a *mdnsPlatformAdapter) SetReceiveCallback(cb func(data []byte, src net.IP, srcPort uint16)) {}
+
+// ---------------------------------------------------------------------------
+// dnssdServiceResolverAdapter satisfies dnssdserver.ServiceResolver.
+// ---------------------------------------------------------------------------
+
+var _ dnssdserver.ServiceResolver = (*dnssdServiceResolverAdapter)(nil)
+
+type dnssdServiceResolverAdapter struct {
+	inst *Instance
+}
+
+func (a *dnssdServiceResolverAdapter) BrowseServices(serviceType string) ([]string, error) {
+	return nil, nil
+}
+
+func (a *dnssdServiceResolverAdapter) ResolveService(instanceName, serviceType string) (*dnssdserver.ServiceInstanceInfo, error) {
+	return nil, nil
+}
+
+func (a *dnssdServiceResolverAdapter) ResolveHost(hostname string) (*dnssdserver.HostInfo, error) {
+	return nil, nil
+}
+
+func (a *dnssdServiceResolverAdapter) GetAllServiceTypes() ([]string, error) {
+	return nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// srpAdvDnssdPlatformAdapter satisfies srpadv.DnssdPlatform.
+// ---------------------------------------------------------------------------
+
+var _ srpadv.DnssdPlatform = (*srpAdvDnssdPlatformAdapter)(nil)
+
+type srpAdvDnssdPlatformAdapter struct {
+	inst *Instance
+}
+
+func (a *srpAdvDnssdPlatformAdapter) RegisterService(instanceName, serviceType string, port uint16, txtData []byte, subTypes []string) error {
+	return nil
+}
+
+func (a *srpAdvDnssdPlatformAdapter) UnregisterService(serviceType, instanceName string) error {
+	return nil
+}
+
+func (a *srpAdvDnssdPlatformAdapter) RegisterHost(name string, addresses [][16]byte) error {
+	return nil
+}
+
+func (a *srpAdvDnssdPlatformAdapter) UnregisterHost(name string) error {
+	return nil
 }

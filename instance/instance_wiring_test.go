@@ -4485,3 +4485,267 @@ func TestMeshcopSeekerAccessor(t *testing.T) {
 		t.Error("MeshcopSeeker() should return the same pointer")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Wake-up Scheduler wiring
+// ---------------------------------------------------------------------------
+
+func TestWakeupScheduler_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.wakeupScheduler == nil {
+		t.Fatal("wakeupScheduler should be created during wireModules")
+	}
+}
+
+func TestWakeupSchedulerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.WakeupScheduler()
+	if got == nil {
+		t.Fatal("WakeupScheduler() accessor should return non-nil")
+	}
+	if got != inst.wakeupScheduler {
+		t.Error("WakeupScheduler() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Peer Table wiring
+// ---------------------------------------------------------------------------
+
+func TestPeerTable_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.peerTable == nil {
+		t.Fatal("peerTable should be created during wireModules")
+	}
+}
+
+func TestPeerTableAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.PeerTable()
+	if got == nil {
+		t.Fatal("PeerTable() accessor should return non-nil")
+	}
+	if got != inst.peerTable {
+		t.Error("PeerTable() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Link Raw wiring
+// ---------------------------------------------------------------------------
+
+func TestLinkRaw_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.linkRaw == nil {
+		t.Fatal("linkRaw should be created during wireModules")
+	}
+}
+
+func TestLinkRawAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.LinkRaw()
+	if got == nil {
+		t.Fatal("LinkRaw() accessor should return non-nil")
+	}
+	if got != inst.linkRaw {
+		t.Error("LinkRaw() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BLE Secure wiring
+// ---------------------------------------------------------------------------
+
+func TestBleSecure_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.bleSecure == nil {
+		t.Fatal("bleSecure should be created during wireModules")
+	}
+}
+
+func TestBleSecureAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.BleSecure()
+	if got == nil {
+		t.Fatal("BleSecure() accessor should return non-nil")
+	}
+	if got != inst.bleSecure {
+		t.Error("BleSecure() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TREL Link wiring
+// ---------------------------------------------------------------------------
+
+func TestTrelLink_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.trelLink == nil {
+		t.Fatal("trelLink should be created during wireModules")
+	}
+}
+
+func TestTrelLinkAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.TrelLink()
+	if got == nil {
+		t.Fatal("TrelLink() accessor should return non-nil")
+	}
+	if got != inst.trelLink {
+		t.Error("TrelLink() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MAC Links wiring
+// ---------------------------------------------------------------------------
+
+func TestMacLinks_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.macLinks == nil {
+		t.Fatal("macLinks should be created during wireModules")
+	}
+}
+
+func TestMacLinksAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.MacLinks()
+	if got == nil {
+		t.Fatal("MacLinks() accessor should return non-nil")
+	}
+	if got != inst.macLinks {
+		t.Error("MacLinks() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Data Poll Handler (FTD) wiring
+// ---------------------------------------------------------------------------
+
+func TestDataPollHandler2_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dataPollHandler2 == nil {
+		t.Fatal("dataPollHandler2 should be created during wireModules")
+	}
+}
+
+func TestDataPollHandler2Accessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.DataPollHandler2()
+	if got == nil {
+		t.Fatal("DataPollHandler2() accessor should return non-nil")
+	}
+	if got != inst.dataPollHandler2 {
+		t.Error("DataPollHandler2() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Data Poll Sender (SED) wiring
+// ---------------------------------------------------------------------------
+
+func TestDataPollSender2_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dataPollSender2 == nil {
+		t.Fatal("dataPollSender2 should be created during wireModules")
+	}
+}
+
+func TestDataPollSender2Accessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.DataPollSender2()
+	if got == nil {
+		t.Fatal("DataPollSender2() accessor should return non-nil")
+	}
+	if got != inst.dataPollSender2 {
+		t.Error("DataPollSender2() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DHCPv6 Prefix Delegation Client wiring
+// ---------------------------------------------------------------------------
+
+func TestDhcp6pdClient_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dhcp6pdClient == nil {
+		t.Fatal("dhcp6pdClient should be created during wireModules")
+	}
+}
+
+func TestDhcp6pdClientAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.Dhcp6pdClient()
+	if got == nil {
+		t.Fatal("Dhcp6pdClient() accessor should return non-nil")
+	}
+	if got != inst.dhcp6pdClient {
+		t.Error("Dhcp6pdClient() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// mDNS Core wiring
+// ---------------------------------------------------------------------------
+
+func TestMdnsCore_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.mdnsCore == nil {
+		t.Fatal("mdnsCore should be created during wireModules")
+	}
+}
+
+func TestMdnsCoreAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.MdnsCore()
+	if got == nil {
+		t.Fatal("MdnsCore() accessor should return non-nil")
+	}
+	if got != inst.mdnsCore {
+		t.Error("MdnsCore() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DNS-SD Server wiring
+// ---------------------------------------------------------------------------
+
+func TestDnssdServer_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dnssdServer == nil {
+		t.Fatal("dnssdServer should be created during wireModules")
+	}
+}
+
+func TestDnssdServerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.DnssdServer()
+	if got == nil {
+		t.Fatal("DnssdServer() accessor should return non-nil")
+	}
+	if got != inst.dnssdServer {
+		t.Error("DnssdServer() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SRP Advertising Proxy wiring
+// ---------------------------------------------------------------------------
+
+func TestSrpAdvProxy_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.srpAdvProxy == nil {
+		t.Fatal("srpAdvProxy should be created during wireModules")
+	}
+}
+
+func TestSrpAdvProxyAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.SrpAdvProxy()
+	if got == nil {
+		t.Fatal("SrpAdvProxy() accessor should return non-nil")
+	}
+	if got != inst.srpAdvProxy {
+		t.Error("SrpAdvProxy() should return the same pointer")
+	}
+}
