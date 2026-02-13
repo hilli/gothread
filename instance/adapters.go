@@ -629,6 +629,12 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 	hdr := ip6.HeaderFromBytes(ipv6Raw)
 	remaining := payload[consumed:]
 
+	// Learn source EID→RLOC16 mapping from every successfully decompressed
+	// frame so the address resolver cache stays warm.
+	if inst.addrResolver != nil && macAddrs.SrcShort != 0 {
+		inst.addrResolver.UpdateSnoopedEntry(hdr.GetSource(), uint16(macAddrs.SrcShort), time.Now())
+	}
+
 	// Step 4: Determine if the next header is UDP.
 	// NextHeader == ProtoUDP (17) means UDP was carried inline.
 	// nhCompressed (from IPHC NH flag) means the next header was

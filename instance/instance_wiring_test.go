@@ -3163,3 +3163,95 @@ func TestFullRxPath_FragmentReassembly_ToSocket(t *testing.T) {
 		t.Errorf("SockPort = %d, want 5683", gotInfo.SockPort)
 	}
 }
+
+// TestFullRxPath_AddrResolverSnooping verifies that when a frame with a short
+// source MAC address is received and decompressed, the address resolver's
+// snooped entry cache is populated with the source EID→RLOC16 mapping.
+func TestFullRxPath_AddrResolverSnooping(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// The addrResolver is created by wireModules; verify it exists.
+	if inst.addrResolver == nil {
+		t.Fatal("addrResolver is nil after New()")
+	}
+
+	// Verify snooped cache is empty initially.
+	if n := inst.addrResolver.GetSnoopedEntryCount(); n != 0 {
+		t.Fatalf("initial snooped count = %d, want 0", n)
+	}
+
+	// Build a proper 802.15.4 data frame with a short source address.
+	// The payload is a valid 6LoWPAN IPHC + inline UDP frame.
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc}
+	appData := []byte{0xDE, 0xAD}
+
+	iphcPayload := build6LoWPANFrameInlineUDP(srcIP, dstIP, 4444, 9999, appData)
+
+	var srcRLOC16 uint16 = 0x0C01 // example RLOC16
+	ctx := &mesh.FrameContext{
+		SrcShortAddr: srcRLOC16,
+		DstExtAddr:   [8]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11},
+		UseSrcShort:  true,
+		UseDstShort:  false,
+		PanId:        0x1234,
+	}
+	framer := mesh.NewFramer()
+	macFrame, err := framer.BuildDataFrame(ctx, iphcPayload)
+	if err != nil {
+		t.Fatalf("BuildDataFrame failed: %v", err)
+	}
+
+	// Register a socket so the frame reaches the UDP dispatch path
+	// (otherwise it would be dropped after decompression).
+	s := &udp.Socket{}
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: 9999})
+
+	frame := &radio.Frame{PSDU: macFrame, Channel: 15}
+	inst.HandleReceivedFrame(frame)
+
+	// Check that the address resolver learned the mapping.
+	if n := inst.addrResolver.GetSnoopedEntryCount(); n != 1 {
+		t.Fatalf("snooped count = %d after RX, want 1", n)
+	}
+	entry := inst.addrResolver.LookUp(srcIP)
+	if entry == nil {
+		t.Fatal("LookUp(srcIP) returned nil")
+	}
+	if entry.RLOC16 != srcRLOC16 {
+		t.Errorf("snooped RLOC16 = 0x%04x, want 0x%04x", entry.RLOC16, srcRLOC16)
+	}
+}
+
+// TestFullRxPath_AddrResolverSnooping_NoShortAddr verifies that when a frame
+// has no short source MAC address (SrcShort == 0), the address resolver
+// snooped cache is NOT updated.
+func TestFullRxPath_AddrResolverSnooping_NoShortAddr(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	if inst.addrResolver == nil {
+		t.Fatal("addrResolver is nil after New()")
+	}
+
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc}
+	appData := []byte{0xCA, 0xFE}
+
+	// Use raw IPHC (no MAC header) — SrcShort stays 0.
+	s := &udp.Socket{}
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: 9999})
+
+	frame := &radio.Frame{
+		PSDU:    build6LoWPANFrameInlineUDP(srcIP, dstIP, 4444, 9999, appData),
+		Channel: 15,
+	}
+	inst.HandleReceivedFrame(frame)
+
+	if n := inst.addrResolver.GetSnoopedEntryCount(); n != 0 {
+		t.Errorf("snooped count = %d, want 0 (SrcShort was 0)", n)
+	}
+}
