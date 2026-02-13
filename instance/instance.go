@@ -31,6 +31,7 @@ import (
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/addrresolver"
+	"github.com/hilli/gothread/thread/announce"
 	"github.com/hilli/gothread/thread/key"
 	"github.com/hilli/gothread/thread/indirect"
 	"github.com/hilli/gothread/thread/link"
@@ -377,6 +378,14 @@ type Instance struct {
 	// mplForwarder handles Multicast Protocol for Low-Power and
 	// Lossy Networks (MPL) message forwarding and Trickle retransmission.
 	mplForwarder *mpl.Forwarder
+
+	// announceSender transmits MLE Announce messages on specified
+	// channels, driven by its internal timer.
+	announceSender *announce.AnnounceSender
+
+	// announceBeginServer handles incoming Announce Begin requests
+	// (TMF service) that trigger the sender.
+	announceBeginServer *announce.AnnounceBeginServer
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -764,6 +773,15 @@ func (inst *Instance) wireModules() {
 	inst.mplForwarder = mpl.NewForwarder(&mplSenderAdapter{inst: inst}, inst.rloc16)
 
 	// ---------------------------------------------------------------
+	// Announce Sender + Begin Server
+	// ---------------------------------------------------------------
+	announceTimer := &announceTimerAdapter{inst: inst}
+	inst.announceSender = announce.NewAnnounceSender(
+		&announceMsgSenderAdapter{inst: inst}, announceTimer,
+	)
+	inst.announceBeginServer = announce.NewAnnounceBeginServer(inst.announceSender)
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1128,6 +1146,12 @@ func (inst *Instance) DiagServer() *diag.Server { return inst.diagServer }
 
 // MplForwarder returns the MPL multicast forwarder instance.
 func (inst *Instance) MplForwarder() *mpl.Forwarder { return inst.mplForwarder }
+
+// AnnounceSender returns the MLE Announce sender.
+func (inst *Instance) AnnounceSender() *announce.AnnounceSender { return inst.announceSender }
+
+// AnnounceBeginServer returns the Announce Begin TMF server.
+func (inst *Instance) AnnounceBeginServer() *announce.AnnounceBeginServer { return inst.announceBeginServer }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

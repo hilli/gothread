@@ -26,6 +26,7 @@ import (
 	"github.com/hilli/gothread/thread/indirect"
 	"github.com/hilli/gothread/thread/key"
 	"github.com/hilli/gothread/thread/diag"
+	"github.com/hilli/gothread/thread/announce"
 	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
@@ -1385,4 +1386,62 @@ func (m *mplSenderAdapter) SendMulticast(payload []byte) error {
 	// This requires constructing an IPv6 multicast frame and sending
 	// it through the MAC layer to all-nodes multicast.
 	return nil
+}
+
+// --------------------------------------------------------------------------
+// announceMsgSenderAdapter — implements announce.MessageSender
+// --------------------------------------------------------------------------
+
+type announceMsgSenderAdapter struct {
+	inst *Instance
+}
+
+var _ announce.MessageSender = (*announceMsgSenderAdapter)(nil)
+
+func (a *announceMsgSenderAdapter) SendAnnounce(channel uint16, orphanAnnounce bool) error {
+	// TODO: Build and send MLE Announce message on the given channel
+	// via mleService. This requires the MLE layer to support sending
+	// Announce messages on arbitrary channels.
+	return nil
+}
+
+// --------------------------------------------------------------------------
+// announceTimerAdapter — implements announce.Timer
+// --------------------------------------------------------------------------
+
+type announceTimerAdapter struct {
+	inst    *Instance
+	cancel  func()
+	running bool
+}
+
+var _ announce.Timer = (*announceTimerAdapter)(nil)
+
+func (t *announceTimerAdapter) Start(delay uint32) {
+	// Cancel any pending timer first.
+	if t.cancel != nil {
+		t.cancel()
+	}
+	t.running = true
+	t.cancel = t.inst.timers.scheduleWithCancel(
+		time.Duration(delay)*time.Millisecond,
+		func() {
+			t.running = false
+			if t.inst.announceSender != nil {
+				t.inst.announceSender.HandleTimer()
+			}
+		},
+	)
+}
+
+func (t *announceTimerAdapter) Stop() {
+	if t.cancel != nil {
+		t.cancel()
+		t.cancel = nil
+	}
+	t.running = false
+}
+
+func (t *announceTimerAdapter) IsRunning() bool {
+	return t.running
 }

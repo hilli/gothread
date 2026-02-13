@@ -3417,3 +3417,48 @@ func TestMplForwarder_HandleTimerInPeriodicTick(t *testing.T) {
 	// mplForwarder is present.
 	inst.handlePeriodicTick()
 }
+
+// --------------------------------------------------------------------------
+// Announce Sender + Begin Server wiring tests
+// --------------------------------------------------------------------------
+
+func TestAnnounceSender_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.announceSender == nil {
+		t.Fatal("announceSender is nil after New()")
+	}
+}
+
+func TestAnnounceBeginServer_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.announceBeginServer == nil {
+		t.Fatal("announceBeginServer is nil after New()")
+	}
+}
+
+func TestAnnounceSenderAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.AnnounceSender() == nil {
+		t.Fatal("AnnounceSender() returned nil")
+	}
+	if inst.AnnounceSender() != inst.announceSender {
+		t.Fatal("AnnounceSender() returned different pointer")
+	}
+}
+
+func TestAnnounceBeginServerAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.AnnounceBeginServer() == nil {
+		t.Fatal("AnnounceBeginServer() returned nil")
+	}
+	if inst.AnnounceBeginServer() != inst.announceBeginServer {
+		t.Fatal("AnnounceBeginServer() returned different pointer")
+	}
+}
+
+func TestAnnounceSender_InitialState(t *testing.T) {
+	inst := New(Config{})
+	if inst.announceSender.IsRunning() {
+		t.Error("announceSender should not be running initially")
+	}
+}
