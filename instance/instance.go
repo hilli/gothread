@@ -28,6 +28,7 @@ import (
 	"github.com/hilli/gothread/net/dhcp6"
 	"github.com/hilli/gothread/net/icmp6"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/dns"
 	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/slaac"
 	"github.com/hilli/gothread/net/sntp"
@@ -418,6 +419,9 @@ type Instance struct {
 
 	// sntpClient provides SNTP time queries for time synchronization.
 	sntpClient *sntp.Client
+
+	// dnsClient provides DNS name resolution (A/AAAA queries, service browse/resolve).
+	dnsClient *dns.Client
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -862,6 +866,14 @@ func (inst *Instance) wireModules() {
 	})
 
 	// ---------------------------------------------------------------
+	// DNS Client
+	// ---------------------------------------------------------------
+	inst.dnsClient = dns.NewClient(func(data []byte, peerAddr ip6.Address, peerPort uint16) error {
+		// TODO: Send DNS query via UDP
+		return nil
+	})
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1256,6 +1268,9 @@ func (inst *Instance) CslScheduler() *csl.Scheduler { return inst.cslScheduler }
 
 // SntpClient returns the SNTP client.
 func (inst *Instance) SntpClient() *sntp.Client { return inst.sntpClient }
+
+// DnsClient returns the DNS client for name resolution.
+func (inst *Instance) DnsClient() *dns.Client { return inst.dnsClient }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

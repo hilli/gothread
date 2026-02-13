@@ -1299,8 +1299,28 @@ func (d *diagProviderAdapter) GetTimeout() (uint32, bool) {
 }
 
 func (d *diagProviderAdapter) GetConnectivity() (*diag.Connectivity, bool) {
-	// TODO: Compute connectivity metrics from neighbor/router tables.
-	return nil, false
+	if d.inst.routerTable == nil {
+		return nil, false
+	}
+	tlv := d.inst.GetConnectivityTLV()
+	// ParentPriority is stored in the upper 2 bits of Flags as an unsigned
+	// value 0-3 that maps to signed priorities: 0→Medium(0), 1→High(1),
+	// 2→reserved, 3→Low(-1). The diag TLV uses a signed 2-bit field.
+	pp := int8(tlv.Flags >> 6)
+	if pp == 3 {
+		pp = -1
+	}
+	return &diag.Connectivity{
+		ParentPriority:   pp,
+		LinkQuality3:     tlv.LinkQuality3,
+		LinkQuality2:     tlv.LinkQuality2,
+		LinkQuality1:     tlv.LinkQuality1,
+		LeaderCost:       tlv.LeaderCost,
+		IDSequence:       tlv.IDSequence,
+		ActiveRouters:    tlv.ActiveRouters,
+		SEDBufferSize:    tlv.SEDBufferSize,
+		SEDDatagramCount: tlv.SEDDatagramCount,
+	}, true
 }
 
 func (d *diagProviderAdapter) GetRoute64() (*diag.Route64, bool) {

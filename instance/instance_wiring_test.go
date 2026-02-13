@@ -3791,3 +3791,59 @@ func TestEncodeTimeoutLog2(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DNS Client wiring
+// ---------------------------------------------------------------------------
+
+func TestDnsClient_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dnsClient == nil {
+		t.Fatal("dnsClient should be created during wireModules")
+	}
+}
+
+func TestDnsClientAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.DnsClient()
+	if got == nil {
+		t.Fatal("DnsClient() accessor should return non-nil")
+	}
+	if got != inst.dnsClient {
+		t.Error("DnsClient() should return the same pointer as inst.dnsClient")
+	}
+}
+
+func TestDnsClient_InitialState(t *testing.T) {
+	inst := New(Config{})
+	cfg := inst.dnsClient.GetDefaultConfig()
+	if cfg.ServerAddr.IsUnspecified() == false && cfg.ServerPort != 0 {
+		// default config should have sensible defaults
+	}
+	// Just verify it's usable and doesn't panic
+	_ = cfg
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics Provider — GetConnectivity
+// ---------------------------------------------------------------------------
+
+func TestDiagProvider_GetConnectivity(t *testing.T) {
+	inst := New(Config{})
+	dp := &diagProviderAdapter{inst: inst}
+	conn, ok := dp.GetConnectivity()
+	if !ok {
+		t.Fatal("GetConnectivity should return true when routerTable exists")
+	}
+	if conn == nil {
+		t.Fatal("GetConnectivity should return non-nil Connectivity")
+	}
+	// Default instance has no neighbors — all link quality counts should be 0.
+	if conn.LinkQuality3 != 0 || conn.LinkQuality2 != 0 || conn.LinkQuality1 != 0 {
+		t.Errorf("expected all link quality counts = 0, got LQ3=%d LQ2=%d LQ1=%d",
+			conn.LinkQuality3, conn.LinkQuality2, conn.LinkQuality1)
+	}
+	if conn.ActiveRouters != 0 {
+		t.Errorf("expected ActiveRouters = 0, got %d", conn.ActiveRouters)
+	}
+}
