@@ -3713,3 +3713,81 @@ func TestDiagProvider_GetTimeout(t *testing.T) {
 	_, _ = dp.GetTimeout()
 	// Just verify it doesn't panic.
 }
+
+// ---------------------------------------------------------------------------
+// SNTP Client
+// ---------------------------------------------------------------------------
+
+func TestSntpClient_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.sntpClient == nil {
+		t.Fatal("sntpClient is nil after New()")
+	}
+}
+
+func TestSntpClientAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.SntpClient() == nil {
+		t.Fatal("SntpClient() returned nil")
+	}
+	if inst.SntpClient() != inst.sntpClient {
+		t.Fatal("SntpClient() returned different pointer")
+	}
+}
+
+func TestSntpClient_InitialState(t *testing.T) {
+	inst := New(Config{})
+	if inst.sntpClient.GetPendingQueryCount() != 0 {
+		t.Error("SNTP client should have no pending queries initially")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics Provider — GetChildTable and GetRoute64
+// ---------------------------------------------------------------------------
+
+func TestDiagProvider_GetChildTable_Empty(t *testing.T) {
+	inst := New(Config{})
+	dp := &diagProviderAdapter{inst: inst}
+	entries, ok := dp.GetChildTable()
+	if ok {
+		t.Error("should return false with no valid children")
+	}
+	if entries != nil {
+		t.Error("entries should be nil with no children")
+	}
+}
+
+func TestDiagProvider_GetRoute64(t *testing.T) {
+	inst := New(Config{})
+	dp := &diagProviderAdapter{inst: inst}
+	route, ok := dp.GetRoute64()
+	// With no allocated routers, result may still be valid but empty.
+	if ok && route == nil {
+		t.Error("GetRoute64 returned ok=true but nil route")
+	}
+}
+
+func TestEncodeTimeoutLog2(t *testing.T) {
+	tests := []struct {
+		input    uint32
+		expected uint8
+	}{
+		{0, 0},
+		{1, 0},
+		{2, 1},
+		{3, 2},
+		{4, 2},
+		{5, 3},
+		{8, 3},
+		{240, 8},
+		{256, 8},
+		{257, 9},
+	}
+	for _, tt := range tests {
+		got := encodeTimeoutLog2(tt.input)
+		if got != tt.expected {
+			t.Errorf("encodeTimeoutLog2(%d) = %d, want %d", tt.input, got, tt.expected)
+		}
+	}
+}

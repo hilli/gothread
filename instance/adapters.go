@@ -11,6 +11,7 @@ package instance
 
 import (
 	"time"
+	"math/bits"
 
 	"github.com/hilli/gothread/encoding"
 	macframe "github.com/hilli/gothread/mac/frame"
@@ -1303,8 +1304,54 @@ func (d *diagProviderAdapter) GetConnectivity() (*diag.Connectivity, bool) {
 }
 
 func (d *diagProviderAdapter) GetRoute64() (*diag.Route64, bool) {
-	// TODO: Build Route64 from routing table.
-	return nil, false
+	if d.inst.routerTable == nil {
+		return nil, false
+	}
+	rt := d.inst.routerTable
+	routerIDSet := rt.GetRouterIDSet()
+
+	result := &diag.Route64{
+		IDSequence:  rt.GetRouterIDSequence(),
+		RouterIDSet: routerIDSet,
+	}
+
+	selfRouterID := mle.RouterIDFromRLOC16(d.inst.rloc16)
+
+	for id := uint8(0); id <= mle.MaxRouterID; id++ {
+		if !routerIDSet.Contains(id) {
+			continue
+		}
+		router := rt.FindRouterByID(id)
+		if router == nil {
+			result.RouteData = append(result.RouteData, diag.Route64Entry{RouterID: id})
+			continue
+		}
+
+		var lqIn, lqOut, cost uint8
+		if id == selfRouterID {
+			lqIn, lqOut, cost = 0, 0, 0
+		} else {
+			lqIn = router.LinkInfo.GetQualityIn()
+			lqOut = router.LinkQualityOut
+			if router.NextHop == routing.InvalidRouterID {
+				cost = 0
+			} else {
+				cost = router.Cost
+				if cost > 15 {
+					cost = 15
+				}
+			}
+		}
+
+		result.RouteData = append(result.RouteData, diag.Route64Entry{
+			RouterID:       id,
+			LinkQualityOut: lqOut,
+			LinkQualityIn:  lqIn,
+			RouteCost:      cost,
+		})
+	}
+
+	return result, true
 }
 
 func (d *diagProviderAdapter) GetLeaderData() ([]byte, bool) {
@@ -1366,8 +1413,39 @@ func (d *diagProviderAdapter) GetSupplyVoltage() (uint16, bool) {
 }
 
 func (d *diagProviderAdapter) GetChildTable() ([]diag.ChildTableEntry, bool) {
-	// TODO: Build child table from routing.ChildTable.
-	return nil, false
+	if d.inst.childTable == nil {
+		return nil, false
+	}
+	children := d.inst.childTable.Children(routing.FilterValid)
+	if len(children) == 0 {
+		return nil, false
+	}
+	entries := make([]diag.ChildTableEntry, 0, len(children))
+	for _, child := range children {
+		entries = append(entries, diag.ChildTableEntry{
+			Timeout:       encodeTimeoutLog2(child.Timeout),
+			ChildID:       mle.ChildIDFromRLOC16(child.RLOC16),
+			LinkQualityIn: child.LinkInfo.GetQualityIn(),
+			Mode:          child.Mode.Get(),
+		})
+	}
+	return entries, true
+}
+
+// encodeTimeoutLog2 encodes a timeout in seconds as a 5-bit log2 exponent.
+// The Thread spec defines the wire format as 2^exponent seconds.
+func encodeTimeoutLog2(timeoutSec uint32) uint8 {
+	if timeoutSec <= 1 {
+		return 0
+	}
+	exp := uint8(bits.Len32(timeoutSec) - 1)
+	if timeoutSec > (1 << exp) {
+		exp++
+	}
+	if exp > 31 {
+		exp = 31
+	}
+	return exp
 }
 
 func (d *diagProviderAdapter) GetChannelPages() ([]byte, bool) {

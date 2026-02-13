@@ -30,6 +30,7 @@ import (
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/slaac"
+	"github.com/hilli/gothread/net/sntp"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
@@ -414,6 +415,9 @@ type Instance struct {
 
 	// cslScheduler manages CSL (Coordinated Sampled Listening) TX scheduling.
 	cslScheduler *csl.Scheduler
+
+	// sntpClient provides SNTP time queries for time synchronization.
+	sntpClient *sntp.Client
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -850,6 +854,14 @@ func (inst *Instance) wireModules() {
 	inst.cslScheduler = csl.NewScheduler()
 
 	// ---------------------------------------------------------------
+	// SNTP Client
+	// ---------------------------------------------------------------
+	inst.sntpClient = sntp.NewClient(func(payload []byte, messageInfo *ip6.MessageInfo) error {
+		// TODO: Send SNTP query via UDP
+		return nil
+	})
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1242,6 +1254,9 @@ func (inst *Instance) MacFilter() *filter.Filter { return inst.macFilter }
 // CslScheduler returns the CSL TX scheduler.
 func (inst *Instance) CslScheduler() *csl.Scheduler { return inst.cslScheduler }
 
+// SntpClient returns the SNTP client.
+func (inst *Instance) SntpClient() *sntp.Client { return inst.sntpClient }
+
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }
 
@@ -1547,6 +1562,11 @@ func (inst *Instance) handlePeriodicTick() {
 	if inst.timeSyncService != nil {
 		// Pass current time in ms (modulo uint32 is fine for relative deltas).
 		inst.timeSyncService.HandleTimer(uint32(time.Now().UnixMilli()))
+	}
+
+	// SNTP Client — check for timed-out queries and retransmissions.
+	if inst.sntpClient != nil {
+		inst.sntpClient.HandleTimer()
 	}
 	// Re-arm for the next tick.
 	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
