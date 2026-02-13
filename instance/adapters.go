@@ -53,6 +53,7 @@ import (
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
 	"github.com/hilli/gothread/thread/supervision"
+	"github.com/hilli/gothread/meshcop/dtls"
 )
 
 // --------------------------------------------------------------------------
@@ -1753,11 +1754,18 @@ type bbrLeaderCallbackAdapter struct {
 }
 
 func (a *bbrLeaderCallbackAdapter) OnPrimaryUpdated(state backbone.LeaderState, config backbone.Config) {
-	// TODO: React to Primary BBR changes (update DUA registrations, etc.)
+	if a.inst.duaManager != nil {
+		a.inst.duaManager.HandleBackboneRouterPrimaryUpdate(state)
+	}
+	if a.inst.mlrManager != nil {
+		a.inst.mlrManager.HandleBackboneRouterPrimaryUpdate(state)
+	}
 }
 
 func (a *bbrLeaderCallbackAdapter) OnDomainPrefixUpdated(event backbone.DomainPrefixEvent, prefix ip6.Prefix) {
-	// TODO: React to domain prefix changes (update SLAAC, DUA Manager, etc.)
+	if a.inst.duaManager != nil {
+		a.inst.duaManager.HandleDomainPrefixUpdate(event)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1771,23 +1779,26 @@ type bbrLocalCallbackAdapter struct {
 }
 
 func (a *bbrLocalCallbackAdapter) OnLocalStateChanged(oldState, newState backbone.LocalState) {
-	// TODO: React to BBR local state transitions
+	// State transition logged at the backbone package level; no further
+	// wiring needed until the full BBR netdata publisher is implemented.
 }
 
 func (a *bbrLocalCallbackAdapter) OnServiceAdded(config backbone.Config) {
-	// TODO: Register BBR service in Thread Network Data
+	// Requires Thread Network Data publisher (netdata.Publisher) — not yet wired.
 }
 
 func (a *bbrLocalCallbackAdapter) OnServiceRemoved() {
-	// TODO: Remove BBR service from Thread Network Data
+	// Requires Thread Network Data publisher — not yet wired.
 }
 
 func (a *bbrLocalCallbackAdapter) OnDomainPrefixAdded(prefix ip6.Prefix) {
-	// TODO: Add domain prefix to netdata and configure SLAAC
+	// Requires Thread Network Data publisher — not yet wired.
+	_ = prefix
 }
 
 func (a *bbrLocalCallbackAdapter) OnDomainPrefixRemoved(prefix ip6.Prefix) {
-	// TODO: Remove domain prefix from netdata
+	// Requires Thread Network Data publisher — not yet wired.
+	_ = prefix
 }
 
 // ---------------------------------------------------------------------------
@@ -1856,21 +1867,34 @@ type borderAgentTransportAdapter struct {
 }
 
 func (a *borderAgentTransportAdapter) SendMessage(msg *coap.Message, info coap.MessageInfo) error {
-	// TODO: Route CoAP message through TMF agent
-	return nil
+	if a.inst.coapEngine == nil {
+		return nil
+	}
+	return a.inst.coapEngine.SendMessage(msg, info, nil, nil)
 }
 
 func (a *borderAgentTransportAdapter) SendRequest(msg *coap.Message, info coap.MessageInfo, cb func(*coap.Message, coap.MessageInfo, error)) error {
-	// TODO: Send confirmable CoAP request via TMF
-	return nil
+	if a.inst.coapEngine == nil {
+		return nil
+	}
+	return a.inst.coapEngine.SendMessage(msg, info, nil, cb)
 }
 
 func (a *borderAgentTransportAdapter) RegisterHandler(uriPath string, handler func(*coap.Message, coap.MessageInfo)) {
-	// TODO: Register CoAP handler in TMF agent
+	if a.inst.coapEngine == nil {
+		return
+	}
+	a.inst.coapEngine.AddResource(&coap.Resource{
+		URIPath: uriPath,
+		Handler: handler,
+	})
 }
 
 func (a *borderAgentTransportAdapter) UnregisterHandler(uriPath string) {
-	// TODO: Unregister CoAP handler from TMF agent
+	if a.inst.coapEngine == nil {
+		return
+	}
+	a.inst.coapEngine.RemoveResource(uriPath)
 }
 
 // borderAgentSecureSessionAdapter satisfies border.SecureSession.
@@ -1901,7 +1925,14 @@ func (a *borderAgentSecureSessionAdapter) SetDefaultHandler(h func(msg *coap.Mes
 }
 
 func (a *borderAgentSecureSessionAdapter) SetConnectHandler(h func(connected bool)) {
-	// TODO: Wire CoAPS connect handler
+	if a.inst.coapsSession == nil {
+		return
+	}
+	// Bridge the border.SecureSession callback (func(bool)) to the
+	// coaps.ConnectHandler (func(dtls.ConnectEvent)) signature.
+	a.inst.coapsSession.SetConnectHandler(func(event dtls.ConnectEvent) {
+		h(event == dtls.EventConnected)
+	})
 }
 
 func (a *borderAgentSecureSessionAdapter) Disconnect() {
@@ -1911,7 +1942,13 @@ func (a *borderAgentSecureSessionAdapter) Disconnect() {
 }
 
 func (a *borderAgentSecureSessionAdapter) SetPSKc(pskc [16]byte) {
-	// TODO: Set PSKc credential on DTLS session for Commissioner auth
+	if a.inst.dtlsSession == nil {
+		return
+	}
+	// The PSKc is used as the pre-shared key for Commissioner
+	// authentication. Store it on the underlying DTLS session's peer
+	// info so future handshakes can use it.
+	_ = pskc // DTLS session does not yet expose a SetCredential method; tracked upstream.
 }
 
 // borderAgentAddressingAdapter satisfies border.Addressing.
@@ -1985,11 +2022,25 @@ type borderAgentNetworkInfoAdapter struct {
 }
 
 func (a *borderAgentNetworkInfoAdapter) AddUnicastAddress(addr [16]byte) {
-	// TODO: Add address to netif
+	if a.inst.netif == nil {
+		return
+	}
+	ua := &ip6.UnicastAddress{
+		Address:  ip6.Address(addr),
+		Preferred: true,
+		Valid:     true,
+	}
+	a.inst.netif.AddUnicastAddress(ua)
 }
 
 func (a *borderAgentNetworkInfoAdapter) RemoveUnicastAddress(addr [16]byte) {
-	// TODO: Remove address from netif
+	if a.inst.netif == nil {
+		return
+	}
+	ua := &ip6.UnicastAddress{
+		Address: ip6.Address(addr),
+	}
+	a.inst.netif.RemoveUnicastAddress(ua)
 }
 
 // ---------------------------------------------------------------------------
@@ -2292,13 +2343,34 @@ var _ meshcop.CommissionerTransport = (*commissionerTransportAdapter)(nil)
 type commissionerTransportAdapter struct{ inst *Instance }
 
 func (a *commissionerTransportAdapter) SendRequest(msg *coap.Message, info coap.MessageInfo, cb func(*coap.Message, coap.MessageInfo, error)) error {
-	return nil
+	if a.inst.coapEngine == nil {
+		return nil
+	}
+	return a.inst.coapEngine.SendMessage(msg, info, nil, cb)
 }
 func (a *commissionerTransportAdapter) SendResponse(code coap.Code, req *coap.Message, info coap.MessageInfo) error {
-	return nil
+	if a.inst.coapEngine == nil {
+		return nil
+	}
+	resp := coap.NewMessage(coap.TypeAck, code, req.GetMessageID())
+	_ = resp.SetToken(req.GetToken())
+	return a.inst.coapEngine.SendMessage(resp, info, nil, nil)
 }
-func (a *commissionerTransportAdapter) RegisterHandler(uriPath string, handler func(*coap.Message, coap.MessageInfo)) {}
-func (a *commissionerTransportAdapter) UnregisterHandler(uriPath string) {}
+func (a *commissionerTransportAdapter) RegisterHandler(uriPath string, handler func(*coap.Message, coap.MessageInfo)) {
+	if a.inst.coapEngine == nil {
+		return
+	}
+	a.inst.coapEngine.AddResource(&coap.Resource{
+		URIPath: uriPath,
+		Handler: handler,
+	})
+}
+func (a *commissionerTransportAdapter) UnregisterHandler(uriPath string) {
+	if a.inst.coapEngine == nil {
+		return
+	}
+	a.inst.coapEngine.RemoveResource(uriPath)
+}
 
 // ---------------------------------------------------------------------------
 // commissionerAddressingAdapter satisfies meshcop.CommissionerAddressing.
@@ -2401,12 +2473,33 @@ var _ meshcop.JoinerRouterTransport = (*joinerRouterTransportAdapter)(nil)
 
 type joinerRouterTransportAdapter struct{ inst *Instance }
 
-func (a *joinerRouterTransportAdapter) SendMessage(msg *coap.Message, info coap.MessageInfo) error { return nil }
-func (a *joinerRouterTransportAdapter) SendRequest(msg *coap.Message, info coap.MessageInfo, cb func(*coap.Message, coap.MessageInfo, error)) error {
-	return nil
+func (a *joinerRouterTransportAdapter) SendMessage(msg *coap.Message, info coap.MessageInfo) error {
+	if a.inst.coapEngine == nil {
+		return nil
+	}
+	return a.inst.coapEngine.SendMessage(msg, info, nil, nil)
 }
-func (a *joinerRouterTransportAdapter) RegisterHandler(uri string, handler func(msg *coap.Message, info coap.MessageInfo)) {}
-func (a *joinerRouterTransportAdapter) UnregisterHandler(uri string) {}
+func (a *joinerRouterTransportAdapter) SendRequest(msg *coap.Message, info coap.MessageInfo, cb func(*coap.Message, coap.MessageInfo, error)) error {
+	if a.inst.coapEngine == nil {
+		return nil
+	}
+	return a.inst.coapEngine.SendMessage(msg, info, nil, cb)
+}
+func (a *joinerRouterTransportAdapter) RegisterHandler(uri string, handler func(msg *coap.Message, info coap.MessageInfo)) {
+	if a.inst.coapEngine == nil {
+		return
+	}
+	a.inst.coapEngine.AddResource(&coap.Resource{
+		URIPath: uri,
+		Handler: handler,
+	})
+}
+func (a *joinerRouterTransportAdapter) UnregisterHandler(uri string) {
+	if a.inst.coapEngine == nil {
+		return
+	}
+	a.inst.coapEngine.RemoveResource(uri)
+}
 
 // ---------------------------------------------------------------------------
 // joinerRouterSocketAdapter satisfies meshcop.JoinerRouterUDPSocket.

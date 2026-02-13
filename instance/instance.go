@@ -1402,6 +1402,57 @@ func (inst *Instance) wireModules() {
 	})
 	_ = inst.udpManager.AddReceiver(coapReceiver)
 
+	// DHCPv6 client receiver intercepts UDP messages on port 546.
+	dhcp6ClientReceiver := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		if mi.SockPort != dhcp6.ClientPort {
+			return false
+		}
+		_ = inst.dhcp6Client.HandleReceive(payload, mi)
+		return true
+	})
+	_ = inst.udpManager.AddReceiver(dhcp6ClientReceiver)
+
+	// DHCPv6 server receiver intercepts UDP messages on port 547.
+	dhcp6ServerReceiver := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		if mi.SockPort != dhcp6.ServerPort {
+			return false
+		}
+		_ = inst.dhcp6Server.HandleReceive(payload, mi)
+		return true
+	})
+	_ = inst.udpManager.AddReceiver(dhcp6ServerReceiver)
+
+	// SNTP receiver intercepts UDP responses from NTP servers (port 123).
+	sntpReceiver := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		if mi.PeerPort != sntp.NtpPort {
+			return false
+		}
+		_ = inst.sntpClient.HandleResponse(payload, mi)
+		return true
+	})
+	_ = inst.udpManager.AddReceiver(sntpReceiver)
+
+	// DNS client receiver intercepts UDP responses from DNS servers (port 53).
+	dnsReceiver := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		if mi.PeerPort != dns.DefaultServerPort {
+			return false
+		}
+		inst.dnsClient.HandleUDPReceive(payload, mi.PeerAddr, mi.PeerPort)
+		return true
+	})
+	_ = inst.udpManager.AddReceiver(dnsReceiver)
+
+	// SRP server receiver intercepts UDP messages on the SRP listen port.
+	srpReceiver := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		port := inst.srpServer.GetPort()
+		if port == 0 || mi.SockPort != port {
+			return false
+		}
+		inst.srpServer.ProcessMessage(payload, ip6.SockAddr{Address: mi.PeerAddr, Port: mi.PeerPort})
+		return true
+	})
+	_ = inst.udpManager.AddReceiver(srpReceiver)
+
 	// Push initial MAC keys to the SubMac/radio.
 	inst.updateMacKeys()
 }
