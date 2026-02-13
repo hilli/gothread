@@ -19,6 +19,7 @@ import (
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
@@ -1365,4 +1366,23 @@ func (d *diagProviderAdapter) GetThreadStackVersion() (string, bool) {
 func (d *diagProviderAdapter) GetMleCounters() (*diag.MleCounters, bool) {
 	// TODO: Return MLE counters when MLE service tracks them.
 	return nil, false
+}
+
+// --------------------------------------------------------------------------
+// mplSenderAdapter — implements mpl.MessageSender
+// --------------------------------------------------------------------------
+
+// mplSenderAdapter adapts the Instance to the mpl.MessageSender interface.
+type mplSenderAdapter struct {
+	inst *Instance
+}
+
+// Compile-time check that mplSenderAdapter implements mpl.MessageSender.
+var _ mpl.MessageSender = (*mplSenderAdapter)(nil)
+
+func (m *mplSenderAdapter) SendMulticast(payload []byte) error {
+	// TODO: Implement multicast TX via the mesh forwarder.
+	// This requires constructing an IPv6 multicast frame and sending
+	// it through the MAC layer to all-nodes multicast.
+	return nil
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/icmp6"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/slaac"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
@@ -372,6 +373,10 @@ type Instance struct {
 
 	// diagServer handles incoming network diagnostic requests.
 	diagServer *diag.Server
+
+	// mplForwarder handles Multicast Protocol for Low-Power and
+	// Lossy Networks (MPL) message forwarding and Trickle retransmission.
+	mplForwarder *mpl.Forwarder
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -754,6 +759,11 @@ func (inst *Instance) wireModules() {
 	inst.diagServer = diag.NewServer(&diagProviderAdapter{inst: inst})
 
 	// ---------------------------------------------------------------
+	// MPL Forwarder
+	// ---------------------------------------------------------------
+	inst.mplForwarder = mpl.NewForwarder(&mplSenderAdapter{inst: inst}, inst.rloc16)
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1116,6 +1126,9 @@ func (inst *Instance) DiagClient() *diag.Client { return inst.diagClient }
 // DiagServer returns the network diagnostics server.
 func (inst *Instance) DiagServer() *diag.Server { return inst.diagServer }
 
+// MplForwarder returns the MPL multicast forwarder instance.
+func (inst *Instance) MplForwarder() *mpl.Forwarder { return inst.mplForwarder }
+
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }
 
@@ -1411,6 +1424,11 @@ func (inst *Instance) handlePeriodicTick() {
 		inst.netdataPublisher.AdvanceTime(1000) // 1 second in ms
 	}
 
+
+	// MPL Forwarder — process Trickle retransmission and seed expiry.
+	if inst.mplForwarder != nil {
+		inst.mplForwarder.HandleTimer()
+	}
 	// Re-arm for the next tick.
 	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
 }

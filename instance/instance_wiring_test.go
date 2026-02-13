@@ -3379,3 +3379,41 @@ func TestDiagProviderAdapter_BasicValues(t *testing.T) {
 	}
 	_ = mode
 }
+
+// --------------------------------------------------------------------------
+// MPL Forwarder wiring tests
+// --------------------------------------------------------------------------
+
+func TestMplForwarder_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.mplForwarder == nil {
+		t.Fatal("mplForwarder is nil after New()")
+	}
+}
+
+func TestMplForwarderAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.MplForwarder() == nil {
+		t.Fatal("MplForwarder() returned nil")
+	}
+	if inst.MplForwarder() != inst.mplForwarder {
+		t.Fatal("MplForwarder() returned different pointer")
+	}
+}
+
+func TestMplForwarder_InitialState(t *testing.T) {
+	inst := New(Config{})
+	if inst.mplForwarder.GetSeedEntryCount() != 0 {
+		t.Errorf("seed count = %d, want 0", inst.mplForwarder.GetSeedEntryCount())
+	}
+	if inst.mplForwarder.GetBufferedMessageCount() != 0 {
+		t.Errorf("buffered count = %d, want 0", inst.mplForwarder.GetBufferedMessageCount())
+	}
+}
+
+func TestMplForwarder_HandleTimerInPeriodicTick(t *testing.T) {
+	inst := New(Config{})
+	// Verify that handlePeriodicTick runs without panic when
+	// mplForwarder is present.
+	inst.handlePeriodicTick()
+}
