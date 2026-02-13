@@ -26,6 +26,8 @@ import (
 	"github.com/hilli/gothread/backbone"
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/meshcop/border"
+	"github.com/hilli/gothread/meshcop/dtls"
+	"github.com/hilli/gothread/net/coaps"
 	"github.com/hilli/gothread/border/router"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/dhcp6"
@@ -479,6 +481,15 @@ type Instance struct {
 
 	// dnssdModule provides DNS-SD service registration and discovery.
 	dnssdModule *dnssd.Module
+
+	// dtlsSession is the DTLS session for secure Commissioner communication.
+	dtlsSession *dtls.Session
+
+	// coapsSession wraps the DTLS session for secure CoAP messaging.
+	coapsSession *coaps.Session
+
+	// borderAgent manages the MeshCoP Border Agent (Commissioner proxy).
+	borderAgent *border.Agent
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -987,6 +998,24 @@ func (inst *Instance) wireModules() {
 	inst.dnssdModule = dnssd.NewModule(&dnssdPlatformAdapter{inst: inst})
 
 	// ---------------------------------------------------------------
+	// DTLS Session + CoAPS Session
+	// ---------------------------------------------------------------
+	inst.dtlsSession = dtls.NewSession()
+	inst.coapsSession = coaps.NewSession(inst.dtlsSession)
+
+	// ---------------------------------------------------------------
+	// Border Agent (MeshCoP)
+	// ---------------------------------------------------------------
+	inst.borderAgent = border.NewAgent(
+		&borderAgentTransportAdapter{inst: inst},
+		&borderAgentSecureSessionAdapter{inst: inst},
+		&borderAgentAddressingAdapter{inst: inst},
+		&borderAgentKeyManagerAdapter{inst: inst},
+		&borderAgentDatasetReaderAdapter{inst: inst},
+		&borderAgentNetworkInfoAdapter{inst: inst},
+	)
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1435,6 +1464,15 @@ func (inst *Instance) BorderTxtData() *border.TxtData { return inst.borderTxtDat
 
 // DnssdModule returns the DNS-SD service discovery module.
 func (inst *Instance) DnssdModule() *dnssd.Module { return inst.dnssdModule }
+
+// DtlsSession returns the DTLS session.
+func (inst *Instance) DtlsSession() *dtls.Session { return inst.dtlsSession }
+
+// CoapsSession returns the CoAP-over-DTLS session.
+func (inst *Instance) CoapsSession() *coaps.Session { return inst.coapsSession }
+
+// BorderAgent returns the MeshCoP Border Agent.
+func (inst *Instance) BorderAgent() *border.Agent { return inst.borderAgent }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

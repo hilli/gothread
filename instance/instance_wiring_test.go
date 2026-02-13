@@ -4221,3 +4221,69 @@ func TestDnssdModuleAccessor(t *testing.T) {
 		t.Error("DnssdModule() should return the same pointer")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DTLS Session wiring
+// ---------------------------------------------------------------------------
+
+func TestDtlsSession_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dtlsSession == nil {
+		t.Fatal("dtlsSession should be created during wireModules")
+	}
+}
+
+func TestDtlsSessionAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.DtlsSession()
+	if got == nil {
+		t.Fatal("DtlsSession() accessor should return non-nil")
+	}
+	if got != inst.dtlsSession {
+		t.Error("DtlsSession() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CoAPS Session wiring
+// ---------------------------------------------------------------------------
+
+func TestCoapsSession_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.coapsSession == nil {
+		t.Fatal("coapsSession should be created during wireModules")
+	}
+}
+
+func TestCoapsSessionAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.CoapsSession()
+	if got == nil {
+		t.Fatal("CoapsSession() accessor should return non-nil")
+	}
+	if got != inst.coapsSession {
+		t.Error("CoapsSession() should return the same pointer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Border Agent wiring
+// ---------------------------------------------------------------------------
+
+func TestBorderAgent_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.borderAgent == nil {
+		t.Fatal("borderAgent should be created during wireModules")
+	}
+}
+
+func TestBorderAgentAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.BorderAgent()
+	if got == nil {
+		t.Fatal("BorderAgent() accessor should return non-nil")
+	}
+	if got != inst.borderAgent {
+		t.Error("BorderAgent() should return the same pointer")
+	}
+}

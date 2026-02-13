@@ -18,6 +18,7 @@ import (
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/meshcop"
+	"github.com/hilli/gothread/meshcop/border"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/backbone"
 	"github.com/hilli/gothread/net/dnssd"
@@ -1829,3 +1830,151 @@ func (a *dnssdPlatformAdapter) StartResolve(instanceName, serviceType string) er
 func (a *dnssdPlatformAdapter) StopResolve(instanceName, serviceType string) error { return nil }
 func (a *dnssdPlatformAdapter) StartResolveHost(hostName string) error { return nil }
 func (a *dnssdPlatformAdapter) StopResolveHost(hostName string) error { return nil }
+
+// ---------------------------------------------------------------------------
+// Border Agent adapters
+// ---------------------------------------------------------------------------
+
+// borderAgentTransportAdapter satisfies border.Transport.
+var _ border.Transport = (*borderAgentTransportAdapter)(nil)
+
+type borderAgentTransportAdapter struct {
+	inst *Instance
+}
+
+func (a *borderAgentTransportAdapter) SendMessage(msg *coap.Message, info coap.MessageInfo) error {
+	// TODO: Route CoAP message through TMF agent
+	return nil
+}
+
+func (a *borderAgentTransportAdapter) SendRequest(msg *coap.Message, info coap.MessageInfo, cb func(*coap.Message, coap.MessageInfo, error)) error {
+	// TODO: Send confirmable CoAP request via TMF
+	return nil
+}
+
+func (a *borderAgentTransportAdapter) RegisterHandler(uriPath string, handler func(*coap.Message, coap.MessageInfo)) {
+	// TODO: Register CoAP handler in TMF agent
+}
+
+func (a *borderAgentTransportAdapter) UnregisterHandler(uriPath string) {
+	// TODO: Unregister CoAP handler from TMF agent
+}
+
+// borderAgentSecureSessionAdapter satisfies border.SecureSession.
+var _ border.SecureSession = (*borderAgentSecureSessionAdapter)(nil)
+
+type borderAgentSecureSessionAdapter struct {
+	inst *Instance
+}
+
+func (a *borderAgentSecureSessionAdapter) IsConnected() bool {
+	if a.inst.coapsSession == nil {
+		return false
+	}
+	return a.inst.coapsSession.IsConnected()
+}
+
+func (a *borderAgentSecureSessionAdapter) SendMessage(msg *coap.Message) error {
+	if a.inst.coapsSession == nil {
+		return nil
+	}
+	return a.inst.coapsSession.SendMessageNoTrack(msg)
+}
+
+func (a *borderAgentSecureSessionAdapter) SetDefaultHandler(h func(msg *coap.Message, info coap.MessageInfo)) {
+	if a.inst.coapsSession != nil {
+		a.inst.coapsSession.SetDefaultHandler(h)
+	}
+}
+
+func (a *borderAgentSecureSessionAdapter) SetConnectHandler(h func(connected bool)) {
+	// TODO: Wire CoAPS connect handler
+}
+
+func (a *borderAgentSecureSessionAdapter) Disconnect() {
+	if a.inst.coapsSession != nil {
+		a.inst.coapsSession.Disconnect()
+	}
+}
+
+func (a *borderAgentSecureSessionAdapter) SetPSKc(pskc [16]byte) {
+	// TODO: Set PSKc credential on DTLS session for Commissioner auth
+}
+
+// borderAgentAddressingAdapter satisfies border.Addressing.
+var _ border.Addressing = (*borderAgentAddressingAdapter)(nil)
+
+type borderAgentAddressingAdapter struct {
+	inst *Instance
+}
+
+func (a *borderAgentAddressingAdapter) MeshLocalPrefix() ip6.NetworkPrefix {
+	return a.inst.meshLocalPrefix
+}
+
+func (a *borderAgentAddressingAdapter) RLOC16() uint16 {
+	return a.inst.rloc16
+}
+
+func (a *borderAgentAddressingAdapter) LeaderALOC16() uint16 {
+	return 0xfc00 // Leader ALOC is always 0xfc00
+}
+
+func (a *borderAgentAddressingAdapter) IsAttached() bool {
+	if a.inst.mleService == nil {
+		return false
+	}
+	return a.inst.mleService.Mle().IsAttached()
+}
+
+// borderAgentKeyManagerAdapter satisfies border.KeyManager.
+var _ border.KeyManager = (*borderAgentKeyManagerAdapter)(nil)
+
+type borderAgentKeyManagerAdapter struct {
+	inst *Instance
+}
+
+func (a *borderAgentKeyManagerAdapter) GetPSKc() [16]byte {
+	if a.inst.keyManager != nil {
+		return a.inst.keyManager.GetPskc()
+	}
+	return [16]byte{}
+}
+
+// borderAgentDatasetReaderAdapter satisfies border.DatasetReader.
+var _ border.DatasetReader = (*borderAgentDatasetReaderAdapter)(nil)
+
+type borderAgentDatasetReaderAdapter struct {
+	inst *Instance
+}
+
+func (a *borderAgentDatasetReaderAdapter) ReadActiveDataset() (meshcop.Dataset, error) {
+	ds, err := a.inst.activeDataset.Read()
+	if err != nil || ds == nil {
+		return meshcop.Dataset{}, err
+	}
+	return *ds, nil
+}
+
+func (a *borderAgentDatasetReaderAdapter) ReadPendingDataset() (meshcop.Dataset, error) {
+	ds, err := a.inst.pendingDataset.Read()
+	if err != nil || ds == nil {
+		return meshcop.Dataset{}, err
+	}
+	return *ds, nil
+}
+
+// borderAgentNetworkInfoAdapter satisfies border.NetworkInfo.
+var _ border.NetworkInfo = (*borderAgentNetworkInfoAdapter)(nil)
+
+type borderAgentNetworkInfoAdapter struct {
+	inst *Instance
+}
+
+func (a *borderAgentNetworkInfoAdapter) AddUnicastAddress(addr [16]byte) {
+	// TODO: Add address to netif
+}
+
+func (a *borderAgentNetworkInfoAdapter) RemoveUnicastAddress(addr [16]byte) {
+	// TODO: Remove address from netif
+}
