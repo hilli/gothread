@@ -33,6 +33,7 @@ import (
 	"github.com/hilli/gothread/thread/key"
 	"github.com/hilli/gothread/thread/indirect"
 	"github.com/hilli/gothread/thread/link"
+	"github.com/hilli/gothread/thread/linkmetrics"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/netdata"
@@ -356,6 +357,14 @@ type Instance struct {
 	// addrResolver resolves EID-to-RLOC16 mappings for IPv6 destination
 	// addresses using Address Query/Notification TMF messages.
 	addrResolver *addrresolver.Resolver
+
+	// linkMetricsSubject handles incoming Link Metrics Management
+	// and Enhanced-ACK Based Probing requests from peers.
+	linkMetricsSubject *linkmetrics.Subject
+
+	// linkMetricsInitiator sends Link Metrics queries and processes
+	// the corresponding reports from peers.
+	linkMetricsInitiator *linkmetrics.Initiator
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -726,6 +735,12 @@ func (inst *Instance) wireModules() {
 	}
 
 	// ---------------------------------------------------------------
+	// Link Metrics Subject + Initiator
+	// ---------------------------------------------------------------
+	inst.linkMetricsSubject = linkmetrics.NewSubject()
+	inst.linkMetricsInitiator = linkmetrics.NewInitiator()
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1075,6 +1090,12 @@ func (inst *Instance) NetdataPublisher() *netdata.Publisher { return inst.netdat
 
 // SlaacManager returns the SLAAC address manager.
 func (inst *Instance) SlaacManager() *slaac.Manager { return inst.slaacManager }
+
+// LinkMetricsSubject returns the Link Metrics Subject instance.
+func (inst *Instance) LinkMetricsSubject() *linkmetrics.Subject { return inst.linkMetricsSubject }
+
+// LinkMetricsInitiator returns the Link Metrics Initiator instance.
+func (inst *Instance) LinkMetricsInitiator() *linkmetrics.Initiator { return inst.linkMetricsInitiator }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

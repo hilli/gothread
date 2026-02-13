@@ -3255,3 +3255,41 @@ func TestFullRxPath_AddrResolverSnooping_NoShortAddr(t *testing.T) {
 		t.Errorf("snooped count = %d, want 0 (SrcShort was 0)", n)
 	}
 }
+
+// --------------------------------------------------------------------------
+// Link Metrics wiring tests
+// --------------------------------------------------------------------------
+
+func TestLinkMetricsSubject_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.linkMetricsSubject == nil {
+		t.Fatal("linkMetricsSubject is nil after New()")
+	}
+}
+
+func TestLinkMetricsInitiator_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.linkMetricsInitiator == nil {
+		t.Fatal("linkMetricsInitiator is nil after New()")
+	}
+}
+
+func TestLinkMetricsSubjectAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.LinkMetricsSubject() == nil {
+		t.Fatal("LinkMetricsSubject() returned nil")
+	}
+	if inst.LinkMetricsSubject() != inst.linkMetricsSubject {
+		t.Fatal("LinkMetricsSubject() returned different pointer")
+	}
+}
+
+func TestLinkMetricsInitiatorAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.LinkMetricsInitiator() == nil {
+		t.Fatal("LinkMetricsInitiator() returned nil")
+	}
+	if inst.LinkMetricsInitiator() != inst.linkMetricsInitiator {
+		t.Fatal("LinkMetricsInitiator() returned different pointer")
+	}
+}
