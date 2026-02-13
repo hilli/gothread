@@ -3493,3 +3493,61 @@ func TestDiscoveryScanner_InitialState(t *testing.T) {
 		t.Error("scanner should have no results initially")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DHCPv6 Client + Server
+// ---------------------------------------------------------------------------
+
+func TestDhcp6Client_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dhcp6Client == nil {
+		t.Fatal("dhcp6Client is nil after New()")
+	}
+}
+
+func TestDhcp6ClientAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.Dhcp6Client() == nil {
+		t.Fatal("Dhcp6Client() returned nil")
+	}
+	if inst.Dhcp6Client() != inst.dhcp6Client {
+		t.Fatal("Dhcp6Client() returned different pointer")
+	}
+}
+
+func TestDhcp6Client_InitialState(t *testing.T) {
+	inst := New(Config{})
+	if inst.dhcp6Client.IsRunning() {
+		t.Error("dhcp6 client should not be running initially")
+	}
+	if len(inst.dhcp6Client.GetIdentityAssociations()) != 0 {
+		t.Error("dhcp6 client should have no identity associations initially")
+	}
+}
+
+func TestDhcp6Server_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.dhcp6Server == nil {
+		t.Fatal("dhcp6Server is nil after New()")
+	}
+}
+
+func TestDhcp6ServerAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.Dhcp6Server() == nil {
+		t.Fatal("Dhcp6Server() returned nil")
+	}
+	if inst.Dhcp6Server() != inst.dhcp6Server {
+		t.Fatal("Dhcp6Server() returned different pointer")
+	}
+}
+
+func TestDhcp6Server_InitialState(t *testing.T) {
+	inst := New(Config{})
+	if inst.dhcp6Server.IsRunning() {
+		t.Error("dhcp6 server should not be running initially")
+	}
+	if len(inst.dhcp6Server.GetPrefixAgents()) != 0 {
+		t.Error("dhcp6 server should have no prefix agents initially")
+	}
+}

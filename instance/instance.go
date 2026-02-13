@@ -23,6 +23,7 @@ import (
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/coap"
+	"github.com/hilli/gothread/net/dhcp6"
 	"github.com/hilli/gothread/net/icmp6"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/mpl"
@@ -391,6 +392,12 @@ type Instance struct {
 	// discoveryScanner performs Thread network discovery scans
 	// across specified channels.
 	discoveryScanner *discover.Scanner
+
+	// dhcp6Client manages DHCPv6 address solicitation from a DHCPv6 server.
+	dhcp6Client *dhcp6.Client
+
+	// dhcp6Server provides DHCPv6 address assignment to clients.
+	dhcp6Server *dhcp6.Server
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -795,6 +802,18 @@ func (inst *Instance) wireModules() {
 	)
 
 	// ---------------------------------------------------------------
+	// DHCPv6 Client + Server
+	// ---------------------------------------------------------------
+	inst.dhcp6Client = dhcp6.NewClient(
+		&dhcp6ClientTransportAdapter{inst: inst},
+		types.ExtAddress(inst.mac.GetExtAddress()),
+	)
+	inst.dhcp6Server = dhcp6.NewServer(
+		&dhcp6ServerTransportAdapter{inst: inst},
+		types.ExtAddress(inst.mac.GetExtAddress()),
+	)
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1168,6 +1187,12 @@ func (inst *Instance) AnnounceBeginServer() *announce.AnnounceBeginServer { retu
 
 // DiscoveryScanner returns the Thread network discovery scanner.
 func (inst *Instance) DiscoveryScanner() *discover.Scanner { return inst.discoveryScanner }
+
+// Dhcp6Client returns the DHCPv6 client.
+func (inst *Instance) Dhcp6Client() *dhcp6.Client { return inst.dhcp6Client }
+
+// Dhcp6Server returns the DHCPv6 server.
+func (inst *Instance) Dhcp6Server() *dhcp6.Server { return inst.dhcp6Server }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

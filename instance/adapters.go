@@ -19,6 +19,7 @@ import (
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/dhcp6"
 	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
@@ -1501,4 +1502,34 @@ func (t *discoverTimerAdapter) Stop() {
 
 func (t *discoverTimerAdapter) IsRunning() bool {
 	return t.running
+}
+
+// ---------------------------------------------------------------------------
+// DHCPv6 Client Transport Adapter
+// ---------------------------------------------------------------------------
+
+var _ dhcp6.ClientTransport = (*dhcp6ClientTransportAdapter)(nil)
+
+type dhcp6ClientTransportAdapter struct {
+	inst *Instance
+}
+
+func (a *dhcp6ClientTransportAdapter) Send(payload []byte, dst ip6.Address, dstPort uint16) error {
+	// TODO: Send DHCPv6 client message via UDP
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// DHCPv6 Server Transport Adapter
+// ---------------------------------------------------------------------------
+
+var _ dhcp6.ServerTransport = (*dhcp6ServerTransportAdapter)(nil)
+
+type dhcp6ServerTransportAdapter struct {
+	inst *Instance
+}
+
+func (a *dhcp6ServerTransportAdapter) Send(payload []byte, dst ip6.Address, dstPort uint16) error {
+	// TODO: Send DHCPv6 server response via UDP
+	return nil
 }
