@@ -24,6 +24,7 @@ import (
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/indirect"
 	"github.com/hilli/gothread/thread/key"
+	"github.com/hilli/gothread/thread/diag"
 	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
@@ -1242,4 +1243,126 @@ func (t *macPollTransmitter) TransmitDataPoll() error {
 		t.inst.mac.RequestDataPollTransmission()
 	}
 	return nil
+}
+
+// --------------------------------------------------------------------------
+// diagProviderAdapter — implements diag.DiagnosticProvider
+// --------------------------------------------------------------------------
+
+// diagProviderAdapter adapts the Instance to the diag.DiagnosticProvider
+// interface, returning diagnostic data from the various instance subsystems.
+type diagProviderAdapter struct {
+	inst *Instance
+}
+
+// Compile-time check that diagProviderAdapter implements DiagnosticProvider.
+var _ diag.DiagnosticProvider = (*diagProviderAdapter)(nil)
+
+func (d *diagProviderAdapter) GetExtMacAddress() ([]byte, bool) {
+	if d.inst.mac == nil {
+		return nil, false
+	}
+	ext := d.inst.mac.GetExtAddress()
+	return ext[:], true
+}
+
+func (d *diagProviderAdapter) GetAddress16() (uint16, bool) {
+	return d.inst.rloc16, true
+}
+
+func (d *diagProviderAdapter) GetMode() (uint8, bool) {
+	if d.inst.mleService == nil {
+		return 0, false
+	}
+	return d.inst.mleService.Mle().GetDeviceMode().Get(), true
+}
+
+func (d *diagProviderAdapter) GetTimeout() (uint32, bool) {
+	// TODO: Return SED polling timeout when available.
+	return 0, false
+}
+
+func (d *diagProviderAdapter) GetConnectivity() (*diag.Connectivity, bool) {
+	// TODO: Compute connectivity metrics from neighbor/router tables.
+	return nil, false
+}
+
+func (d *diagProviderAdapter) GetRoute64() (*diag.Route64, bool) {
+	// TODO: Build Route64 from routing table.
+	return nil, false
+}
+
+func (d *diagProviderAdapter) GetLeaderData() ([]byte, bool) {
+	// TODO: Serialize leader data when available.
+	return nil, false
+}
+
+func (d *diagProviderAdapter) GetNetworkData() ([]byte, bool) {
+	if d.inst.netdataLeader == nil {
+		return nil, false
+	}
+	data := d.inst.netdataLeader.Data()
+	if len(data) == 0 {
+		return nil, false
+	}
+	return data, true
+}
+
+func (d *diagProviderAdapter) GetIPv6AddressList() ([]byte, bool) {
+	// TODO: Collect all unicast addresses from netif.
+	return nil, false
+}
+
+func (d *diagProviderAdapter) GetMacCounters() (*diag.MacCounters, bool) {
+	// TODO: Return MAC counters when the MAC layer tracks them.
+	return nil, false
+}
+
+func (d *diagProviderAdapter) GetBatteryLevel() (uint8, bool) {
+	return 0, false // platform-specific, not implemented
+}
+
+func (d *diagProviderAdapter) GetSupplyVoltage() (uint16, bool) {
+	return 0, false // platform-specific, not implemented
+}
+
+func (d *diagProviderAdapter) GetChildTable() ([]diag.ChildTableEntry, bool) {
+	// TODO: Build child table from routing.ChildTable.
+	return nil, false
+}
+
+func (d *diagProviderAdapter) GetChannelPages() ([]byte, bool) {
+	// Thread 1.3 uses channel page 0 (2.4 GHz).
+	return []byte{0}, true
+}
+
+func (d *diagProviderAdapter) GetMaxChildTimeout() (uint32, bool) {
+	// TODO: Return max child timeout when child table is populated.
+	return 0, false
+}
+
+func (d *diagProviderAdapter) GetVersion() (uint16, bool) {
+	// Thread 1.3 = version 4.
+	return 4, true
+}
+
+func (d *diagProviderAdapter) GetVendorName() (string, bool) {
+	return "GoThread", true
+}
+
+func (d *diagProviderAdapter) GetVendorModel() (string, bool) {
+	return "GoThread", true
+}
+
+func (d *diagProviderAdapter) GetVendorSWVersion() (string, bool) {
+	return "0.1.0", true
+}
+
+func (d *diagProviderAdapter) GetThreadStackVersion() (string, bool) {
+	return "GoThread", true
+}
+
+func (d *diagProviderAdapter) GetMleCounters() (*diag.MleCounters, bool) {
+	// TODO: Return MLE counters when MLE service tracks them.
+	return nil, false
 }

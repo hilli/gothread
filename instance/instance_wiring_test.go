@@ -3293,3 +3293,89 @@ func TestLinkMetricsInitiatorAccessor(t *testing.T) {
 		t.Fatal("LinkMetricsInitiator() returned different pointer")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Network Diagnostics wiring tests
+// --------------------------------------------------------------------------
+
+func TestDiagClient_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.diagClient == nil {
+		t.Fatal("diagClient is nil after New()")
+	}
+}
+
+func TestDiagServer_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.diagServer == nil {
+		t.Fatal("diagServer is nil after New()")
+	}
+}
+
+func TestDiagClientAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.DiagClient() == nil {
+		t.Fatal("DiagClient() returned nil")
+	}
+	if inst.DiagClient() != inst.diagClient {
+		t.Fatal("DiagClient() returned different pointer")
+	}
+}
+
+func TestDiagServerAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.DiagServer() == nil {
+		t.Fatal("DiagServer() returned nil")
+	}
+	if inst.DiagServer() != inst.diagServer {
+		t.Fatal("DiagServer() returned different pointer")
+	}
+}
+
+func TestDiagProviderAdapter_BasicValues(t *testing.T) {
+	inst := New(Config{})
+
+	// The provider adapter is internal, but we can test it through
+	// the server's HandleGetRequest which calls the provider methods.
+	// For now, verify that the adapter implements the interface and
+	// returns sensible values for the always-available fields.
+	adapter := &diagProviderAdapter{inst: inst}
+
+	// ExtMacAddress
+	extMac, ok := adapter.GetExtMacAddress()
+	if !ok || len(extMac) != 8 {
+		t.Errorf("GetExtMacAddress() = (%v, %v), want 8-byte slice", extMac, ok)
+	}
+
+	// Address16
+	addr16, ok := adapter.GetAddress16()
+	if !ok {
+		t.Error("GetAddress16() returned false")
+	}
+	_ = addr16
+
+	// Version
+	ver, ok := adapter.GetVersion()
+	if !ok || ver != 4 {
+		t.Errorf("GetVersion() = (%d, %v), want (4, true)", ver, ok)
+	}
+
+	// VendorName
+	name, ok := adapter.GetVendorName()
+	if !ok || name != "GoThread" {
+		t.Errorf("GetVendorName() = (%q, %v), want (\"GoThread\", true)", name, ok)
+	}
+
+	// ChannelPages
+	pages, ok := adapter.GetChannelPages()
+	if !ok || len(pages) != 1 || pages[0] != 0 {
+		t.Errorf("GetChannelPages() = (%v, %v), want ([0], true)", pages, ok)
+	}
+
+	// Mode should be available since mleService is created
+	mode, ok := adapter.GetMode()
+	if !ok {
+		t.Error("GetMode() returned false")
+	}
+	_ = mode
+}
