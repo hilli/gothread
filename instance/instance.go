@@ -23,14 +23,17 @@ import (
 	"github.com/hilli/gothread/mac/csl"
 	"github.com/hilli/gothread/mac/filter"
 	"github.com/hilli/gothread/mac/types"
+	"github.com/hilli/gothread/backbone"
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/meshcop/border"
+	"github.com/hilli/gothread/border/router"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/dhcp6"
 	"github.com/hilli/gothread/net/icmp6"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/dns"
 	"github.com/hilli/gothread/net/mpl"
+	"github.com/hilli/gothread/net/ndagent"
 	"github.com/hilli/gothread/net/slaac"
 	"github.com/hilli/gothread/net/sntp"
 	"github.com/hilli/gothread/net/srp"
@@ -436,6 +439,33 @@ type Instance struct {
 
 	// ephemeralKeyMgr manages ephemeral key commissioning sessions.
 	ephemeralKeyMgr *border.EphemeralKeyManager
+
+	// ndAgent proxies ND (Neighbor Discovery) for Thread addresses on the backbone link.
+	ndAgent *ndagent.Agent
+
+	// bbrLeader tracks the Primary Backbone Router in the Thread network.
+	bbrLeader *backbone.Leader
+
+	// bbrLocal manages this device's Backbone Router registration.
+	bbrLocal *backbone.Local
+
+	// bbrManager coordinates DUA, MLR, and multicast on the backbone.
+	bbrManager *backbone.Manager
+
+	// borderTracker tracks border agent connection state.
+	borderTracker *border.Tracker
+
+	// routingManager manages border router RA/prefix operations.
+	routingManager *router.RoutingManager
+
+	// omrPrefixMgr manages OMR (Off-Mesh Routable) prefix selection.
+	omrPrefixMgr *router.OmrPrefixManager
+
+	// onLinkPrefixMgr manages on-link prefix deprecation and discovery.
+	onLinkPrefixMgr *router.OnLinkPrefixManager
+
+	// routePublisher publishes external routes into Thread Network Data.
+	routePublisher *router.RoutePublisher
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -904,6 +934,30 @@ func (inst *Instance) wireModules() {
 	inst.ephemeralKeyMgr = border.NewEphemeralKeyManager()
 
 	// ---------------------------------------------------------------
+	// ND Proxy Agent
+	// ---------------------------------------------------------------
+	inst.ndAgent = ndagent.NewAgent(
+		&ndAgentAddressCheckerAdapter{inst: inst},
+		&ndAgentNaSenderAdapter{inst: inst},
+	)
+
+	// ---------------------------------------------------------------
+	// Backbone Router subsystem
+	// ---------------------------------------------------------------
+	inst.bbrLeader = backbone.NewLeader(&bbrLeaderCallbackAdapter{inst: inst})
+	inst.bbrLocal = backbone.NewLocal(&bbrLocalCallbackAdapter{inst: inst})
+	inst.bbrManager = backbone.NewManager(&bbrManagerDepsAdapter{inst: inst})
+	inst.borderTracker = border.NewTracker()
+
+	// ---------------------------------------------------------------
+	// Border Router / Routing Manager subsystem
+	// ---------------------------------------------------------------
+	inst.routingManager = router.NewRoutingManager()
+	inst.omrPrefixMgr = router.NewOmrPrefixManager()
+	inst.onLinkPrefixMgr = router.NewOnLinkPrefixManager()
+	inst.routePublisher = router.NewRoutePublisher()
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1313,6 +1367,33 @@ func (inst *Instance) SrpClient() *srp.Client { return inst.srpClient }
 
 // EphemeralKeyManager returns the ephemeral key manager.
 func (inst *Instance) EphemeralKeyManager() *border.EphemeralKeyManager { return inst.ephemeralKeyMgr }
+
+// NdAgent returns the ND proxy agent.
+func (inst *Instance) NdAgent() *ndagent.Agent { return inst.ndAgent }
+
+// BbrLeader returns the backbone router leader tracker.
+func (inst *Instance) BbrLeader() *backbone.Leader { return inst.bbrLeader }
+
+// BbrLocal returns the backbone router local manager.
+func (inst *Instance) BbrLocal() *backbone.Local { return inst.bbrLocal }
+
+// BbrManager returns the backbone router manager.
+func (inst *Instance) BbrManager() *backbone.Manager { return inst.bbrManager }
+
+// BorderTracker returns the border agent connection tracker.
+func (inst *Instance) BorderTracker() *border.Tracker { return inst.borderTracker }
+
+// RoutingManager returns the border router routing manager.
+func (inst *Instance) RoutingManager() *router.RoutingManager { return inst.routingManager }
+
+// OmrPrefixManager returns the OMR prefix manager.
+func (inst *Instance) OmrPrefixManager() *router.OmrPrefixManager { return inst.omrPrefixMgr }
+
+// OnLinkPrefixManager returns the on-link prefix manager.
+func (inst *Instance) OnLinkPrefixManager() *router.OnLinkPrefixManager { return inst.onLinkPrefixMgr }
+
+// RoutePublisher returns the external route publisher.
+func (inst *Instance) RoutePublisher() *router.RoutePublisher { return inst.routePublisher }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }

@@ -3935,3 +3935,201 @@ func TestEphemeralKeyMgrAccessor(t *testing.T) {
 		t.Error("EphemeralKeyManager() should return the same pointer as inst.ephemeralKeyMgr")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ND Agent wiring
+// ---------------------------------------------------------------------------
+
+func TestNdAgent_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.ndAgent == nil {
+		t.Fatal("ndAgent should be created during wireModules")
+	}
+}
+
+func TestNdAgentAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.NdAgent()
+	if got == nil {
+		t.Fatal("NdAgent() accessor should return non-nil")
+	}
+	if got != inst.ndAgent {
+		t.Error("NdAgent() should return the same pointer as inst.ndAgent")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Backbone Router Leader wiring
+// ---------------------------------------------------------------------------
+
+func TestBbrLeader_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.bbrLeader == nil {
+		t.Fatal("bbrLeader should be created during wireModules")
+	}
+}
+
+func TestBbrLeaderAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.BbrLeader()
+	if got == nil {
+		t.Fatal("BbrLeader() accessor should return non-nil")
+	}
+	if got != inst.bbrLeader {
+		t.Error("BbrLeader() should return the same pointer as inst.bbrLeader")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Backbone Router Local wiring
+// ---------------------------------------------------------------------------
+
+func TestBbrLocal_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.bbrLocal == nil {
+		t.Fatal("bbrLocal should be created during wireModules")
+	}
+}
+
+func TestBbrLocalAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.BbrLocal()
+	if got == nil {
+		t.Fatal("BbrLocal() accessor should return non-nil")
+	}
+	if got != inst.bbrLocal {
+		t.Error("BbrLocal() should return the same pointer as inst.bbrLocal")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Backbone Router Manager wiring
+// ---------------------------------------------------------------------------
+
+func TestBbrManager_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.bbrManager == nil {
+		t.Fatal("bbrManager should be created during wireModules")
+	}
+}
+
+func TestBbrManagerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.BbrManager()
+	if got == nil {
+		t.Fatal("BbrManager() accessor should return non-nil")
+	}
+	if got != inst.bbrManager {
+		t.Error("BbrManager() should return the same pointer as inst.bbrManager")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Border Tracker wiring
+// ---------------------------------------------------------------------------
+
+func TestBorderTracker_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.borderTracker == nil {
+		t.Fatal("borderTracker should be created during wireModules")
+	}
+}
+
+func TestBorderTrackerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.BorderTracker()
+	if got == nil {
+		t.Fatal("BorderTracker() accessor should return non-nil")
+	}
+	if got != inst.borderTracker {
+		t.Error("BorderTracker() should return the same pointer as inst.borderTracker")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Routing Manager wiring
+// ---------------------------------------------------------------------------
+
+func TestRoutingManager_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.routingManager == nil {
+		t.Fatal("routingManager should be created during wireModules")
+	}
+}
+
+func TestRoutingManagerAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.RoutingManager()
+	if got == nil {
+		t.Fatal("RoutingManager() accessor should return non-nil")
+	}
+	if got != inst.routingManager {
+		t.Error("RoutingManager() should return the same pointer as inst.routingManager")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OMR Prefix Manager wiring
+// ---------------------------------------------------------------------------
+
+func TestOmrPrefixMgr_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.omrPrefixMgr == nil {
+		t.Fatal("omrPrefixMgr should be created during wireModules")
+	}
+}
+
+func TestOmrPrefixMgrAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.OmrPrefixManager()
+	if got == nil {
+		t.Fatal("OmrPrefixManager() accessor should return non-nil")
+	}
+	if got != inst.omrPrefixMgr {
+		t.Error("OmrPrefixManager() should return the same pointer as inst.omrPrefixMgr")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// On-Link Prefix Manager wiring
+// ---------------------------------------------------------------------------
+
+func TestOnLinkPrefixMgr_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.onLinkPrefixMgr == nil {
+		t.Fatal("onLinkPrefixMgr should be created during wireModules")
+	}
+}
+
+func TestOnLinkPrefixMgrAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.OnLinkPrefixManager()
+	if got == nil {
+		t.Fatal("OnLinkPrefixManager() accessor should return non-nil")
+	}
+	if got != inst.onLinkPrefixMgr {
+		t.Error("OnLinkPrefixManager() should return the same pointer as inst.onLinkPrefixMgr")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Route Publisher wiring
+// ---------------------------------------------------------------------------
+
+func TestRoutePublisher_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.routePublisher == nil {
+		t.Fatal("routePublisher should be created during wireModules")
+	}
+}
+
+func TestRoutePublisherAccessor(t *testing.T) {
+	inst := New(Config{})
+	got := inst.RoutePublisher()
+	if got == nil {
+		t.Fatal("RoutePublisher() accessor should return non-nil")
+	}
+	if got != inst.routePublisher {
+		t.Error("RoutePublisher() should return the same pointer as inst.routePublisher")
+	}
+}

@@ -19,7 +19,9 @@ import (
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/coap"
+	"github.com/hilli/gothread/backbone"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/ndagent"
 	"github.com/hilli/gothread/net/srp"
 	"github.com/hilli/gothread/net/dhcp6"
 	"github.com/hilli/gothread/net/mpl"
@@ -1693,4 +1695,113 @@ type srpUDPSenderAdapter struct {
 func (s *srpUDPSenderAdapter) Send(data []byte, dest ip6.SockAddr) error {
 	// TODO: Send SRP update via UDP to dest
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// ndAgentAddressCheckerAdapter satisfies ndagent.AddressChecker.
+// ---------------------------------------------------------------------------
+
+var _ ndagent.AddressChecker = (*ndAgentAddressCheckerAdapter)(nil)
+
+type ndAgentAddressCheckerAdapter struct {
+	inst *Instance
+}
+
+func (a *ndAgentAddressCheckerAdapter) HasAddress(addr ip6.Address) bool {
+	// TODO: Check if addr belongs to a Thread device we should proxy for.
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// ndAgentNaSenderAdapter satisfies ndagent.NaSender.
+// ---------------------------------------------------------------------------
+
+var _ ndagent.NaSender = (*ndAgentNaSenderAdapter)(nil)
+
+type ndAgentNaSenderAdapter struct {
+	inst *Instance
+}
+
+func (a *ndAgentNaSenderAdapter) SendNeighborAdvert(target ip6.Address, destination ip6.Address) error {
+	// TODO: Send NA on infrastructure link
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// bbrLeaderCallbackAdapter satisfies backbone.LeaderCallbacks.
+// ---------------------------------------------------------------------------
+
+var _ backbone.LeaderCallbacks = (*bbrLeaderCallbackAdapter)(nil)
+
+type bbrLeaderCallbackAdapter struct {
+	inst *Instance
+}
+
+func (a *bbrLeaderCallbackAdapter) OnPrimaryUpdated(state backbone.LeaderState, config backbone.Config) {
+	// TODO: React to Primary BBR changes (update DUA registrations, etc.)
+}
+
+func (a *bbrLeaderCallbackAdapter) OnDomainPrefixUpdated(event backbone.DomainPrefixEvent, prefix ip6.Prefix) {
+	// TODO: React to domain prefix changes (update SLAAC, DUA Manager, etc.)
+}
+
+// ---------------------------------------------------------------------------
+// bbrLocalCallbackAdapter satisfies backbone.LocalCallbacks.
+// ---------------------------------------------------------------------------
+
+var _ backbone.LocalCallbacks = (*bbrLocalCallbackAdapter)(nil)
+
+type bbrLocalCallbackAdapter struct {
+	inst *Instance
+}
+
+func (a *bbrLocalCallbackAdapter) OnLocalStateChanged(oldState, newState backbone.LocalState) {
+	// TODO: React to BBR local state transitions
+}
+
+func (a *bbrLocalCallbackAdapter) OnServiceAdded(config backbone.Config) {
+	// TODO: Register BBR service in Thread Network Data
+}
+
+func (a *bbrLocalCallbackAdapter) OnServiceRemoved() {
+	// TODO: Remove BBR service from Thread Network Data
+}
+
+func (a *bbrLocalCallbackAdapter) OnDomainPrefixAdded(prefix ip6.Prefix) {
+	// TODO: Add domain prefix to netdata and configure SLAAC
+}
+
+func (a *bbrLocalCallbackAdapter) OnDomainPrefixRemoved(prefix ip6.Prefix) {
+	// TODO: Remove domain prefix from netdata
+}
+
+// ---------------------------------------------------------------------------
+// bbrManagerDepsAdapter satisfies backbone.ManagerDeps.
+// ---------------------------------------------------------------------------
+
+var _ backbone.ManagerDeps = (*bbrManagerDepsAdapter)(nil)
+
+type bbrManagerDepsAdapter struct {
+	inst *Instance
+}
+
+func (a *bbrManagerDepsAdapter) GetRloc16() uint16 {
+	return a.inst.rloc16
+}
+
+func (a *bbrManagerDepsAdapter) IsPrimary() bool {
+	if a.inst.bbrLeader == nil {
+		return false
+	}
+	return a.inst.bbrLeader.HasPrimary() && a.inst.bbrLeader.GetServer16() == a.inst.rloc16
+}
+
+func (a *bbrManagerDepsAdapter) GetDomainPrefix() (ip6.Prefix, bool) {
+	if a.inst.bbrLeader == nil {
+		return ip6.Prefix{}, false
+	}
+	if !a.inst.bbrLeader.HasDomainPrefix() {
+		return ip6.Prefix{}, false
+	}
+	return a.inst.bbrLeader.GetDomainPrefix(), true
 }
