@@ -14,6 +14,7 @@ import (
 	"github.com/hilli/gothread/mac"
 	macframe "github.com/hilli/gothread/mac/frame"
 	"github.com/hilli/gothread/mac/submac"
+	"github.com/hilli/gothread/mac/filter"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/icmp6"
@@ -28,6 +29,7 @@ import (
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
 	"github.com/hilli/gothread/thread/supervision"
+	"github.com/hilli/gothread/thread/timesync"
 )
 
 // --------------------------------------------------------------------------
@@ -3550,4 +3552,164 @@ func TestDhcp6Server_InitialState(t *testing.T) {
 	if len(inst.dhcp6Server.GetPrefixAgents()) != 0 {
 		t.Error("dhcp6 server should have no prefix agents initially")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Time Sync Service
+// ---------------------------------------------------------------------------
+
+func TestTimeSyncService_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.timeSyncService == nil {
+		t.Fatal("timeSyncService is nil after New()")
+	}
+}
+
+func TestTimeSyncServiceAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.TimeSyncService() == nil {
+		t.Fatal("TimeSyncService() returned nil")
+	}
+	if inst.TimeSyncService() != inst.timeSyncService {
+		t.Fatal("TimeSyncService() returned different pointer")
+	}
+}
+
+func TestTimeSyncService_InitialState(t *testing.T) {
+	inst := New(Config{})
+	if inst.timeSyncService.GetStatus() != timesync.StatusUnsynchronized {
+		t.Error("time sync should be unsynchronized initially")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Radio Selector
+// ---------------------------------------------------------------------------
+
+func TestRadioSelector_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.radioSelector == nil {
+		t.Fatal("radioSelector is nil after New()")
+	}
+}
+
+func TestRadioSelectorAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.RadioSelector() == nil {
+		t.Fatal("RadioSelector() returned nil")
+	}
+	if inst.RadioSelector() != inst.radioSelector {
+		t.Fatal("RadioSelector() returned different pointer")
+	}
+}
+
+func TestRadioSelector_InitialState(t *testing.T) {
+	inst := New(Config{})
+	prefs := inst.radioSelector.GetPreferences()
+	if len(prefs) != 0 {
+		t.Error("radio selector should have no preferences initially")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MAC Filter
+// ---------------------------------------------------------------------------
+
+func TestMacFilter_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.macFilter == nil {
+		t.Fatal("macFilter is nil after New()")
+	}
+}
+
+func TestMacFilterAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.MacFilter() == nil {
+		t.Fatal("MacFilter() returned nil")
+	}
+	if inst.MacFilter() != inst.macFilter {
+		t.Fatal("MacFilter() returned different pointer")
+	}
+}
+
+func TestMacFilter_InitialState(t *testing.T) {
+	inst := New(Config{})
+	if inst.macFilter.GetMode() != filter.ModeDisabled {
+		t.Error("MAC filter should be disabled initially")
+	}
+	if len(inst.macFilter.GetEntries()) != 0 {
+		t.Error("MAC filter should have no entries initially")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CSL Scheduler
+// ---------------------------------------------------------------------------
+
+func TestCslScheduler_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.cslScheduler == nil {
+		t.Fatal("cslScheduler is nil after New()")
+	}
+}
+
+func TestCslSchedulerAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.CslScheduler() == nil {
+		t.Fatal("CslScheduler() returned nil")
+	}
+	if inst.CslScheduler() != inst.cslScheduler {
+		t.Fatal("CslScheduler() returned different pointer")
+	}
+}
+
+func TestCslScheduler_InitialState(t *testing.T) {
+	inst := New(Config{})
+	if inst.cslScheduler.Count() != 0 {
+		t.Error("CSL scheduler should have no entries initially")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics Provider — filled stubs
+// ---------------------------------------------------------------------------
+
+func TestDiagProvider_GetIPv6AddressList(t *testing.T) {
+	inst := New(Config{})
+	dp := &diagProviderAdapter{inst: inst}
+	// Initially netif has some addresses (link-local at minimum after wireModules).
+	data, ok := dp.GetIPv6AddressList()
+	// It's OK if no addresses exist yet on a bare instance.
+	if ok && len(data)%16 != 0 {
+		t.Errorf("IPv6 address list length should be multiple of 16, got %d", len(data))
+	}
+}
+
+func TestDiagProvider_GetLeaderData(t *testing.T) {
+	inst := New(Config{})
+	dp := &diagProviderAdapter{inst: inst}
+	data, ok := dp.GetLeaderData()
+	if !ok {
+		t.Skip("MLE service not available for leader data")
+	}
+	if len(data) != 8 {
+		t.Errorf("leader data should be 8 bytes, got %d", len(data))
+	}
+}
+
+func TestDiagProvider_GetMaxChildTimeout_NoChildren(t *testing.T) {
+	inst := New(Config{})
+	dp := &diagProviderAdapter{inst: inst}
+	_, ok := dp.GetMaxChildTimeout()
+	if ok {
+		t.Error("should return false with no children")
+	}
+}
+
+func TestDiagProvider_GetTimeout(t *testing.T) {
+	inst := New(Config{})
+	dp := &diagProviderAdapter{inst: inst}
+	// Default device mode is typically RxOnWhenIdle, so timeout should be (0, false).
+	_, _ = dp.GetTimeout()
+	// Just verify it doesn't panic.
 }

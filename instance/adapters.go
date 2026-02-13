@@ -1282,7 +1282,18 @@ func (d *diagProviderAdapter) GetMode() (uint8, bool) {
 }
 
 func (d *diagProviderAdapter) GetTimeout() (uint32, bool) {
-	// TODO: Return SED polling timeout when available.
+	if d.inst.mleService == nil {
+		return 0, false
+	}
+	mode := d.inst.mleService.Mle().GetDeviceMode()
+	// Only Sleepy End Devices have a meaningful timeout.
+	if !mode.IsRxOnWhenIdle() {
+		// Return the child timeout value from MLE.
+		timeout := d.inst.mleService.Mle().GetChildTimeout()
+		if timeout > 0 {
+			return timeout, true
+		}
+	}
 	return 0, false
 }
 
@@ -1297,8 +1308,21 @@ func (d *diagProviderAdapter) GetRoute64() (*diag.Route64, bool) {
 }
 
 func (d *diagProviderAdapter) GetLeaderData() ([]byte, bool) {
-	// TODO: Serialize leader data when available.
-	return nil, false
+	if d.inst.mleService == nil {
+		return nil, false
+	}
+	ld := d.inst.mleService.Mle().GetLeaderData()
+	// Thread Leader Data TLV: PartitionID(4) + Weighting(1) + DataVersion(1) + StableDataVersion(1) + LeaderRouterID(1) = 8 bytes.
+	buf := make([]byte, 8)
+	buf[0] = byte(ld.PartitionID >> 24)
+	buf[1] = byte(ld.PartitionID >> 16)
+	buf[2] = byte(ld.PartitionID >> 8)
+	buf[3] = byte(ld.PartitionID)
+	buf[4] = ld.Weighting
+	buf[5] = ld.DataVersion
+	buf[6] = ld.StableDataVersion
+	buf[7] = ld.LeaderRouterID
+	return buf, true
 }
 
 func (d *diagProviderAdapter) GetNetworkData() ([]byte, bool) {
@@ -1313,8 +1337,19 @@ func (d *diagProviderAdapter) GetNetworkData() ([]byte, bool) {
 }
 
 func (d *diagProviderAdapter) GetIPv6AddressList() ([]byte, bool) {
-	// TODO: Collect all unicast addresses from netif.
-	return nil, false
+	if d.inst.netif == nil {
+		return nil, false
+	}
+	addrs := d.inst.netif.GetUnicastAddresses()
+	if len(addrs) == 0 {
+		return nil, false
+	}
+	// Each IPv6 address is 16 bytes, concatenated.
+	buf := make([]byte, 0, len(addrs)*16)
+	for _, a := range addrs {
+		buf = append(buf, a.Address[:]...)
+	}
+	return buf, true
 }
 
 func (d *diagProviderAdapter) GetMacCounters() (*diag.MacCounters, bool) {
@@ -1341,8 +1376,20 @@ func (d *diagProviderAdapter) GetChannelPages() ([]byte, bool) {
 }
 
 func (d *diagProviderAdapter) GetMaxChildTimeout() (uint32, bool) {
-	// TODO: Return max child timeout when child table is populated.
-	return 0, false
+	if d.inst.childTable == nil {
+		return 0, false
+	}
+	children := d.inst.childTable.Children(routing.FilterValid)
+	if len(children) == 0 {
+		return 0, false
+	}
+	var maxTimeout uint32
+	for _, c := range children {
+		if c.Timeout > maxTimeout {
+			maxTimeout = c.Timeout
+		}
+	}
+	return maxTimeout, true
 }
 
 func (d *diagProviderAdapter) GetVersion() (uint16, bool) {

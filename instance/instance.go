@@ -20,6 +20,8 @@ import (
 	csettings "github.com/hilli/gothread/common/settings"
 	"github.com/hilli/gothread/mac"
 	"github.com/hilli/gothread/mac/submac"
+	"github.com/hilli/gothread/mac/csl"
+	"github.com/hilli/gothread/mac/filter"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/coap"
@@ -44,6 +46,8 @@ import (
 	"github.com/hilli/gothread/thread/netdata"
 	"github.com/hilli/gothread/thread/routing"
 	"github.com/hilli/gothread/thread/supervision"
+	"github.com/hilli/gothread/thread/radioselector"
+	"github.com/hilli/gothread/thread/timesync"
 	"github.com/hilli/gothread/thread/tmf"
 )
 
@@ -398,6 +402,18 @@ type Instance struct {
 
 	// dhcp6Server provides DHCPv6 address assignment to clients.
 	dhcp6Server *dhcp6.Server
+
+	// timeSyncService handles Thread network time synchronization.
+	timeSyncService *timesync.Service
+
+	// radioSelector selects between multiple radios (802.15.4 / TREL).
+	radioSelector *radioselector.Selector
+
+	// macFilter provides MAC-layer address filtering (allowlist/denylist).
+	macFilter *filter.Filter
+
+	// cslScheduler manages CSL (Coordinated Sampled Listening) TX scheduling.
+	cslScheduler *csl.Scheduler
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -814,6 +830,26 @@ func (inst *Instance) wireModules() {
 	)
 
 	// ---------------------------------------------------------------
+	// Time Sync Service
+	// ---------------------------------------------------------------
+	inst.timeSyncService = timesync.NewService()
+
+	// ---------------------------------------------------------------
+	// Radio Selector (multi-radio: 802.15.4 / TREL)
+	// ---------------------------------------------------------------
+	inst.radioSelector = radioselector.NewSelector()
+
+	// ---------------------------------------------------------------
+	// MAC Filter (address allowlist/denylist)
+	// ---------------------------------------------------------------
+	inst.macFilter = filter.NewFilter()
+
+	// ---------------------------------------------------------------
+	// CSL TX Scheduler
+	// ---------------------------------------------------------------
+	inst.cslScheduler = csl.NewScheduler()
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1194,6 +1230,18 @@ func (inst *Instance) Dhcp6Client() *dhcp6.Client { return inst.dhcp6Client }
 // Dhcp6Server returns the DHCPv6 server.
 func (inst *Instance) Dhcp6Server() *dhcp6.Server { return inst.dhcp6Server }
 
+// TimeSyncService returns the Thread time synchronization service.
+func (inst *Instance) TimeSyncService() *timesync.Service { return inst.timeSyncService }
+
+// RadioSelector returns the multi-radio selector.
+func (inst *Instance) RadioSelector() *radioselector.Selector { return inst.radioSelector }
+
+// MacFilter returns the MAC address filter.
+func (inst *Instance) MacFilter() *filter.Filter { return inst.macFilter }
+
+// CslScheduler returns the CSL TX scheduler.
+func (inst *Instance) CslScheduler() *csl.Scheduler { return inst.cslScheduler }
+
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }
 
@@ -1493,6 +1541,12 @@ func (inst *Instance) handlePeriodicTick() {
 	// MPL Forwarder — process Trickle retransmission and seed expiry.
 	if inst.mplForwarder != nil {
 		inst.mplForwarder.HandleTimer()
+	}
+
+	// Time Sync — check synchronization status.
+	if inst.timeSyncService != nil {
+		// Pass current time in ms (modulo uint32 is fine for relative deltas).
+		inst.timeSyncService.HandleTimer(uint32(time.Now().UnixMilli()))
 	}
 	// Re-arm for the next tick.
 	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
