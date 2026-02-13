@@ -3462,3 +3462,34 @@ func TestAnnounceSender_InitialState(t *testing.T) {
 		t.Error("announceSender should not be running initially")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Discovery Scanner wiring tests
+// --------------------------------------------------------------------------
+
+func TestDiscoveryScanner_Created(t *testing.T) {
+	inst := New(Config{})
+	if inst.discoveryScanner == nil {
+		t.Fatal("discoveryScanner is nil after New()")
+	}
+}
+
+func TestDiscoveryScannerAccessor(t *testing.T) {
+	inst := New(Config{})
+	if inst.DiscoveryScanner() == nil {
+		t.Fatal("DiscoveryScanner() returned nil")
+	}
+	if inst.DiscoveryScanner() != inst.discoveryScanner {
+		t.Fatal("DiscoveryScanner() returned different pointer")
+	}
+}
+
+func TestDiscoveryScanner_InitialState(t *testing.T) {
+	inst := New(Config{})
+	if inst.discoveryScanner.IsScanning() {
+		t.Error("scanner should not be scanning initially")
+	}
+	if len(inst.discoveryScanner.Results()) != 0 {
+		t.Error("scanner should have no results initially")
+	}
+}

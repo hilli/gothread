@@ -27,6 +27,7 @@ import (
 	"github.com/hilli/gothread/thread/key"
 	"github.com/hilli/gothread/thread/diag"
 	"github.com/hilli/gothread/thread/announce"
+	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
@@ -1443,5 +1444,61 @@ func (t *announceTimerAdapter) Stop() {
 }
 
 func (t *announceTimerAdapter) IsRunning() bool {
+	return t.running
+}
+
+// --------------------------------------------------------------------------
+// discoverySenderAdapter — implements discover.DiscoverySender
+// --------------------------------------------------------------------------
+
+type discoverySenderAdapter struct {
+	inst *Instance
+}
+
+var _ discover.DiscoverySender = (*discoverySenderAdapter)(nil)
+
+func (d *discoverySenderAdapter) SendDiscoveryRequest(channel uint16, panID uint16, enableFiltering bool) error {
+	// TODO: Build and send MLE Discovery Request on the given channel
+	// via the MLE service. Requires MLE to support Discovery Request TX.
+	return nil
+}
+
+// --------------------------------------------------------------------------
+// discoverTimerAdapter — implements discover.Timer
+// --------------------------------------------------------------------------
+
+type discoverTimerAdapter struct {
+	inst    *Instance
+	cancel  func()
+	running bool
+}
+
+var _ discover.Timer = (*discoverTimerAdapter)(nil)
+
+func (t *discoverTimerAdapter) Start(delayMs uint32) {
+	if t.cancel != nil {
+		t.cancel()
+	}
+	t.running = true
+	t.cancel = t.inst.timers.scheduleWithCancel(
+		time.Duration(delayMs)*time.Millisecond,
+		func() {
+			t.running = false
+			if t.inst.discoveryScanner != nil {
+				t.inst.discoveryScanner.HandleTimer()
+			}
+		},
+	)
+}
+
+func (t *discoverTimerAdapter) Stop() {
+	if t.cancel != nil {
+		t.cancel()
+		t.cancel = nil
+	}
+	t.running = false
+}
+
+func (t *discoverTimerAdapter) IsRunning() bool {
 	return t.running
 }

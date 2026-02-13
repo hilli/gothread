@@ -36,6 +36,7 @@ import (
 	"github.com/hilli/gothread/thread/indirect"
 	"github.com/hilli/gothread/thread/link"
 	"github.com/hilli/gothread/thread/diag"
+	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/linkmetrics"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
@@ -386,6 +387,10 @@ type Instance struct {
 	// announceBeginServer handles incoming Announce Begin requests
 	// (TMF service) that trigger the sender.
 	announceBeginServer *announce.AnnounceBeginServer
+
+	// discoveryScanner performs Thread network discovery scans
+	// across specified channels.
+	discoveryScanner *discover.Scanner
 
 	// ---------------------------------------------------------------
 	// Configuration
@@ -782,6 +787,14 @@ func (inst *Instance) wireModules() {
 	inst.announceBeginServer = announce.NewAnnounceBeginServer(inst.announceSender)
 
 	// ---------------------------------------------------------------
+	// Discovery Scanner
+	// ---------------------------------------------------------------
+	discoverTimer := &discoverTimerAdapter{inst: inst}
+	inst.discoveryScanner = discover.NewScanner(
+		&discoverySenderAdapter{inst: inst}, discoverTimer,
+	)
+
+	// ---------------------------------------------------------------
 	// Tier 4 — UDP receiver registrations (RX path dispatch)
 	// ---------------------------------------------------------------
 
@@ -1152,6 +1165,9 @@ func (inst *Instance) AnnounceSender() *announce.AnnounceSender { return inst.an
 
 // AnnounceBeginServer returns the Announce Begin TMF server.
 func (inst *Instance) AnnounceBeginServer() *announce.AnnounceBeginServer { return inst.announceBeginServer }
+
+// DiscoveryScanner returns the Thread network discovery scanner.
+func (inst *Instance) DiscoveryScanner() *discover.Scanner { return inst.discoveryScanner }
 
 // DataPollSender returns the data poll sender (SED polling manager).
 func (inst *Instance) DataPollSender() *supervision.DataPollSender { return inst.dataPollSender }
