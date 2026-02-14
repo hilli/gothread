@@ -451,6 +451,140 @@ func TestQualityInfoWithRSSSequences(t *testing.T) {
 // GetTypicalRSSForQuality
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// RSSAverager edge cases
+// ---------------------------------------------------------------------------
+
+func TestRSSAveragerPositiveRSSClamped(t *testing.T) {
+	var r RSSAverager
+	r.Clear()
+	if err := r.Add(10); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Positive values are clamped to 0.
+	if r.GetAverage() != 0 {
+		t.Fatalf("expected 0 for positive RSS, got %d", r.GetAverage())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CostForQuality default case
+// ---------------------------------------------------------------------------
+
+func TestCostForQualityInvalidValue(t *testing.T) {
+	got := CostForQuality(99)
+	if got != CostForQuality0 {
+		t.Errorf("CostForQuality(99) = %d, want %d", got, CostForQuality0)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// QualityInfo methods with 0% coverage
+// ---------------------------------------------------------------------------
+
+func TestQualityInfoAddRSSInvalid(t *testing.T) {
+	qi := NewQualityInfo(-100)
+	qi.AddRSS(InvalidRSSI)
+	if qi.LastRSS != InvalidRSSI {
+		t.Errorf("LastRSS should remain InvalidRSSI after adding InvalidRSSI, got %d", qi.LastRSS)
+	}
+	if qi.RSSAverager.HasAverage() {
+		t.Error("RSSAverager should have no average after adding InvalidRSSI")
+	}
+}
+
+func TestQualityInfoGetAverageRSSRaw(t *testing.T) {
+	qi := NewQualityInfo(-100)
+	if qi.GetAverageRSSRaw() != 0 {
+		t.Errorf("expected raw 0 before any samples, got %d", qi.GetAverageRSSRaw())
+	}
+	qi.AddRSS(-70)
+	if qi.GetAverageRSSRaw() == 0 {
+		t.Error("expected non-zero raw after adding sample")
+	}
+}
+
+func TestQualityInfoGetLinkMargin(t *testing.T) {
+	qi := NewQualityInfo(-100)
+	// No samples yet — average is InvalidRSSI, margin should be 0.
+	if qi.GetLinkMargin() != 0 {
+		t.Errorf("expected link margin 0 with no samples, got %d", qi.GetLinkMargin())
+	}
+	qi.AddRSS(-80)
+	margin := qi.GetLinkMargin()
+	if margin != 20 {
+		t.Errorf("expected link margin 20, got %d", margin)
+	}
+}
+
+func TestQualityInfoGetSetQualityOut(t *testing.T) {
+	qi := NewQualityInfo(-100)
+	if qi.GetQualityOut() != Quality0 {
+		t.Errorf("expected initial quality out %d, got %d", Quality0, qi.GetQualityOut())
+	}
+	qi.SetQualityOut(Quality3)
+	if qi.GetQualityOut() != Quality3 {
+		t.Errorf("expected quality out %d, got %d", Quality3, qi.GetQualityOut())
+	}
+}
+
+func TestQualityInfoFrameErrorRate(t *testing.T) {
+	qi := NewQualityInfo(-100)
+	if qi.GetFrameErrorRate() != 0 {
+		t.Errorf("expected initial frame error rate 0, got %d", qi.GetFrameErrorRate())
+	}
+	// All successes should keep rate at 0.
+	for i := 0; i < 100; i++ {
+		qi.AddFrameTxStatus(true)
+	}
+	if qi.GetFrameErrorRate() != 0 {
+		t.Errorf("expected frame error rate 0 after all success, got %d", qi.GetFrameErrorRate())
+	}
+	// Add failures and verify rate increases.
+	for i := 0; i < 500; i++ {
+		qi.AddFrameTxStatus(false)
+	}
+	if qi.GetFrameErrorRate() == 0 {
+		t.Error("expected non-zero frame error rate after failures")
+	}
+}
+
+func TestQualityInfoMessageErrorRate(t *testing.T) {
+	qi := NewQualityInfo(-100)
+	if qi.GetMessageErrorRate() != 0 {
+		t.Errorf("expected initial message error rate 0, got %d", qi.GetMessageErrorRate())
+	}
+	for i := 0; i < 100; i++ {
+		qi.AddMessageTxStatus(true)
+	}
+	if qi.GetMessageErrorRate() != 0 {
+		t.Errorf("expected message error rate 0 after all success, got %d", qi.GetMessageErrorRate())
+	}
+	for i := 0; i < 500; i++ {
+		qi.AddMessageTxStatus(false)
+	}
+	if qi.GetMessageErrorRate() == 0 {
+		t.Error("expected non-zero message error rate after failures")
+	}
+}
+
+func TestQualityInfoSetQualityIn(t *testing.T) {
+	qi := NewQualityInfo(-100)
+	qi.SetQualityIn(Quality2)
+	if qi.GetQualityIn() != Quality2 {
+		t.Errorf("expected quality in %d, got %d", Quality2, qi.GetQualityIn())
+	}
+	// Values above Quality3 should be clamped.
+	qi.SetQualityIn(99)
+	if qi.GetQualityIn() != Quality3 {
+		t.Errorf("expected quality in clamped to %d, got %d", Quality3, qi.GetQualityIn())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetTypicalRSSForQuality
+// ---------------------------------------------------------------------------
+
 func TestGetTypicalRSSForQuality(t *testing.T) {
 	const noiseFloor int8 = -100
 

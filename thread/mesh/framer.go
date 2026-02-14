@@ -7,6 +7,7 @@ package mesh
 import (
 	"encoding/binary"
 
+	"github.com/hilli/gothread/crypto/aesccm"
 	"github.com/hilli/gothread/errors"
 )
 
@@ -186,6 +187,21 @@ func securityHeaderSize(keyIdMode uint8) int {
 	return 1 + 4 + keyIdFieldSize(keyIdMode)
 }
 
+// micTagSize returns the MIC (Message Integrity Code) size in bytes
+// for the given security level.
+func micTagSize(level SecurityLevel) int {
+	switch level {
+	case SecurityMic32, SecurityEncMic32:
+		return 4
+	case SecurityMic64, SecurityEncMic64:
+		return 8
+	case SecurityMic128, SecurityEncMic128:
+		return 16
+	default:
+		return 0
+	}
+}
+
 // ctxDstAddrMode returns the FCF address mode for the destination in ctx.
 func ctxDstAddrMode(ctx *FrameContext) uint8 {
 	if ctx.UseDstShort {
@@ -243,10 +259,14 @@ func (f *Framer) GetHeaderSize(ctx *FrameContext) int {
 
 // GetMaxPayloadSize returns the maximum payload that can fit in a
 // single MAC frame for the given context. This accounts for the header
-// size and FCS (which is added by radio hardware and not included in
-// the frame buffer, but counts against the 127-byte PSDU limit).
+// size, FCS (which is added by radio hardware and not included in
+// the frame buffer, but counts against the 127-byte PSDU limit), and
+// the MIC tag when security is enabled.
 func (f *Framer) GetMaxPayloadSize(ctx *FrameContext) int {
 	maxPayload := MaxPsduSize - FCSSize - f.GetHeaderSize(ctx)
+	if ctx.SecurityEnabled {
+		maxPayload -= micTagSize(SecurityEncMic32)
+	}
 	if maxPayload < 0 {
 		return 0
 	}
@@ -255,15 +275,20 @@ func (f *Framer) GetMaxPayloadSize(ctx *FrameContext) int {
 
 // BuildDataFrame constructs a complete IEEE 802.15.4 MAC data frame
 // from the given context and payload. The frame is returned without FCS
-// (that is appended by radio hardware).
+// (that is appended by radio hardware). When security is enabled, the
+// payload is encrypted with AES-CCM and a MIC tag is appended.
 func (f *Framer) BuildDataFrame(ctx *FrameContext, payload []byte) ([]byte, error) {
 	headerSize := f.GetHeaderSize(ctx)
-	maxPayload := MaxPsduSize - FCSSize - headerSize
+	tagSize := 0
+	if ctx.SecurityEnabled {
+		tagSize = micTagSize(SecurityEncMic32)
+	}
+	maxPayload := MaxPsduSize - FCSSize - headerSize - tagSize
 	if len(payload) > maxPayload {
 		return nil, errors.ErrNoBufs
 	}
 
-	buf := make([]byte, 0, headerSize+len(payload))
+	buf := make([]byte, 0, headerSize+len(payload)+tagSize)
 
 	dstMode := ctxDstAddrMode(ctx)
 	srcMode := ctxSrcAddrMode(ctx)
@@ -356,8 +381,25 @@ func (f *Framer) BuildDataFrame(ctx *FrameContext, payload []byte) ([]byte, erro
 		}
 	}
 
-	// Payload
-	buf = append(buf, payload...)
+	// Payload — encrypt if security is enabled and a key has been provisioned.
+	if ctx.SecurityEnabled && ctx.Security.Key != [16]byte{} {
+		nonce := BuildNonce(ctx.SrcExtAddr, ctx.Security.FrameCounter, uint8(SecurityEncMic32))
+		additionalData := make([]byte, len(buf))
+		copy(additionalData, buf)
+
+		var ccm aesccm.AesCcm
+		if err := ccm.SetKey(ctx.Security.Key[:]); err != nil {
+			return nil, err
+		}
+		ciphertext, tag, err := ccm.Seal(nonce[:], payload, additionalData, tagSize)
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, ciphertext...)
+		buf = append(buf, tag...)
+	} else {
+		buf = append(buf, payload...)
+	}
 
 	return buf, nil
 }

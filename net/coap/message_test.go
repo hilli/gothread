@@ -783,6 +783,209 @@ func TestRoundTrip(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: SetToken after options fails
+// ---------------------------------------------------------------------------
+
+func TestSetTokenAfterOptions(t *testing.T) {
+	msg := coap.NewMessage(coap.TypeConfirmable, coap.CodeGet, 0x0001)
+	if err := msg.AppendURIPathOptions("/test"); err != nil {
+		t.Fatalf("AppendURIPathOptions: %v", err)
+	}
+	err := msg.SetToken([]byte{0x01})
+	if err == nil {
+		t.Error("expected error when setting token after options")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: AppendURIPathOptions edge cases
+// ---------------------------------------------------------------------------
+
+func TestAppendURIPathOptionsEmpty(t *testing.T) {
+	msg := coap.NewMessage(coap.TypeConfirmable, coap.CodeGet, 0x0001)
+	if err := msg.AppendURIPathOptions(""); err != nil {
+		t.Fatalf("AppendURIPathOptions: %v", err)
+	}
+	// No options should be appended.
+	parsed, _ := coap.ParseMessage(msg.GetBytes())
+	iter := parsed.GetOptionIterator()
+	_, _, ok := iter.Next()
+	if ok {
+		t.Error("expected no options for empty path")
+	}
+}
+
+func TestAppendURIPathOptionsLeadingSlash(t *testing.T) {
+	msg := coap.NewMessage(coap.TypeConfirmable, coap.CodeGet, 0x0001)
+	if err := msg.AppendURIPathOptions("/a/b"); err != nil {
+		t.Fatalf("AppendURIPathOptions: %v", err)
+	}
+
+	// Same as "a/b".
+	msg2 := coap.NewMessage(coap.TypeConfirmable, coap.CodeGet, 0x0001)
+	if err := msg2.AppendURIPathOptions("a/b"); err != nil {
+		t.Fatalf("AppendURIPathOptions: %v", err)
+	}
+
+	if !bytes.Equal(msg.GetBytes(), msg2.GetBytes()) {
+		t.Error("leading slash should not change the encoding")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: AppendURIQueryOptions edge cases
+// ---------------------------------------------------------------------------
+
+func TestAppendURIQueryOptionsEmpty(t *testing.T) {
+	msg := coap.NewMessage(coap.TypeConfirmable, coap.CodeGet, 0x0001)
+	if err := msg.AppendURIQueryOptions(""); err != nil {
+		t.Fatalf("AppendURIQueryOptions: %v", err)
+	}
+
+	parsed, _ := coap.ParseMessage(msg.GetBytes())
+	iter := parsed.GetOptionIterator()
+	_, _, ok := iter.Next()
+	if ok {
+		t.Error("expected no options for empty query")
+	}
+}
+
+func TestAppendURIQueryOptionsSingle(t *testing.T) {
+	msg := coap.NewMessage(coap.TypeConfirmable, coap.CodeGet, 0x0001)
+	_ = msg.AppendURIPathOptions("x")
+	if err := msg.AppendURIQueryOptions("key=val"); err != nil {
+		t.Fatalf("AppendURIQueryOptions: %v", err)
+	}
+
+	parsed, _ := coap.ParseMessage(msg.GetBytes())
+	iter := parsed.GetOptionIterator()
+
+	var queries []string
+	for {
+		num, val, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if num == coap.OptionURIQuery {
+			queries = append(queries, string(val))
+		}
+	}
+	if len(queries) != 1 || queries[0] != "key=val" {
+		t.Errorf("queries = %v, want [key=val]", queries)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: AppendBlockOption invalid szx
+// ---------------------------------------------------------------------------
+
+func TestAppendBlockOptionInvalidSzx(t *testing.T) {
+	msg := coap.NewMessage(coap.TypeConfirmable, coap.CodeGet, 0x0001)
+	err := msg.AppendBlockOption(coap.OptionBlock2, 0, false, 7)
+	if err == nil {
+		t.Error("expected error for szx=7")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: Parse messages with reserved nibble value (15)
+// ---------------------------------------------------------------------------
+
+func TestParseMessageReservedNibble(t *testing.T) {
+	// Construct a message with delta nibble = 15 (reserved).
+	data := []byte{
+		0x40, 0x01, 0x00, 0x01, // valid header
+		0xF0, // option with delta nibble = 15
+	}
+	_, err := coap.ParseMessage(data)
+	if err == nil {
+		t.Error("expected error for reserved delta nibble 15")
+	}
+}
+
+func TestParseMessageReservedLengthNibble(t *testing.T) {
+	// Construct a message with valid delta but length nibble = 15.
+	data := []byte{
+		0x40, 0x01, 0x00, 0x01, // valid header
+		0x1F, // option with delta=1, length nibble=15
+	}
+	_, err := coap.ParseMessage(data)
+	if err == nil {
+		t.Error("expected error for reserved length nibble 15")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: Parse message with extended delta/length nibble truncated
+// ---------------------------------------------------------------------------
+
+func TestParseMessageTruncatedExtendedDelta13(t *testing.T) {
+	// Delta nibble = 13 but no extended byte follows.
+	data := []byte{
+		0x40, 0x01, 0x00, 0x01,
+		0xD0, // delta=13, length=0, but no ext byte
+	}
+	_, err := coap.ParseMessage(data)
+	if err == nil {
+		t.Error("expected error for truncated extended delta (nibble=13)")
+	}
+}
+
+func TestParseMessageTruncatedExtendedDelta14(t *testing.T) {
+	// Delta nibble = 14 but only 1 extended byte instead of 2.
+	data := []byte{
+		0x40, 0x01, 0x00, 0x01,
+		0xE0, 0x00, // delta=14, only 1 ext byte, needs 2
+	}
+	_, err := coap.ParseMessage(data)
+	if err == nil {
+		t.Error("expected error for truncated extended delta (nibble=14)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: Parse valid extended delta/length nibble 14
+// ---------------------------------------------------------------------------
+
+func TestParseMessageExtendedDelta14Valid(t *testing.T) {
+	// Build a message with option number 300 (needs nibble=14 encoding).
+	msg := coap.NewMessage(coap.TypeConfirmable, coap.CodeGet, 0x0001)
+	if err := msg.AppendOption(coap.OptionNumber(300), []byte("v")); err != nil {
+		t.Fatalf("AppendOption(300): %v", err)
+	}
+
+	parsed, err := coap.ParseMessage(msg.GetBytes())
+	if err != nil {
+		t.Fatalf("ParseMessage: %v", err)
+	}
+
+	iter := parsed.GetOptionIterator()
+	num, val, ok := iter.Next()
+	if !ok {
+		t.Fatal("expected option")
+	}
+	if num != 300 {
+		t.Errorf("option number = %d, want 300", num)
+	}
+	if string(val) != "v" {
+		t.Errorf("option value = %q, want %q", val, "v")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: GetPayload with malformed option during walk
+// ---------------------------------------------------------------------------
+
+func TestGetPayloadNoOptions(t *testing.T) {
+	// Header-only message, no options, no payload.
+	msg := coap.NewMessage(coap.TypeConfirmable, coap.CodeGet, 0x0001)
+	parsed, _ := coap.ParseMessage(msg.GetBytes())
+	if parsed.GetPayload() != nil {
+		t.Errorf("GetPayload = %X, want nil", parsed.GetPayload())
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Fuzz: ParseMessage
 // ---------------------------------------------------------------------------
 

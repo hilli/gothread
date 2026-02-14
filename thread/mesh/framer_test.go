@@ -138,6 +138,7 @@ func TestBuildDataFrame_Security_KeyIdMode1(t *testing.T) {
 			KeyIdMode:    1,
 			KeyId:        0x42,
 			FrameCounter: 0x12345678,
+			Key:          [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
 		},
 	}
 
@@ -149,9 +150,11 @@ func TestBuildDataFrame_Security_KeyIdMode1(t *testing.T) {
 
 	// Header: FCF(2) + SeqNum(1) + DstPanId(2) + DstShort(2) + SrcShort(2)
 	//       + SecCtl(1) + FrameCounter(4) + KeyId(1) = 15
+	// With encryption: ciphertext(2) + MIC(4) appended.
 	expectedHeaderSize := 15
-	if len(frame) != expectedHeaderSize+len(payload) {
-		t.Fatalf("frame length = %d, want %d", len(frame), expectedHeaderSize+len(payload))
+	micSize := 4
+	if len(frame) != expectedHeaderSize+len(payload)+micSize {
+		t.Fatalf("frame length = %d, want %d", len(frame), expectedHeaderSize+len(payload)+micSize)
 	}
 
 	// Verify security enabled bit in FCF.
@@ -201,6 +204,7 @@ func TestBuildDataFrame_Security_KeyIdMode2(t *testing.T) {
 			KeyIdMode:    2,
 			KeyId:        0x07,
 			FrameCounter: 100,
+			Key:          [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
 		},
 	}
 
@@ -212,9 +216,11 @@ func TestBuildDataFrame_Security_KeyIdMode2(t *testing.T) {
 
 	// Header: FCF(2) + SeqNum(1) + DstPanId(2) + DstShort(2) + SrcShort(2)
 	//       + SecCtl(1) + FrameCounter(4) + KeySource(4) + KeyId(1) = 19
+	// With encryption: ciphertext(1) + MIC(4) appended.
 	expectedHeaderSize := 19
-	if len(frame) != expectedHeaderSize+len(payload) {
-		t.Fatalf("frame length = %d, want %d", len(frame), expectedHeaderSize+len(payload))
+	micSize := 4
+	if len(frame) != expectedHeaderSize+len(payload)+micSize {
+		t.Fatalf("frame length = %d, want %d", len(frame), expectedHeaderSize+len(payload)+micSize)
 	}
 
 	// Key ID mode 2: 4 zero bytes key source + key index.
@@ -283,6 +289,7 @@ func TestParseFrameHeader_RoundTrip(t *testing.T) {
 					KeyIdMode:    1,
 					KeyId:        0x03,
 					FrameCounter: 999,
+					Key:          [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
 				},
 			},
 		},
@@ -359,13 +366,21 @@ func TestParseFrameHeader_RoundTrip(t *testing.T) {
 				t.Errorf("FramePending = %v, want %v", parsed.FramePending, tt.ctx.FramePending)
 			}
 
-			// Verify payload offset points to the payload bytes.
-			if payloadOffset+len(payload) != len(frame) {
-				t.Errorf("payloadOffset = %d, but frame length = %d with payload length %d", payloadOffset, len(frame), len(payload))
+			// Verify payload offset points to the payload/ciphertext bytes.
+			// When security is enabled, the frame contains ciphertext + MIC
+			// instead of plaintext, so raw byte comparison is skipped.
+			expectedTrailerSize := len(payload)
+			if tt.ctx.SecurityEnabled {
+				expectedTrailerSize += 4 // MIC tag
 			}
-			for i, b := range payload {
-				if frame[payloadOffset+i] != b {
-					t.Errorf("payload[%d] = 0x%02X, want 0x%02X", i, frame[payloadOffset+i], b)
+			if payloadOffset+expectedTrailerSize != len(frame) {
+				t.Errorf("payloadOffset = %d, but frame length = %d with expected trailer %d", payloadOffset, len(frame), expectedTrailerSize)
+			}
+			if !tt.ctx.SecurityEnabled {
+				for i, b := range payload {
+					if frame[payloadOffset+i] != b {
+						t.Errorf("payload[%d] = 0x%02X, want 0x%02X", i, frame[payloadOffset+i], b)
+					}
 				}
 			}
 		})
@@ -445,8 +460,8 @@ func TestGetMaxPayloadSize(t *testing.T) {
 				},
 			},
 			// Header: 9 + SecCtl(1) + FC(4) + KeyId(1) = 15
-			// Max payload = 127 - 2 - 15 = 110
-			want: 110,
+			// Max payload = 127 - 2 - 15 - 4(MIC) = 106
+			want: 106,
 		},
 		{
 			name: "short_short_sec_mode2",
@@ -459,8 +474,8 @@ func TestGetMaxPayloadSize(t *testing.T) {
 				},
 			},
 			// Header: 9 + SecCtl(1) + FC(4) + KeySrc(4) + KeyId(1) = 19
-			// Max payload = 127 - 2 - 19 = 106
-			want: 106,
+			// Max payload = 127 - 2 - 19 - 4(MIC) = 102
+			want: 102,
 		},
 		{
 			name: "ext_ext_sec_mode1",
@@ -473,8 +488,8 @@ func TestGetMaxPayloadSize(t *testing.T) {
 				},
 			},
 			// Header: 21 + 6 = 27
-			// Max payload = 127 - 2 - 27 = 98
-			want: 98,
+			// Max payload = 127 - 2 - 27 - 4(MIC) = 94
+			want: 94,
 		},
 	}
 

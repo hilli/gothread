@@ -91,6 +91,23 @@ func TestRestart(t *testing.T) {
 	inst.Stop()
 }
 
+func TestMultipleStartStop(t *testing.T) {
+	inst := New(Config{})
+
+	for i := range 3 {
+		if err := inst.Start(); err != nil {
+			t.Fatalf("cycle %d: Start() error: %v", i, err)
+		}
+		if !inst.IsRunning() {
+			t.Fatalf("cycle %d: instance should be running", i)
+		}
+		inst.Stop()
+		if inst.IsRunning() {
+			t.Fatalf("cycle %d: instance should not be running after Stop()", i)
+		}
+	}
+}
+
 // --------------------------------------------------------------------------
 // IfConfigUp / IfConfigDown lifecycle tests
 // --------------------------------------------------------------------------
@@ -725,6 +742,89 @@ func TestInstanceAccessors(t *testing.T) {
 	}
 	if inst.Radio() != nil {
 		t.Error("Radio() should be nil")
+	}
+}
+
+func TestAccessorsAfterStart(t *testing.T) {
+	inst := New(Config{})
+	if err := inst.Start(); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer inst.Stop()
+
+	// Core subsystem accessors should be non-nil on a running instance.
+	if inst.Mac() == nil {
+		t.Error("Mac() should be non-nil")
+	}
+	if inst.KeyManager() == nil {
+		t.Error("KeyManager() should be non-nil")
+	}
+	if inst.MessagePool() == nil {
+		t.Error("MessagePool() should be non-nil")
+	}
+	if inst.RouterTable() == nil {
+		t.Error("RouterTable() should be non-nil")
+	}
+	if inst.ChildTable() == nil {
+		t.Error("ChildTable() should be non-nil")
+	}
+	if inst.NeighborTable() == nil {
+		t.Error("NeighborTable() should be non-nil")
+	}
+	if inst.MleService() == nil {
+		t.Error("MleService() should be non-nil")
+	}
+	if inst.Netif() == nil {
+		t.Error("Netif() should be non-nil")
+	}
+	if inst.Forwarder() == nil {
+		t.Error("Forwarder() should be non-nil")
+	}
+	if inst.NetdataLeader() == nil {
+		t.Error("NetdataLeader() should be non-nil")
+	}
+	if inst.NetdataLocal() == nil {
+		t.Error("NetdataLocal() should be non-nil")
+	}
+
+	// RLOC16 and MeshLocalPrefix should have zero values before attach.
+	if inst.RLOC16() != 0 {
+		t.Errorf("RLOC16() = %d, want 0 before attach", inst.RLOC16())
+	}
+	var zeroPrefix [8]byte
+	if inst.MeshLocalPrefix() != zeroPrefix {
+		t.Errorf("MeshLocalPrefix() = %v, want zero before attach", inst.MeshLocalPrefix())
+	}
+}
+
+func TestFullLifecycleWithStartStop(t *testing.T) {
+	inst := New(Config{})
+
+	// Start → IfConfigUp → ThreadStart → ThreadStop → IfConfigDown → Stop,
+	// repeated to verify the full instance lifecycle is repeatable.
+	for i := range 2 {
+		if err := inst.Start(); err != nil {
+			t.Fatalf("cycle %d: Start() error: %v", i, err)
+		}
+		if err := inst.IfConfigUp(); err != nil {
+			t.Fatalf("cycle %d: IfConfigUp() error: %v", i, err)
+		}
+		if err := inst.ThreadStart(); err != nil {
+			t.Fatalf("cycle %d: ThreadStart() error: %v", i, err)
+		}
+		if !inst.IsThreadRunning() {
+			t.Fatalf("cycle %d: Thread should be running", i)
+		}
+		if err := inst.ThreadStop(); err != nil {
+			t.Fatalf("cycle %d: ThreadStop() error: %v", i, err)
+		}
+		if err := inst.IfConfigDown(); err != nil {
+			t.Fatalf("cycle %d: IfConfigDown() error: %v", i, err)
+		}
+		inst.Stop()
+		if inst.IsRunning() {
+			t.Fatalf("cycle %d: instance should not be running", i)
+		}
 	}
 }
 

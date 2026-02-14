@@ -1062,6 +1062,824 @@ func FuzzDecompressUDPHeader(f *testing.F) {
 }
 
 // ---------------------------------------------------------------------------
+// CompressHeader coverage tests
+// ---------------------------------------------------------------------------
+
+func TestCompressHeaderStatefulContext(t *testing.T) {
+	mac := testMacAddrs()
+	contexts := testContexts()
+
+	t.Run("src context with IID from ext addr (SAC=1 SAM=11)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		// Src: context 0 prefix + IID from src ext addr
+		copy(h[8:16], []byte{0xfd, 0x00, 0xca, 0xfe, 0xfa, 0xce, 0x12, 0x34})
+		copy(h[16:24], srcIIDFromExt[:])
+		// Dst: link-local + IID from dst ext addr
+		copy(h[24:32], linkLocalPrefix[:])
+		copy(h[32:40], dstIIDFromExt[:])
+
+		compressed, err := CompressHeader(h, mac, contexts)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, consumed, _, err := DecompressHeader(compressed, mac, contexts)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		if consumed != len(compressed) {
+			t.Errorf("consumed = %d, want %d", consumed, len(compressed))
+		}
+		for _, rng := range [][2]int{{0, 4}, {7, 8}, {8, 24}, {24, 40}} {
+			for i := rng[0]; i < rng[1]; i++ {
+				if decompressed[i] != h[i] {
+					t.Errorf("byte[%d] = 0x%02X, want 0x%02X", i, decompressed[i], h[i])
+				}
+			}
+		}
+	})
+
+	t.Run("src context with short IID (SAC=1 SAM=10)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		// Src: context 0 prefix + short IID (0000:00FF:FE00:ABCD)
+		copy(h[8:16], []byte{0xfd, 0x00, 0xca, 0xfe, 0xfa, 0xce, 0x12, 0x34})
+		h[16] = 0x00
+		h[17] = 0x00
+		h[18] = 0x00
+		h[19] = 0xFF
+		h[20] = 0xFE
+		h[21] = 0x00
+		h[22] = 0xAB
+		h[23] = 0xCD
+		copy(h[24:32], linkLocalPrefix[:])
+		copy(h[32:40], dstIIDFromExt[:])
+
+		compressed, err := CompressHeader(h, mac, contexts)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, contexts)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotSrc [16]byte
+		copy(gotSrc[:], decompressed[8:24])
+		var wantSrc [16]byte
+		copy(wantSrc[:], h[8:24])
+		if gotSrc != wantSrc {
+			t.Errorf("src = %x, want %x", gotSrc, wantSrc)
+		}
+	})
+
+	t.Run("src context with 64-bit IID (SAC=1 SAM=01)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		copy(h[8:16], []byte{0xfd, 0x00, 0xca, 0xfe, 0xfa, 0xce, 0x12, 0x34})
+		copy(h[16:24], []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88})
+		copy(h[24:32], linkLocalPrefix[:])
+		copy(h[32:40], dstIIDFromExt[:])
+
+		compressed, err := CompressHeader(h, mac, contexts)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, contexts)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotSrc [16]byte
+		copy(gotSrc[:], decompressed[8:24])
+		var wantSrc [16]byte
+		copy(wantSrc[:], h[8:24])
+		if gotSrc != wantSrc {
+			t.Errorf("src = %x, want %x", gotSrc, wantSrc)
+		}
+	})
+
+	t.Run("dst context with IID from ext addr (DAC=1 DAM=11)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		// Dst: context 1 prefix + IID from dst ext addr
+		copy(h[24:32], []byte{0x20, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01})
+		copy(h[32:40], dstIIDFromExt[:])
+
+		compressed, err := CompressHeader(h, mac, contexts)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, contexts)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		for _, rng := range [][2]int{{0, 4}, {7, 8}, {8, 24}, {24, 40}} {
+			for i := rng[0]; i < rng[1]; i++ {
+				if decompressed[i] != h[i] {
+					t.Errorf("byte[%d] = 0x%02X, want 0x%02X", i, decompressed[i], h[i])
+				}
+			}
+		}
+	})
+
+	t.Run("dst context with short IID (DAC=1 DAM=10)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		copy(h[24:32], []byte{0x20, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01})
+		h[32] = 0x00
+		h[33] = 0x00
+		h[34] = 0x00
+		h[35] = 0xFF
+		h[36] = 0xFE
+		h[37] = 0x00
+		h[38] = 0xC0
+		h[39] = 0x03
+
+		compressed, err := CompressHeader(h, mac, contexts)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, contexts)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], decompressed[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:], h[24:40])
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+
+	t.Run("dst context with 64-bit IID (DAC=1 DAM=01)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		copy(h[24:32], []byte{0x20, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01})
+		copy(h[32:40], []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88})
+
+		compressed, err := CompressHeader(h, mac, contexts)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, contexts)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], decompressed[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:], h[24:40])
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+
+	t.Run("unspecified src (SAC=1 SAM=00)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 1
+		// Src is all zeros (unspecified)
+		copy(h[24:32], linkLocalPrefix[:])
+		copy(h[32:40], dstIIDFromExt[:])
+
+		compressed, err := CompressHeader(h, mac, nil)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, nil)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotSrc [16]byte
+		copy(gotSrc[:], decompressed[8:24])
+		if gotSrc != [16]byte{} {
+			t.Errorf("src should be unspecified, got %x", gotSrc)
+		}
+	})
+
+	t.Run("full 128-bit src (no context, not link-local)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		// Src: 2001:db8::1 (not link-local, no matching context)
+		copy(h[8:16], []byte{0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00})
+		h[23] = 0x01
+		copy(h[24:32], linkLocalPrefix[:])
+		copy(h[32:40], dstIIDFromExt[:])
+
+		compressed, err := CompressHeader(h, mac, nil)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, nil)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotSrc [16]byte
+		copy(gotSrc[:], decompressed[8:24])
+		var wantSrc [16]byte
+		copy(wantSrc[:], h[8:24])
+		if gotSrc != wantSrc {
+			t.Errorf("src = %x, want %x", gotSrc, wantSrc)
+		}
+	})
+
+	t.Run("full 128-bit dst (no context, not link-local)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		copy(h[24:32], []byte{0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00})
+		h[39] = 0x01
+
+		compressed, err := CompressHeader(h, mac, nil)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, nil)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], decompressed[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:], h[24:40])
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+}
+
+func TestCompressHeaderMulticast(t *testing.T) {
+	mac := testMacAddrs()
+	contexts := testContexts()
+
+	t.Run("multicast 48-bit (ffXX::00XX:XXXX:XXXX)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 1
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		// ff15::00DB:1234:5678
+		h[24] = 0xFF
+		h[25] = 0x15
+		h[35] = 0xDB
+		h[36] = 0x12
+		h[37] = 0x34
+		h[38] = 0x56
+		h[39] = 0x78
+
+		compressed, err := CompressHeader(h, mac, nil)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, nil)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], decompressed[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:], h[24:40])
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+
+	t.Run("multicast 32-bit (ffXX::00XX:XXXX)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 1
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		// ff05::00DB:1234
+		h[24] = 0xFF
+		h[25] = 0x05
+		h[37] = 0xDB
+		h[38] = 0x12
+		h[39] = 0x34
+
+		compressed, err := CompressHeader(h, mac, nil)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, nil)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], decompressed[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:], h[24:40])
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+
+	t.Run("multicast full 128-bit inline", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 1
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		// ff05::1:2:3:4:5:6:7 (non-compressible multicast)
+		h[24] = 0xFF
+		h[25] = 0x05
+		h[26] = 0x00
+		h[27] = 0x01
+		h[28] = 0x00
+		h[29] = 0x02
+		h[30] = 0x00
+		h[31] = 0x03
+		h[32] = 0x00
+		h[33] = 0x04
+		h[34] = 0x00
+		h[35] = 0x05
+		h[36] = 0x00
+		h[37] = 0x06
+		h[38] = 0x00
+		h[39] = 0x07
+
+		compressed, err := CompressHeader(h, mac, nil)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, nil)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], decompressed[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:], h[24:40])
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+
+	t.Run("multicast with context (M=1 DAC=1 DAM=00)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 1
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		// Unicast-prefix-based multicast matching context 0
+		// ffXX:XXLL:PPPP:PPPP:PPPP:PPPP:XXXX:XXXX
+		h[24] = 0xFF
+		h[25] = 0x35 // scope
+		h[26] = 0x00 // flags
+		h[27] = 0x40 // prefix len (64)
+		copy(h[28:36], []byte{0xfd, 0x00, 0xca, 0xfe, 0xfa, 0xce, 0x12, 0x34})
+		h[36] = 0xAA
+		h[37] = 0xBB
+		h[38] = 0xCC
+		h[39] = 0xDD
+
+		compressed, err := CompressHeader(h, mac, contexts)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, contexts)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], decompressed[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:], h[24:40])
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+}
+
+func TestCompressHeaderTFModes(t *testing.T) {
+	mac := testMacAddrs()
+
+	mkHeader := func(dscp, ecn uint8, flow uint32, nh, hl uint8) [40]byte {
+		var h [40]byte
+		tc := (dscp << 2) | ecn
+		h[0] = 0x60 | (tc >> 4)
+		h[1] = (tc << 4) | uint8((flow>>16)&0x0F)
+		h[2] = uint8(flow >> 8)
+		h[3] = uint8(flow)
+		h[6] = nh
+		h[7] = hl
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		copy(h[24:32], linkLocalPrefix[:])
+		copy(h[32:40], dstIIDFromExt[:])
+		return h
+	}
+
+	tests := []struct {
+		name string
+		h    [40]byte
+	}{
+		{"TF=11 all elided", mkHeader(0, 0, 0, 17, 64)},
+		{"TF=10 ECN+DSCP only", mkHeader(15, 3, 0, 17, 64)},
+		{"TF=01 ECN+Flow", mkHeader(0, 1, 0xABCDE, 17, 64)},
+		{"TF=00 full inline", mkHeader(7, 2, 0x12345, 17, 64)},
+		{"non-UDP NH inline", mkHeader(0, 0, 0, 6, 64)}, // TCP
+		{"HL=1", mkHeader(0, 0, 0, 17, 1)},
+		{"HL=255", mkHeader(0, 0, 0, 17, 255)},
+		{"HL=128 inline", mkHeader(0, 0, 0, 17, 128)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compressed, err := CompressHeader(tt.h, mac, nil)
+			if err != nil {
+				t.Fatalf("compress: %v", err)
+			}
+			decompressed, consumed, _, err := DecompressHeader(compressed, mac, nil)
+			if err != nil {
+				t.Fatalf("decompress: %v", err)
+			}
+			if consumed != len(compressed) {
+				t.Errorf("consumed = %d, want %d", consumed, len(compressed))
+			}
+			for _, rng := range [][2]int{{0, 4}, {7, 8}, {8, 24}, {24, 40}} {
+				for i := rng[0]; i < rng[1]; i++ {
+					if tt.h[6] == 17 && i == 6 {
+						continue // NH compressed for UDP
+					}
+					if decompressed[i] != tt.h[i] {
+						t.Errorf("byte[%d] = 0x%02X, want 0x%02X", i, decompressed[i], tt.h[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCompressHeaderLinkLocalShortIID(t *testing.T) {
+	mac := testMacAddrs()
+
+	t.Run("src link-local short IID", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		copy(h[8:16], linkLocalPrefix[:])
+		// IID from short: 0000:00FF:FE00:ABCD
+		h[19] = 0xFF
+		h[20] = 0xFE
+		h[22] = 0xAB
+		h[23] = 0xCD
+		copy(h[24:32], linkLocalPrefix[:])
+		copy(h[32:40], dstIIDFromExt[:])
+
+		compressed, err := CompressHeader(h, mac, nil)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, nil)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotSrc [16]byte
+		copy(gotSrc[:], decompressed[8:24])
+		var wantSrc [16]byte
+		copy(wantSrc[:], h[8:24])
+		if gotSrc != wantSrc {
+			t.Errorf("src = %x, want %x", gotSrc, wantSrc)
+		}
+	})
+
+	t.Run("dst link-local short IID", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		copy(h[24:32], linkLocalPrefix[:])
+		// IID from short: 0000:00FF:FE00:C003
+		h[35] = 0xFF
+		h[36] = 0xFE
+		h[38] = 0xC0
+		h[39] = 0x03
+
+		compressed, err := CompressHeader(h, mac, nil)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, nil)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], decompressed[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:], h[24:40])
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+
+	t.Run("dst link-local 64-bit IID (not matching ext or short)", func(t *testing.T) {
+		var h [40]byte
+		h[0] = 0x60
+		h[6] = 17
+		h[7] = 64
+		copy(h[8:16], linkLocalPrefix[:])
+		copy(h[16:24], srcIIDFromExt[:])
+		copy(h[24:32], linkLocalPrefix[:])
+		copy(h[32:40], []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88})
+
+		compressed, err := CompressHeader(h, mac, nil)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, _, err := DecompressHeader(compressed, mac, nil)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], decompressed[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:], h[24:40])
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+}
+
+func TestCompressUDPHeaderModes(t *testing.T) {
+	t.Run("src 8-bit only", func(t *testing.T) {
+		// Src in 0xF000-0xF0FF range, dst arbitrary
+		header := [8]byte{0xF0, 0xCD, 0x00, 0x51, 0x00, 0x00, 0x56, 0x78}
+		compressed, err := CompressUDPHeader(header)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, consumed, err := DecompressUDPHeader(compressed)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		if consumed != len(compressed) {
+			t.Errorf("consumed = %d, want %d", consumed, len(compressed))
+		}
+		for _, i := range []int{0, 1, 2, 3, 6, 7} {
+			if decompressed[i] != header[i] {
+				t.Errorf("byte[%d] = 0x%02X, want 0x%02X", i, decompressed[i], header[i])
+			}
+		}
+	})
+
+	t.Run("both in 8-bit range", func(t *testing.T) {
+		// Both src and dst in 0xF000-0xF0FF range
+		header := [8]byte{0xF0, 0x50, 0xF0, 0xAB, 0x00, 0x00, 0x12, 0x34}
+		compressed, err := CompressUDPHeader(header)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, consumed, err := DecompressUDPHeader(compressed)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		if consumed != len(compressed) {
+			t.Errorf("consumed = %d, want %d", consumed, len(compressed))
+		}
+		for _, i := range []int{0, 1, 2, 3, 6, 7} {
+			if decompressed[i] != header[i] {
+				t.Errorf("byte[%d] = 0x%02X, want 0x%02X", i, decompressed[i], header[i])
+			}
+		}
+	})
+
+	t.Run("both full ports", func(t *testing.T) {
+		header := [8]byte{0x00, 0x50, 0x00, 0x51, 0x00, 0x00, 0xAB, 0xCD}
+		compressed, err := CompressUDPHeader(header)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		if compressed[0]&NhcUDPPortMask != NhcUDPPortBothFull {
+			t.Errorf("expected PP=00, got 0x%02X", compressed[0]&NhcUDPPortMask)
+		}
+	})
+
+	t.Run("dst 8-bit only (src not in range)", func(t *testing.T) {
+		header := [8]byte{0x13, 0x88, 0xF0, 0x42, 0x00, 0x00, 0xAB, 0xCD} // src=5000, dst=0xF042
+		compressed, err := CompressUDPHeader(header)
+		if err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		decompressed, _, err := DecompressUDPHeader(compressed)
+		if err != nil {
+			t.Fatalf("decompress: %v", err)
+		}
+		for _, i := range []int{0, 1, 2, 3, 6, 7} {
+			if decompressed[i] != header[i] {
+				t.Errorf("byte[%d] = 0x%02X, want 0x%02X", i, decompressed[i], header[i])
+			}
+		}
+	})
+}
+
+func TestDecompressHeaderStatefulEdgeCases(t *testing.T) {
+	mac := testMacAddrs()
+	contexts := testContexts()
+
+	t.Run("stateful src SAC=1 SAM=10 (16-bit with context)", func(t *testing.T) {
+		// IPHC: TF=11, NH=inline, HLIM=01, CID=1, SAC=1, SAM=10, M=0, DAC=0, DAM=11
+		// bit 7: 1 (CID), bit 6: 1 (SAC), bit 5-4: 10 (SAM=10)
+		// = 0111 1001 1110 0011 = 0x79E3
+		data := func() []byte {
+			d := []byte{0x79, 0xE3}
+			d = append(d, 0x00) // CID: SCI=0, DCI=0
+			d = append(d, 0x11) // NH=UDP
+			d = append(d, 0xAB, 0xCD) // 16-bit short
+			return d
+		}()
+
+		header, consumed, _, err := DecompressHeader(data, mac, contexts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if consumed != 6 {
+			t.Errorf("consumed = %d, want 6", consumed)
+		}
+		// Check prefix from context 0
+		var gotSrc [16]byte
+		copy(gotSrc[:], header[8:24])
+		var wantSrc [16]byte
+		copy(wantSrc[:8], []byte{0xfd, 0x00, 0xca, 0xfe, 0xfa, 0xce, 0x12, 0x34})
+		wantSrc[8+3] = 0xFF
+		wantSrc[8+4] = 0xFE
+		wantSrc[8+6] = 0xAB
+		wantSrc[8+7] = 0xCD
+		if gotSrc != wantSrc {
+			t.Errorf("src = %x, want %x", gotSrc, wantSrc)
+		}
+	})
+
+	t.Run("stateful dst DAC=1 DAM=01 (64-bit IID with context)", func(t *testing.T) {
+		// IPHC: TF=11, NH=inline, HLIM=01, CID=1, SAC=0, SAM=11, M=0, DAC=1, DAM=01
+		// = 0111 1001 1011 0101 = 0x79B5
+		data := func() []byte {
+			d := []byte{0x79, 0xB5}
+			d = append(d, 0x01) // CID: SCI=0, DCI=1
+			d = append(d, 0x11) // NH=UDP
+			d = append(d, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88)
+			return d
+		}()
+
+		header, consumed, _, err := DecompressHeader(data, mac, contexts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if consumed != 12 {
+			t.Errorf("consumed = %d, want 12", consumed)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], header[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:8], []byte{0x20, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01})
+		copy(wantDst[8:], []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88})
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+
+	t.Run("stateful dst DAC=1 DAM=10 (16-bit with context)", func(t *testing.T) {
+		// IPHC: TF=11, NH=inline, HLIM=01, CID=1, SAC=0, SAM=11, M=0, DAC=1, DAM=10
+		// = 0111 1001 1011 0110 = 0x79B6
+		data := func() []byte {
+			d := []byte{0x79, 0xB6}
+			d = append(d, 0x01) // CID: SCI=0, DCI=1
+			d = append(d, 0x11) // NH=UDP
+			d = append(d, 0xC0, 0x03) // 16-bit short
+			return d
+		}()
+
+		header, consumed, _, err := DecompressHeader(data, mac, contexts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if consumed != 6 {
+			t.Errorf("consumed = %d, want 6", consumed)
+		}
+		var gotDst [16]byte
+		copy(gotDst[:], header[24:40])
+		var wantDst [16]byte
+		copy(wantDst[:8], []byte{0x20, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01})
+		wantDst[8+3] = 0xFF
+		wantDst[8+4] = 0xFE
+		wantDst[8+6] = 0xC0
+		wantDst[8+7] = 0x03
+		if gotDst != wantDst {
+			t.Errorf("dst = %x, want %x", gotDst, wantDst)
+		}
+	})
+
+	t.Run("stateful dst DAC=1 DAM=00 reserved error", func(t *testing.T) {
+		// IPHC: TF=11, NH=inline, HLIM=01, CID=1, SAC=0, SAM=11, M=0, DAC=1, DAM=00
+		// = 0111 1001 1011 0100 = 0x79B4
+		data := func() []byte {
+			d := []byte{0x79, 0xB4}
+			d = append(d, 0x01) // CID: SCI=0, DCI=1
+			d = append(d, 0x11) // NH=UDP
+			return d
+		}()
+
+		_, _, _, err := DecompressHeader(data, mac, contexts)
+		if err == nil {
+			t.Error("expected error for reserved DAC=1 DAM=00")
+		}
+	})
+
+	t.Run("multicast DAC=1 DAM=00 (unicast-prefix-based)", func(t *testing.T) {
+		// IPHC: TF=11, NH=inline, HLIM=01, CID=1, SAC=0, SAM=11, M=1, DAC=1, DAM=00
+		// = 0111 1001 1011 1100 = 0x79BC
+		data := func() []byte {
+			d := []byte{0x79, 0xBC}
+			d = append(d, 0x00) // CID: SCI=0, DCI=0
+			d = append(d, 0x11) // NH=UDP
+			// 6 bytes: scope, flags, 4 bytes suffix
+			d = append(d, 0x35, 0x00, 0xAA, 0xBB, 0xCC, 0xDD)
+			return d
+		}()
+
+		header, consumed, _, err := DecompressHeader(data, mac, contexts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if consumed != 10 {
+			t.Errorf("consumed = %d, want 10", consumed)
+		}
+		// Expected: ff35:0040:fd00:cafe:face:1234:AABB:CCDD
+		if header[24] != 0xFF || header[25] != 0x35 {
+			t.Errorf("mcast prefix wrong: got %x %x", header[24], header[25])
+		}
+		if header[27] != 64 { // prefix len from context
+			t.Errorf("prefix len = %d, want 64", header[27])
+		}
+		if header[36] != 0xAA || header[37] != 0xBB || header[38] != 0xCC || header[39] != 0xDD {
+			t.Errorf("mcast suffix wrong")
+		}
+	})
+
+	t.Run("multicast DAC=1 invalid DAM", func(t *testing.T) {
+		// M=1, DAC=1, DAM=01 → not defined, should error
+		// IPHC: TF=11, NH=inline, HLIM=01, CID=1, SAC=0, SAM=11, M=1, DAC=1, DAM=01
+		// = 0111 1001 1011 1101 = 0x79BD
+		data := []byte{0x79, 0xBD, 0x00, 0x11}
+		_, _, _, err := DecompressHeader(data, mac, contexts)
+		if err == nil {
+			t.Error("expected error for undefined M=1 DAC=1 DAM=01")
+		}
+	})
+}
+
+func TestDecompressUDPHeaderTruncated(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{"truncated PP=01", []byte{0xF1, 0x00}},
+		{"truncated PP=10", []byte{0xF2, 0xCD}},
+		{"truncated PP=11", []byte{0xF3}},
+		{"truncated checksum", []byte{0xF0, 0x00, 0x50, 0x00, 0x51}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := DecompressUDPHeader(tt.data)
+			if err == nil {
+				t.Error("expected error")
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 

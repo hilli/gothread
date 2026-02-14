@@ -27,6 +27,7 @@ import (
 	"github.com/hilli/gothread/mac/datapoll"
 	"github.com/hilli/gothread/net/dnssd"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/nd6"
 	"github.com/hilli/gothread/net/ndagent"
 	"github.com/hilli/gothread/thread/mgmt"
 	"github.com/hilli/gothread/utils"
@@ -588,12 +589,35 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 
 	// Step 1: Extract the MAC payload (6LoWPAN data) from the frame.
 	// For properly framed 802.15.4 data frames with source addressing,
-	// GetPayload strips the MAC header/footer so the forwarder sees
-	// only the 6LoWPAN dispatch. When the PSDU is already raw 6LoWPAN
+	// parse the header to determine payload offset. When security is
+	// enabled and a key is available, decrypt the payload before passing
+	// it to the forwarder. When the PSDU is already raw 6LoWPAN
 	// (common in unit tests), we use the PSDU directly.
 	var macPayload []byte
 	if mf.GetType() == macframe.TypeData && (mf.GetSrcAddrMode() != 0 || mf.GetDstAddrMode() != 0) {
-		if p, err := mf.GetPayload(); err == nil && len(p) > 0 {
+		framer := mesh.NewFramer()
+		if fctx, offset, err := framer.ParseFrameHeader(frame.PSDU); err == nil {
+			if fctx.SecurityEnabled {
+				// Look up the decryption key from the key manager.
+				curKey := [16]byte(inst.keyManager.GetCurrentMacKey())
+				if curKey != [16]byte{} {
+					if decrypted, err := mesh.DecryptFramePayload(frame.PSDU, offset, fctx, curKey, macAddrs.SrcExtAddr); err == nil {
+						macPayload = decrypted
+						info.LinkSecurity = true
+					} else if seq := inst.keyManager.GetCurrentKeySequence(); seq > 0 {
+						// During key rotation a neighbor may still send with the previous key sequence.
+						prevKey := [16]byte(inst.keyManager.GetTemporaryMacKey(seq - 1))
+						if decrypted, err := mesh.DecryptFramePayload(frame.PSDU, offset, fctx, prevKey, macAddrs.SrcExtAddr); err == nil {
+							macPayload = decrypted
+							info.LinkSecurity = true
+						}
+					}
+				}
+			}
+			if macPayload == nil && offset < len(frame.PSDU) {
+				macPayload = frame.PSDU[offset:]
+			}
+		} else if p, err := mf.GetPayload(); err == nil && len(p) > 0 {
 			macPayload = p
 		}
 	}
@@ -1252,6 +1276,47 @@ func (inst *Instance) sendCoAP(data []byte, info coap.MessageInfo) error {
 }
 
 // --------------------------------------------------------------------------
+// Helper: sendUDP — generic UDP send with parameterized addresses/ports
+// --------------------------------------------------------------------------
+
+// sendUDP transmits a UDP payload through the Instance's mesh forwarder
+// using the provided source/destination addresses and ports. It follows
+// the same framing logic as sendCoAP but is not restricted to TMF ports.
+func (inst *Instance) sendUDP(payload []byte, srcAddr [16]byte, srcPort uint16, dstAddr [16]byte, dstPort uint16) error {
+	if inst.forwarder == nil {
+		return nil
+	}
+	// Derive destination RLOC16 from the destination address.
+	var dst ip6.Address
+	copy(dst[:], dstAddr[:])
+	var dstRLOC uint16 = 0xFFFF // broadcast default
+	if dst.IsRoutingLocator() {
+		iid := dst.GetIid()
+		dstRLOC = iid.GetLocator()
+	}
+
+	// Build TxMetadata for proper 6LoWPAN frame construction.
+	meta := mesh.BuildUDPMetadata(srcAddr, dstAddr, srcPort, dstPort, 64)
+	meta.SrcExtAddr = inst.GetExtAddress()
+	meta.UseSrcShort = true
+	meta.UseDstShort = (dstRLOC != 0xFFFF) // short for unicast
+	if inst.mac != nil {
+		meta.PanId = uint16(inst.mac.GetPanID())
+	}
+
+	// Enable MAC-layer security (AES-CCM* ENC-MIC-32, Key ID Mode 1).
+	meta.SecurityEnabled = true
+	meta.Security.KeyIdMode = 1
+	meta.Security.KeyId = inst.keyManager.GetMacKeyId()
+	meta.Security.FrameCounter = inst.keyManager.GetMacFrameCounter()
+	meta.Security.Key = [16]byte(inst.keyManager.GetCurrentMacKey())
+
+	txMsg := mesh.NewTxMessageWithMetadata(payload, dstRLOC, inst.rloc16, meta)
+	txMsg.Priority = uint8(mesh.PriorityNormal)
+	return inst.sendViaForwarder(txMsg)
+}
+
+// --------------------------------------------------------------------------
 // PollTransmitter adapter — bridges supervision.DataPollSender to mac.Mac
 // --------------------------------------------------------------------------
 
@@ -1439,8 +1504,16 @@ func (d *diagProviderAdapter) GetIPv6AddressList() ([]byte, bool) {
 }
 
 func (d *diagProviderAdapter) GetMacCounters() (*diag.MacCounters, bool) {
-	// TODO: Return MAC counters when the MAC layer tracks them.
-	return nil, false
+	if d.inst.mac == nil {
+		return nil, false
+	}
+	txTotal, txSuccess, _, txNoAck, _, _ := d.inst.mac.GetCounters()
+	counters := diag.MacCounters{
+		IfOutUcastPkts: txTotal,
+		IfOutErrors:    txNoAck,
+		IfOutDiscards:  txTotal - txSuccess,
+	}
+	return &counters, true
 }
 
 func (d *diagProviderAdapter) GetBatteryLevel() (uint8, bool) {
@@ -1531,8 +1604,25 @@ func (d *diagProviderAdapter) GetThreadStackVersion() (string, bool) {
 }
 
 func (d *diagProviderAdapter) GetMleCounters() (*diag.MleCounters, bool) {
-	// TODO: Return MLE counters when MLE service tracks them.
-	return nil, false
+	if d.inst.mleService == nil {
+		return nil, false
+	}
+
+	m := d.inst.mleService.Mle()
+	rc := m.GetCounters()
+
+	counters := diag.MleCounters{
+		DisabledRole:   uint16(rc.DisabledCount),
+		DetachedRole:   uint16(rc.DetachedCount),
+		ChildRole:      uint16(rc.ChildCount),
+		RouterRole:     uint16(rc.RouterCount),
+		LeaderRole:     uint16(rc.LeaderCount),
+		AttachAttempts: uint16(rc.AttachAttempts),
+		ParentChanges:  uint16(rc.ParentChanges),
+		TrackedTime:    uint64(time.Since(m.RoleStartTime()).Milliseconds()),
+	}
+
+	return &counters, true
 }
 
 // --------------------------------------------------------------------------
@@ -1548,10 +1638,35 @@ type mplSenderAdapter struct {
 var _ mpl.MessageSender = (*mplSenderAdapter)(nil)
 
 func (m *mplSenderAdapter) SendMulticast(payload []byte) error {
-	// TODO: Implement multicast TX via the mesh forwarder.
-	// This requires constructing an IPv6 multicast frame and sending
-	// it through the MAC layer to all-nodes multicast.
-	return nil
+	if m.inst.forwarder == nil {
+		return nil
+	}
+
+	srcAddr := [16]byte(m.inst.GetMeshLocalAddress())
+	dstAddr := [16]byte(ip6.MulticastRealmLocalAllMPLForwarders)
+
+	meta := &mesh.TxMetadata{
+		SrcAddr:    srcAddr,
+		DstAddr:    dstAddr,
+		NextHeader: ip6.ProtoHopOpts,
+		HopLimit:   64,
+		SrcExtAddr: m.inst.GetExtAddress(),
+		UseSrcShort: true,
+		UseDstShort: false,
+	}
+	if m.inst.mac != nil {
+		meta.PanId = uint16(m.inst.mac.GetPanID())
+	}
+
+	meta.SecurityEnabled = true
+	meta.Security.KeyIdMode = 1
+	meta.Security.KeyId = m.inst.keyManager.GetMacKeyId()
+	meta.Security.FrameCounter = m.inst.keyManager.GetMacFrameCounter()
+	meta.Security.Key = [16]byte(m.inst.keyManager.GetCurrentMacKey())
+
+	txMsg := mesh.NewTxMessageWithMetadata(payload, 0xFFFF, m.inst.rloc16, meta)
+	txMsg.Priority = uint8(mesh.PriorityNet)
+	return m.inst.sendViaForwarder(txMsg)
 }
 
 // --------------------------------------------------------------------------
@@ -1565,10 +1680,14 @@ type announceMsgSenderAdapter struct {
 var _ announce.MessageSender = (*announceMsgSenderAdapter)(nil)
 
 func (a *announceMsgSenderAdapter) SendAnnounce(channel uint16, orphanAnnounce bool) error {
-	// TODO: Build and send MLE Announce message on the given channel
-	// via mleService. This requires the MLE layer to support sending
-	// Announce messages on arbitrary channels.
-	return nil
+	if a.inst.mleService == nil || a.inst.mleService.AnnounceHandler == nil {
+		return nil
+	}
+	mode := mle.AnnounceNormal
+	if orphanAnnounce {
+		mode = mle.AnnounceOrphan
+	}
+	return a.inst.mleService.AnnounceHandler.SendAnnounce(channel, mode, mle.LinkLocalAllNodesMulticast)
 }
 
 // --------------------------------------------------------------------------
@@ -1623,9 +1742,12 @@ type discoverySenderAdapter struct {
 var _ discover.DiscoverySender = (*discoverySenderAdapter)(nil)
 
 func (d *discoverySenderAdapter) SendDiscoveryRequest(channel uint16, panID uint16, enableFiltering bool) error {
-	// TODO: Build and send MLE Discovery Request on the given channel
-	// via the MLE service. Requires MLE to support Discovery Request TX.
-	return nil
+	if d.inst.mleService == nil || d.inst.mleService.DiscoveryHandler == nil {
+		return nil
+	}
+	d.inst.mac.SetPanChannel(uint8(channel))
+	d.inst.mac.SetPanID(types.PanID(panID))
+	return d.inst.mleService.DiscoveryHandler.SendDiscoveryRequest(enableFiltering)
 }
 
 // --------------------------------------------------------------------------
@@ -1679,8 +1801,8 @@ type dhcp6ClientTransportAdapter struct {
 }
 
 func (a *dhcp6ClientTransportAdapter) Send(payload []byte, dst ip6.Address, dstPort uint16) error {
-	// TODO: Send DHCPv6 client message via UDP
-	return nil
+	srcAddr := a.inst.GetMeshLocalAddress()
+	return a.inst.sendUDP(payload, [16]byte(srcAddr), 546, [16]byte(dst), dstPort)
 }
 
 // ---------------------------------------------------------------------------
@@ -1694,8 +1816,8 @@ type dhcp6ServerTransportAdapter struct {
 }
 
 func (a *dhcp6ServerTransportAdapter) Send(payload []byte, dst ip6.Address, dstPort uint16) error {
-	// TODO: Send DHCPv6 server response via UDP
-	return nil
+	srcAddr := a.inst.GetMeshLocalAddress()
+	return a.inst.sendUDP(payload, [16]byte(srcAddr), 547, [16]byte(dst), dstPort)
 }
 
 // ---------------------------------------------------------------------------
@@ -1709,8 +1831,8 @@ type srpUDPSenderAdapter struct {
 }
 
 func (s *srpUDPSenderAdapter) Send(data []byte, dest ip6.SockAddr) error {
-	// TODO: Send SRP update via UDP to dest
-	return nil
+	srcAddr := s.inst.GetMeshLocalAddress()
+	return s.inst.sendUDP(data, [16]byte(srcAddr), 0, [16]byte(dest.Address), dest.Port)
 }
 
 // ---------------------------------------------------------------------------
@@ -1724,7 +1846,14 @@ type ndAgentAddressCheckerAdapter struct {
 }
 
 func (a *ndAgentAddressCheckerAdapter) HasAddress(addr ip6.Address) bool {
-	// TODO: Check if addr belongs to a Thread device we should proxy for.
+	if a.inst.childTable == nil {
+		return false
+	}
+	for _, child := range a.inst.childTable.Children(routing.FilterValid) {
+		if child.HasIP6Address(addr) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -1739,8 +1868,17 @@ type ndAgentNaSenderAdapter struct {
 }
 
 func (a *ndAgentNaSenderAdapter) SendNeighborAdvert(target ip6.Address, destination ip6.Address) error {
-	// TODO: Send NA on infrastructure link
-	return nil
+	if a.inst.infraIf == nil {
+		return nil
+	}
+
+	var na nd6.NeighborAdvertHeader
+	na.SetSolicitedFlag()
+	na.SetOverrideFlag()
+	na.SetTargetAddress(target)
+	buf := na.Marshal()
+
+	return a.inst.infraIf.SendIcmp6Nd(destination, buf[:])
 }
 
 // ---------------------------------------------------------------------------
@@ -2054,8 +2192,36 @@ type mgmtEnergyScannerAdapter struct {
 }
 
 func (a *mgmtEnergyScannerAdapter) EnergyScan(channel uint16, duration uint16) (int8, error) {
-	// TODO: Perform energy scan via radio platform
-	return -128, nil
+	m := a.inst.mac
+	if m == nil {
+		return -128, nil
+	}
+
+	done := make(chan int8, 1)
+	handler := &singleChannelEnergyScanHandler{done: done}
+
+	mask := types.ChannelMask(1 << uint8(channel))
+	if err := m.EnergyScan(mask, duration, handler); err != nil {
+		return -128, err
+	}
+
+	return <-done, nil
+}
+
+// singleChannelEnergyScanHandler implements mac.EnergyScanHandler for a
+// single-channel synchronous energy scan. It captures the RSSI result and
+// signals completion via a channel.
+type singleChannelEnergyScanHandler struct {
+	done    chan int8
+	maxRSSI int8
+}
+
+func (h *singleChannelEnergyScanHandler) HandleEnergyScanResult(_ uint8, maxRSSI int8) {
+	h.maxRSSI = maxRSSI
+}
+
+func (h *singleChannelEnergyScanHandler) HandleEnergyScanComplete() {
+	h.done <- h.maxRSSI
 }
 
 // ---------------------------------------------------------------------------
@@ -2069,7 +2235,11 @@ type mgmtPanIdScannerAdapter struct {
 }
 
 func (a *mgmtPanIdScannerAdapter) ScanForPanId(channel uint16, panId uint16) (bool, error) {
-	// TODO: Scan for PAN ID via radio platform
+	// PAN ID scanning requires active IEEE 802.15.4 scanning (sending beacon
+	// requests and inspecting responses), which is part of the MLE discovery
+	// layer (thread/discover). The radio.Radio interface does not expose a
+	// direct PAN ID scan primitive. This stub returns false (not found) until
+	// MLE-based active scanning is wired into the management layer.
 	return false, nil
 }
 
@@ -2150,12 +2320,25 @@ type meshcopScannerAdapter struct {
 }
 
 func (a *meshcopScannerAdapter) StartScan(callback func(result *seeker.DiscoverResult)) error {
-	// TODO: Start MeshCoP discovery scan via MLE
-	return nil
+	handler := func(result *discover.ScanResult) {
+		if result == nil {
+			callback(nil)
+			return
+		}
+		callback(&seeker.DiscoverResult{
+			NetworkName: result.NetworkName,
+			ExtPanID:    result.ExtPanID,
+			PanID:       result.PanID,
+			Channel:     uint8(result.Channel),
+			RSSI:        result.RSSI,
+			LQI:         result.LQI,
+		})
+	}
+	return a.inst.discoveryScanner.Discover(0, 0xffff, true, handler)
 }
 
 func (a *meshcopScannerAdapter) StopScan() {
-	// TODO: Stop MeshCoP discovery scan
+	a.inst.discoveryScanner.Stop()
 }
 
 

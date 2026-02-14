@@ -11,6 +11,7 @@ import (
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/thread/mle"
+	"github.com/hilli/gothread/tlv"
 
 	goterrors "github.com/hilli/gothread/errors"
 )
@@ -166,6 +167,32 @@ func SendAddressRelease(
 	coapInfo := tmfCoapInfo(meshLocalPrefix, senderRLOC16, leaderRLOC16)
 
 	// No response handler — Address Release is best-effort.
+	return agent.GetEngine().SendMessage(msg, coapInfo, nil, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Address Query client
+// ---------------------------------------------------------------------------
+
+// SendAddressQuery sends a CON POST to the realm-local all-routers multicast
+// address (ff03::2) with an Address Query (a/aq) payload containing the
+// Target EID TLV. This initiates EID-to-RLOC16 resolution.
+func SendAddressQuery(agent *Agent, target ip6.Address) error {
+	payload := tlv.TLV{
+		Type:  ThreadTLVTargetEID,
+		Value: target[:],
+	}.Marshal()
+
+	msg, err := buildCONPost(URIAddressQuery, payload)
+	if err != nil {
+		return err
+	}
+
+	coapInfo := coap.MessageInfo{
+		PeerAddr: ip6.MulticastRealmLocalAllRouters,
+		PeerPort: Port,
+	}
+
 	return agent.GetEngine().SendMessage(msg, coapInfo, nil, nil)
 }
 

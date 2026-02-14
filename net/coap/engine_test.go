@@ -971,6 +971,449 @@ func TestSendAck(t *testing.T) {
 // Interceptor test
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// SendPiggybackedResponse tests
+// ---------------------------------------------------------------------------
+
+func TestSendPiggybackedResponse(t *testing.T) {
+	e, s, _ := newTestEngine()
+
+	// Simulate receiving a CON request.
+	req := NewMessage(TypeConfirmable, CodeGet, 5000)
+	_ = req.SetToken([]byte{0xAA, 0xBB})
+
+	err := e.SendPiggybackedResponse(CodeContent, req, peerInfo(1), []byte("world"))
+	if err != nil {
+		t.Fatalf("SendPiggybackedResponse() = %v", err)
+	}
+	if s.Count() != 1 {
+		t.Fatalf("expected 1 sent, got %d", s.Count())
+	}
+
+	resp, err := ParseMessage(s.Last().data)
+	if err != nil {
+		t.Fatalf("ParseMessage() = %v", err)
+	}
+	if resp.GetType() != TypeAck {
+		t.Errorf("type = %d, want ACK", resp.GetType())
+	}
+	if resp.GetCode() != CodeContent {
+		t.Errorf("code = 0x%02x, want Content", resp.GetCode())
+	}
+	if resp.GetMessageID() != 5000 {
+		t.Errorf("message ID = %d, want 5000", resp.GetMessageID())
+	}
+	if !tokensEqual(resp.GetToken(), []byte{0xAA, 0xBB}) {
+		t.Errorf("token = %X, want AABB", resp.GetToken())
+	}
+	if string(resp.GetPayload()) != "world" {
+		t.Errorf("payload = %q, want %q", resp.GetPayload(), "world")
+	}
+
+	// Verify response was cached.
+	e.mu.Lock()
+	cached := e.findCachedResponseLocked(5000, peerInfo(1))
+	e.mu.Unlock()
+	if cached == nil {
+		t.Error("expected response to be cached")
+	}
+}
+
+func TestSendPiggybackedResponseNoTokenNoPayload(t *testing.T) {
+	e, s, _ := newTestEngine()
+
+	req := NewMessage(TypeConfirmable, CodeGet, 5001)
+
+	err := e.SendPiggybackedResponse(CodeContent, req, peerInfo(1), nil)
+	if err != nil {
+		t.Fatalf("SendPiggybackedResponse() = %v", err)
+	}
+	if s.Count() != 1 {
+		t.Fatalf("expected 1 sent, got %d", s.Count())
+	}
+
+	resp, err := ParseMessage(s.Last().data)
+	if err != nil {
+		t.Fatalf("ParseMessage() = %v", err)
+	}
+	if resp.GetToken() != nil {
+		t.Errorf("token = %X, want nil", resp.GetToken())
+	}
+	if resp.GetPayload() != nil {
+		t.Errorf("payload = %X, want nil", resp.GetPayload())
+	}
+}
+
+func TestSendPiggybackedResponseDuplicateReturnsCached(t *testing.T) {
+	e, s, _ := newTestEngine()
+
+	// Register a resource that uses SendPiggybackedResponse.
+	e.AddResource(&Resource{
+		URIPath: "piggybacked",
+		Handler: func(reqMsg *Message, reqInfo MessageInfo) {
+			_ = e.SendPiggybackedResponse(CodeContent, reqMsg, reqInfo, []byte("data"))
+		},
+	})
+
+	req := NewMessage(TypeConfirmable, CodeGet, 5002)
+	_ = req.AppendURIPathOptions("piggybacked")
+
+	// First request.
+	e.Receive(req.GetBytes(), peerInfo(1))
+	firstCount := s.Count()
+
+	// Duplicate request — should return cached response.
+	e.Receive(req.GetBytes(), peerInfo(1))
+	if s.Count() != firstCount+1 {
+		t.Errorf("expected %d sends, got %d", firstCount+1, s.Count())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AbortTransaction tests
+// ---------------------------------------------------------------------------
+
+func TestAbortTransaction(t *testing.T) {
+	e, _, _ := newTestEngine()
+
+	// AbortTransaction matches by handler pointer identity, which is hard
+	// to test externally. Verify it doesn't panic and returns nil.
+	err := e.AbortTransaction(func(_ *Message, _ MessageInfo, _ error) {})
+	if err != nil {
+		t.Errorf("AbortTransaction() = %v, want nil", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stop tests
+// ---------------------------------------------------------------------------
+
+func TestStop(t *testing.T) {
+	e, _, _ := newTestEngine()
+
+	var aborted int
+	for range 2 {
+		msg := buildCONRequest([]byte{0x20}, "test")
+		_ = e.SendMessage(msg, peerInfo(1), nil, func(_ *Message, _ MessageInfo, respErr error) {
+			if respErr == goterrors.ErrAbort {
+				aborted++
+			}
+		})
+	}
+
+	e.Stop()
+
+	if aborted != 2 {
+		t.Errorf("aborted = %d, want 2", aborted)
+	}
+
+	e.mu.Lock()
+	if len(e.pending) != 0 {
+		t.Errorf("pending = %d, want 0", len(e.pending))
+	}
+	e.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// Cache eviction tests
+// ---------------------------------------------------------------------------
+
+func TestCacheEvictionWhenFull(t *testing.T) {
+	e, _, clk := newTestEngine()
+	e.maxCacheSize = 2
+
+	info := peerInfo(1)
+	lifetime := 10 * time.Second
+
+	// Fill cache to capacity.
+	e.mu.Lock()
+	e.addToCacheLocked([]byte{0x01}, info, 1, lifetime)
+	e.addToCacheLocked([]byte{0x02}, info, 2, lifetime)
+	e.mu.Unlock()
+
+	// Adding a third should evict the oldest.
+	e.mu.Lock()
+	e.addToCacheLocked([]byte{0x03}, info, 3, lifetime)
+	if len(e.cache) != 2 {
+		t.Errorf("cache size = %d, want 2", len(e.cache))
+	}
+	// Oldest (msgID=1) should be evicted.
+	found := e.findCachedResponseLocked(1, info)
+	e.mu.Unlock()
+
+	if found != nil {
+		t.Error("expected msgID=1 to be evicted")
+	}
+
+	// Verify msgID=3 is present.
+	e.mu.Lock()
+	found3 := e.findCachedResponseLocked(3, info)
+	e.mu.Unlock()
+	if found3 == nil {
+		t.Error("expected msgID=3 to be present")
+	}
+	_ = clk
+}
+
+func TestCacheCleanExpired(t *testing.T) {
+	e, _, clk := newTestEngine()
+
+	info := peerInfo(1)
+
+	e.mu.Lock()
+	e.addToCacheLocked([]byte{0x01}, info, 1, 1*time.Second)
+	e.addToCacheLocked([]byte{0x02}, info, 2, 10*time.Second)
+	e.mu.Unlock()
+
+	// Advance past first entry's expiry.
+	clk.Advance(2 * time.Second)
+
+	// Adding new entry triggers cleanCacheLocked.
+	e.mu.Lock()
+	e.addToCacheLocked([]byte{0x03}, info, 3, 10*time.Second)
+
+	// Entry 1 should be expired.
+	found1 := e.findCachedResponseLocked(1, info)
+	found2 := e.findCachedResponseLocked(2, info)
+	e.mu.Unlock()
+
+	if found1 != nil {
+		t.Error("expected expired entry (msgID=1) to be cleaned")
+	}
+	if found2 == nil {
+		t.Error("expected non-expired entry (msgID=2) to be present")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NON request timeout tests
+// ---------------------------------------------------------------------------
+
+func TestNONRequestTimeoutCallsHandler(t *testing.T) {
+	e, _, clk := newTestEngine()
+
+	txp := TxParameters{
+		AckTimeout:                 1000,
+		AckRandomFactorNumerator:   1,
+		AckRandomFactorDenominator: 1,
+		MaxRetransmit:              0,
+	}
+
+	var gotErr error
+	msg := buildNONRequest([]byte{0x05}, "test")
+	_ = e.SendMessage(msg, peerInfo(1), &txp, func(_ *Message, _ MessageInfo, respErr error) {
+		gotErr = respErr
+	})
+
+	// Advance past exchange lifetime.
+	clk.Advance(300 * time.Second)
+	e.handleRetransmissionTimer()
+
+	if gotErr != goterrors.ErrResponseTimeout {
+		t.Errorf("handler err = %v, want ErrResponseTimeout", gotErr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SendMessage edge cases
+// ---------------------------------------------------------------------------
+
+func TestSendMessageInvalidTxParams(t *testing.T) {
+	e, _, _ := newTestEngine()
+
+	badTxp := &TxParameters{
+		AckTimeout:                 2000,
+		AckRandomFactorNumerator:   3,
+		AckRandomFactorDenominator: 0, // invalid
+		MaxRetransmit:              4,
+	}
+
+	msg := buildCONRequest([]byte{0x01}, "test")
+	err := e.SendMessage(msg, peerInfo(1), badTxp, nil)
+	if err == nil {
+		t.Error("expected error for invalid TxParameters")
+	}
+}
+
+func TestSendMessageTooShort(t *testing.T) {
+	e, _, _ := newTestEngine()
+
+	// Create a message with truncated bytes.
+	msg := &Message{data: []byte{0x40, 0x01}} // only 2 bytes
+	err := e.SendMessage(msg, peerInfo(1), nil, nil)
+	if err == nil {
+		t.Error("expected error for message shorter than HeaderSize")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Receive edge cases
+// ---------------------------------------------------------------------------
+
+func TestReceiveMalformedMessage(t *testing.T) {
+	e, s, _ := newTestEngine()
+
+	// Receive garbage — should be silently dropped.
+	e.Receive([]byte{0x00, 0x01}, peerInfo(1))
+
+	if s.Count() != 0 {
+		t.Errorf("expected no sends for malformed input, got %d", s.Count())
+	}
+}
+
+func TestReceiveNONRequestNoHandlerSilentlyIgnored(t *testing.T) {
+	e, s, _ := newTestEngine()
+
+	req := NewMessage(TypeNonConfirmable, CodeGet, 6000)
+	_ = req.AppendURIPathOptions("unknown")
+	e.Receive(req.GetBytes(), peerInfo(1))
+
+	// NON with no handler should be silently ignored (no 4.04).
+	if s.Count() != 0 {
+		t.Errorf("expected 0 sends for unmatched NON, got %d", s.Count())
+	}
+}
+
+func TestReceiveUnmatchedNONResponseIgnored(t *testing.T) {
+	e, s, _ := newTestEngine()
+
+	// NON response with no pending request — silently ignored.
+	resp := NewMessage(TypeNonConfirmable, CodeContent, 9000)
+	_ = resp.SetToken([]byte{0xEE})
+	e.Receive(resp.GetBytes(), peerInfo(1))
+
+	if s.Count() != 0 {
+		t.Errorf("expected 0 sends for unmatched NON response, got %d", s.Count())
+	}
+}
+
+func TestReceiveResponseFromDifferentPeerNotMatched(t *testing.T) {
+	e, s, _ := newTestEngine()
+
+	var gotMsg *Message
+	msg := buildCONRequest([]byte{0xDD}, "test")
+	_ = e.SendMessage(msg, peerInfo(1), nil, func(respMsg *Message, _ MessageInfo, _ error) {
+		gotMsg = respMsg
+	})
+	s.Reset()
+
+	// Send NON response with matching token but different peer.
+	ack := NewMessage(TypeAck, CodeEmpty, 1000)
+	e.Receive(ack.GetBytes(), peerInfo(1))
+
+	nonResp := NewMessage(TypeNonConfirmable, CodeContent, 9000)
+	_ = nonResp.SetToken([]byte{0xDD})
+	e.Receive(nonResp.GetBytes(), peerInfo(2)) // different peer
+
+	if gotMsg != nil {
+		t.Error("expected handler NOT to be called for different peer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SendHeaderResponse edge cases
+// ---------------------------------------------------------------------------
+
+func TestSendHeaderResponseWithToken(t *testing.T) {
+	e, s, _ := newTestEngine()
+
+	req := NewMessage(TypeConfirmable, CodeGet, 5050)
+	_ = req.SetToken([]byte{0xDE, 0xAD})
+
+	err := e.SendHeaderResponse(CodeChanged, req, peerInfo(1))
+	if err != nil {
+		t.Fatalf("SendHeaderResponse() = %v", err)
+	}
+
+	resp, _ := ParseMessage(s.Last().data)
+	if resp.GetCode() != CodeChanged {
+		t.Errorf("code = 0x%02x, want Changed", resp.GetCode())
+	}
+	if !tokensEqual(resp.GetToken(), []byte{0xDE, 0xAD}) {
+		t.Errorf("token = %X, want DEAD", resp.GetToken())
+	}
+}
+
+func TestSendHeaderResponseNoToken(t *testing.T) {
+	e, s, _ := newTestEngine()
+
+	req := NewMessage(TypeConfirmable, CodeGet, 5051)
+	// No token set.
+
+	err := e.SendHeaderResponse(CodeContent, req, peerInfo(1))
+	if err != nil {
+		t.Fatalf("SendHeaderResponse() = %v", err)
+	}
+
+	resp, _ := ParseMessage(s.Last().data)
+	if resp.GetToken() != nil {
+		t.Errorf("token = %X, want nil", resp.GetToken())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// copyToken tests
+// ---------------------------------------------------------------------------
+
+func TestCopyTokenNil(t *testing.T) {
+	if copyToken(nil) != nil {
+		t.Error("copyToken(nil) should return nil")
+	}
+}
+
+func TestCopyTokenEmpty(t *testing.T) {
+	if copyToken([]byte{}) != nil {
+		t.Error("copyToken(empty) should return nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RemoveResource non-existent
+// ---------------------------------------------------------------------------
+
+func TestRemoveResourceNonExistent(t *testing.T) {
+	e, _, _ := newTestEngine()
+	// Should not panic.
+	e.RemoveResource("does/not/exist")
+}
+
+// ---------------------------------------------------------------------------
+// Interceptor passes through
+// ---------------------------------------------------------------------------
+
+func TestInterceptorPassesThrough(t *testing.T) {
+	e, _, _ := newTestEngine()
+
+	intercepted := false
+	e.SetInterceptor(func(_ *Message, _ MessageInfo) error {
+		intercepted = true
+		return nil // pass through
+	})
+
+	resourceCalled := false
+	e.AddResource(&Resource{
+		URIPath: "test",
+		Handler: func(_ *Message, _ MessageInfo) {
+			resourceCalled = true
+		},
+	})
+
+	req := NewMessage(TypeConfirmable, CodeGet, 5000)
+	_ = req.AppendURIPathOptions("test")
+	e.Receive(req.GetBytes(), peerInfo(1))
+
+	if !intercepted {
+		t.Error("interceptor was not called")
+	}
+	if !resourceCalled {
+		t.Error("resource handler should be called when interceptor passes through")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Interceptor test (original)
+// ---------------------------------------------------------------------------
+
 func TestInterceptorConsumesMessage(t *testing.T) {
 	e, _, _ := newTestEngine()
 

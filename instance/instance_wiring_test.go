@@ -6,6 +6,7 @@ package instance
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 	"time"
 
@@ -16,9 +17,12 @@ import (
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/filter"
 	"github.com/hilli/gothread/mac/types"
+	borderinfra "github.com/hilli/gothread/border"
 	"github.com/hilli/gothread/net/coap"
+	"github.com/hilli/gothread/net/dns"
 	"github.com/hilli/gothread/net/icmp6"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/nd6"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
@@ -28,6 +32,8 @@ import (
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
+	"github.com/hilli/gothread/meshcop/seeker"
+	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/supervision"
 	"github.com/hilli/gothread/thread/timesync"
 )
@@ -3420,6 +3426,61 @@ func TestMplForwarder_HandleTimerInPeriodicTick(t *testing.T) {
 	inst.handlePeriodicTick()
 }
 
+func TestMplMulticast_NilForwarder(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder = nil // disable forwarder
+
+	adapter := &mplSenderAdapter{inst: inst}
+	if err := adapter.SendMulticast([]byte{0x01, 0x02}); err != nil {
+		t.Errorf("SendMulticast() with nil forwarder returned error: %v", err)
+	}
+}
+
+func TestMplMulticast_Enqueued(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	adapter := &mplSenderAdapter{inst: inst}
+	payload := []byte{0xDE, 0xAD}
+	if err := adapter.SendMulticast(payload); err != nil {
+		t.Fatalf("SendMulticast() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+
+	// Multicast destination → broadcast mesh dest.
+	if msg.MeshDest != 0xFFFF {
+		t.Errorf("MeshDest = %04x, want FFFF", msg.MeshDest)
+	}
+	if msg.MeshSource != 0x0400 {
+		t.Errorf("MeshSource = %04x, want 0400", msg.MeshSource)
+	}
+	if msg.Priority != uint8(mesh.PriorityNet) {
+		t.Errorf("Priority = %d, want %d (PriorityNet)", msg.Priority, mesh.PriorityNet)
+	}
+
+	// Verify metadata.
+	if msg.Metadata == nil {
+		t.Fatal("Metadata is nil")
+	}
+	wantDst := [16]byte(ip6.MulticastRealmLocalAllMPLForwarders)
+	if msg.Metadata.DstAddr != wantDst {
+		t.Errorf("DstAddr = %x, want %x", msg.Metadata.DstAddr, wantDst)
+	}
+	if msg.Metadata.NextHeader != ip6.ProtoHopOpts {
+		t.Errorf("NextHeader = %d, want %d (ProtoHopOpts)", msg.Metadata.NextHeader, ip6.ProtoHopOpts)
+	}
+	if msg.Metadata.HopLimit != 64 {
+		t.Errorf("HopLimit = %d, want 64", msg.Metadata.HopLimit)
+	}
+}
+
 // --------------------------------------------------------------------------
 // Announce Sender + Begin Server wiring tests
 // --------------------------------------------------------------------------
@@ -3494,6 +3555,73 @@ func TestDiscoveryScanner_InitialState(t *testing.T) {
 	if len(inst.discoveryScanner.Results()) != 0 {
 		t.Error("scanner should have no results initially")
 	}
+}
+
+// --------------------------------------------------------------------------
+// announceMsgSenderAdapter.SendAnnounce
+// --------------------------------------------------------------------------
+
+func TestAnnounceMsgSenderAdapter_SendAnnounce_NilMleService(t *testing.T) {
+	inst := New(Config{})
+	adapter := &announceMsgSenderAdapter{inst: inst}
+	inst.mleService = nil
+	err := adapter.SendAnnounce(11, false)
+	if err != nil {
+		t.Fatalf("SendAnnounce with nil mleService should return nil, got %v", err)
+	}
+}
+
+func TestAnnounceMsgSenderAdapter_SendAnnounce_NilAnnounceHandler(t *testing.T) {
+	inst := New(Config{})
+	adapter := &announceMsgSenderAdapter{inst: inst}
+	inst.mleService.AnnounceHandler = nil
+	err := adapter.SendAnnounce(11, false)
+	if err != nil {
+		t.Fatalf("SendAnnounce with nil AnnounceHandler should return nil, got %v", err)
+	}
+}
+
+func TestAnnounceMsgSenderAdapter_SendAnnounce_DelegatesToHandler(t *testing.T) {
+	inst := New(Config{})
+	adapter := &announceMsgSenderAdapter{inst: inst}
+	// With a fully wired instance the handler is non-nil, so the call
+	// reaches the real handler (proving delegation). The lower layer may
+	// return an error (e.g. mesh forwarder disabled), but the important
+	// thing is that it does not panic and actually delegates.
+	_ = adapter.SendAnnounce(15, false) // normal mode
+	_ = adapter.SendAnnounce(15, true)  // orphan mode
+}
+
+// --------------------------------------------------------------------------
+// discoverySenderAdapter.SendDiscoveryRequest
+// --------------------------------------------------------------------------
+
+func TestDiscoverySenderAdapter_SendDiscoveryRequest_NilMleService(t *testing.T) {
+	inst := New(Config{})
+	adapter := &discoverySenderAdapter{inst: inst}
+	inst.mleService = nil
+	err := adapter.SendDiscoveryRequest(11, 0xFFFF, true)
+	if err != nil {
+		t.Fatalf("SendDiscoveryRequest with nil mleService should return nil, got %v", err)
+	}
+}
+
+func TestDiscoverySenderAdapter_SendDiscoveryRequest_NilDiscoveryHandler(t *testing.T) {
+	inst := New(Config{})
+	adapter := &discoverySenderAdapter{inst: inst}
+	inst.mleService.DiscoveryHandler = nil
+	err := adapter.SendDiscoveryRequest(11, 0xFFFF, true)
+	if err != nil {
+		t.Fatalf("SendDiscoveryRequest with nil DiscoveryHandler should return nil, got %v", err)
+	}
+}
+
+func TestDiscoverySenderAdapter_SendDiscoveryRequest_DelegatesToHandler(t *testing.T) {
+	inst := New(Config{})
+	adapter := &discoverySenderAdapter{inst: inst}
+	// Delegation reaches the real handler; lower-layer errors are expected
+	// because the mesh forwarder is disabled in the default instance.
+	_ = adapter.SendDiscoveryRequest(15, 0x1234, false)
 }
 
 // ---------------------------------------------------------------------------
@@ -3712,6 +3840,104 @@ func TestDiagProvider_GetTimeout(t *testing.T) {
 	// Default device mode is typically RxOnWhenIdle, so timeout should be (0, false).
 	_, _ = dp.GetTimeout()
 	// Just verify it doesn't panic.
+}
+
+// ---------------------------------------------------------------------------
+// DiagProvider — Mac and MLE Counters
+// ---------------------------------------------------------------------------
+
+func TestDiagProvider_GetMacCounters_NilMac(t *testing.T) {
+	inst := &Instance{} // bare instance, mac is nil
+	dp := &diagProviderAdapter{inst: inst}
+	counters, ok := dp.GetMacCounters()
+	if ok {
+		t.Error("expected ok=false when mac is nil")
+	}
+	if counters != nil {
+		t.Error("expected nil counters when mac is nil")
+	}
+}
+
+func TestDiagProvider_GetMacCounters_Valid(t *testing.T) {
+	inst := New(Config{})
+	dp := &diagProviderAdapter{inst: inst}
+
+	// Record some transmissions via RecordFrameTransmitStatus:
+	// 3 successful, 2 failed (noAck, not retrying)
+	for i := 0; i < 3; i++ {
+		inst.mac.RecordFrameTransmitStatus(nil, nil, 0, false)
+	}
+	errNoAck := fmt.Errorf("no ack")
+	for i := 0; i < 2; i++ {
+		inst.mac.RecordFrameTransmitStatus(nil, errNoAck, 0, false)
+	}
+
+	counters, ok := dp.GetMacCounters()
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	// txTotal = 5 (3 success + 2 fail)
+	if counters.IfOutUcastPkts != 5 {
+		t.Errorf("IfOutUcastPkts = %d, want 5", counters.IfOutUcastPkts)
+	}
+	// txNoAck = 2
+	if counters.IfOutErrors != 2 {
+		t.Errorf("IfOutErrors = %d, want 2", counters.IfOutErrors)
+	}
+	// IfOutDiscards = txTotal - txSuccess = 5 - 3 = 2
+	if counters.IfOutDiscards != 2 {
+		t.Errorf("IfOutDiscards = %d, want 2", counters.IfOutDiscards)
+	}
+}
+
+func TestDiagProvider_GetMleCounters_NilMleService(t *testing.T) {
+	inst := &Instance{} // bare instance, mleService is nil
+	dp := &diagProviderAdapter{inst: inst}
+	counters, ok := dp.GetMleCounters()
+	if ok {
+		t.Error("expected ok=false when mleService is nil")
+	}
+	if counters != nil {
+		t.Error("expected nil counters when mleService is nil")
+	}
+}
+
+func TestDiagProvider_GetMleCounters_Valid(t *testing.T) {
+	inst := New(Config{})
+	dp := &diagProviderAdapter{inst: inst}
+
+	m := inst.mleService.Mle()
+
+	// Drive role transitions to increment counters.
+	// NewMle starts in RoleDisabled.
+	// Enable: Disabled -> Detached  (DetachedCount++)
+	// SetStateChild: Detached -> Child  (ChildCount++)
+	// SetStateRouter: Child -> Router  (RouterCount++)
+	// SetStateLeader: Router -> Leader  (LeaderCount++)
+	_ = m.Enable()
+	_ = m.SetStateChild(0x0400)
+	_ = m.SetStateRouter(0x0400)
+	_ = m.SetStateLeader(0x0400)
+
+	counters, ok := dp.GetMleCounters()
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if counters.DetachedRole != 1 {
+		t.Errorf("DetachedRole = %d, want 1", counters.DetachedRole)
+	}
+	if counters.ChildRole != 1 {
+		t.Errorf("ChildRole = %d, want 1", counters.ChildRole)
+	}
+	if counters.RouterRole != 1 {
+		t.Errorf("RouterRole = %d, want 1", counters.RouterRole)
+	}
+	if counters.LeaderRole != 1 {
+		t.Errorf("LeaderRole = %d, want 1", counters.LeaderRole)
+	}
+	// TrackedTime is time.Since(roleStartTime) in ms — may be 0 in fast tests,
+	// so just verify the field is present (no panic, valid uint64).
+	_ = counters.TrackedTime
 }
 
 // ---------------------------------------------------------------------------
@@ -4353,6 +4579,183 @@ func TestEnergyScanServerAccessor(t *testing.T) {
 		t.Error("EnergyScanServer() should return the same pointer")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// meshcopScannerAdapter tests
+// ---------------------------------------------------------------------------
+
+func TestMeshcopScannerAdapter_StartScan_DelegatesToDiscover(t *testing.T) {
+	inst := New(Config{})
+	// Replace discoveryScanner with one using a no-op sender so
+	// scanCurrentChannel succeeds.
+	sender := &stubDiscoverySender{}
+	timer := &stubDiscoverTimer{}
+	inst.discoveryScanner = discover.NewScanner(sender, timer)
+	adapter := &meshcopScannerAdapter{inst: inst}
+
+	var called bool
+	err := adapter.StartScan(func(result *seeker.DiscoverResult) {
+		called = true
+	})
+	_ = called
+	if err != nil {
+		t.Fatalf("StartScan returned unexpected error: %v", err)
+	}
+	if !inst.discoveryScanner.IsScanning() {
+		t.Error("discoveryScanner should be scanning after StartScan")
+	}
+	adapter.StopScan()
+	if inst.discoveryScanner.IsScanning() {
+		t.Error("discoveryScanner should not be scanning after StopScan")
+	}
+}
+
+func TestMeshcopScannerAdapter_StartScan_CallbackTranslation(t *testing.T) {
+	inst := New(Config{})
+	sender := &stubDiscoverySender{}
+	timer := &stubDiscoverTimer{}
+	inst.discoveryScanner = discover.NewScanner(sender, timer)
+	adapter := &meshcopScannerAdapter{inst: inst}
+
+	var got *seeker.DiscoverResult
+	gotCalled := false
+	err := adapter.StartScan(func(result *seeker.DiscoverResult) {
+		got = result
+		gotCalled = true
+	})
+	if err != nil {
+		t.Fatalf("StartScan returned unexpected error: %v", err)
+	}
+
+	// Stop triggers finishScan which calls the handler with nil,
+	// verifying the adapter's callback translation for the nil case.
+	adapter.StopScan()
+
+	if !gotCalled {
+		t.Fatal("callback was never called")
+	}
+	if got != nil {
+		t.Errorf("expected nil result for scan-complete signal, got %+v", got)
+	}
+}
+
+func TestMeshcopScannerAdapter_StartScan_NonNilResult(t *testing.T) {
+	inst := New(Config{})
+	sender := &stubDiscoverySender{}
+	timer := &stubDiscoverTimer{}
+	inst.discoveryScanner = discover.NewScanner(sender, timer)
+	adapter := &meshcopScannerAdapter{inst: inst}
+
+	var results []*seeker.DiscoverResult
+	err := adapter.StartScan(func(result *seeker.DiscoverResult) {
+		results = append(results, result)
+	})
+	if err != nil {
+		t.Fatalf("StartScan error: %v", err)
+	}
+
+	// Feed a real discovery response; enableFiltering is true (set by
+	// StartScan), so we include steering data to pass the filter.
+	inst.discoveryScanner.HandleDiscoveryResponse(&discover.ScanResult{
+		NetworkName:  "TestNet",
+		ExtPanID:     [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+		PanID:        0x1234,
+		Channel:      15,
+		RSSI:         -50,
+		LQI:          200,
+		SteeringData: []byte{0xFF}, // non-empty so filter passes
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.NetworkName != "TestNet" {
+		t.Errorf("NetworkName = %q, want %q", r.NetworkName, "TestNet")
+	}
+	if r.PanID != 0x1234 {
+		t.Errorf("PanID = %#x, want 0x1234", r.PanID)
+	}
+	if r.Channel != 15 {
+		t.Errorf("Channel = %d, want 15", r.Channel)
+	}
+	if r.RSSI != -50 {
+		t.Errorf("RSSI = %d, want -50", r.RSSI)
+	}
+	if r.LQI != 200 {
+		t.Errorf("LQI = %d, want 200", r.LQI)
+	}
+}
+
+func TestMeshcopScannerAdapter_StopScan_IdleNoPanic(t *testing.T) {
+	inst := New(Config{})
+	adapter := &meshcopScannerAdapter{inst: inst}
+
+	// StopScan on an idle scanner should not panic.
+	adapter.StopScan()
+
+	if inst.discoveryScanner.IsScanning() {
+		t.Error("discoveryScanner should remain idle")
+	}
+}
+
+func TestMeshcopScannerAdapter_StopScan_DelegatesToStop(t *testing.T) {
+	inst := New(Config{})
+	sender := &stubDiscoverySender{}
+	timer := &stubDiscoverTimer{}
+	inst.discoveryScanner = discover.NewScanner(sender, timer)
+	adapter := &meshcopScannerAdapter{inst: inst}
+
+	err := adapter.StartScan(func(result *seeker.DiscoverResult) {})
+	if err != nil {
+		t.Fatalf("StartScan returned unexpected error: %v", err)
+	}
+	if !inst.discoveryScanner.IsScanning() {
+		t.Fatal("expected scanner to be scanning")
+	}
+
+	adapter.StopScan()
+
+	if inst.discoveryScanner.IsScanning() {
+		t.Error("StopScan should delegate to discoveryScanner.Stop()")
+	}
+}
+
+func TestMeshcopScannerAdapter_NilDiscoveryScanner(t *testing.T) {
+	inst := New(Config{})
+	inst.discoveryScanner = nil
+	adapter := &meshcopScannerAdapter{inst: inst}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic when discoveryScanner is nil")
+		}
+	}()
+	_ = adapter.StartScan(func(result *seeker.DiscoverResult) {})
+}
+
+func TestMeshcopScannerAdapter_ImplementsScanner(t *testing.T) {
+	var s seeker.Scanner = &meshcopScannerAdapter{inst: New(Config{})}
+	if s == nil {
+		t.Fatal("meshcopScannerAdapter should implement seeker.Scanner")
+	}
+}
+
+// stubDiscoverySender is a no-op DiscoverySender for meshcop scanner tests.
+type stubDiscoverySender struct{}
+
+func (s *stubDiscoverySender) SendDiscoveryRequest(channel uint16, panID uint16, enableFiltering bool) error {
+	return nil
+}
+
+// stubDiscoverTimer is a no-op Timer for meshcop scanner tests.
+type stubDiscoverTimer struct {
+	running bool
+}
+
+func (t *stubDiscoverTimer) Start(delayMs uint32) { t.running = true }
+func (t *stubDiscoverTimer) Stop()                { t.running = false }
+func (t *stubDiscoverTimer) IsRunning() bool       { return t.running }
 
 // ---------------------------------------------------------------------------
 // PAN ID Query Server wiring
@@ -5209,5 +5612,656 @@ func TestPowerCalibrationAccessor(t *testing.T) {
 	}
 	if got != inst.powerCalibration {
 		t.Error("PowerCalibration() should return the same pointer")
+	}
+}
+
+// --------------------------------------------------------------------------
+// sendUDP tests
+// --------------------------------------------------------------------------
+
+func TestSendUDP_NilForwarder(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder = nil
+
+	// sendUDP with nil forwarder should return nil (no panic).
+	err := inst.sendUDP([]byte{0x01}, [16]byte{}, 1234, [16]byte{}, 5678)
+	if err != nil {
+		t.Errorf("sendUDP() with nil forwarder = %v, want nil", err)
+	}
+}
+
+func TestSendUDP_ForwarderEnabled(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+
+	var srcAddr, dstAddr [16]byte
+	srcAddr[15] = 0x01
+	dstAddr[15] = 0x02
+
+	err := inst.sendUDP([]byte{0xAA, 0xBB}, srcAddr, 1234, dstAddr, 5678)
+	if err != nil {
+		t.Errorf("sendUDP() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+
+	if !msg.HasMetadata() {
+		t.Fatal("expected metadata from sendUDP")
+	}
+	meta := msg.Metadata
+
+	if meta.SrcPort != 1234 {
+		t.Errorf("SrcPort = %d, want 1234", meta.SrcPort)
+	}
+	if meta.DstPort != 5678 {
+		t.Errorf("DstPort = %d, want 5678", meta.DstPort)
+	}
+	if meta.SrcAddr != srcAddr {
+		t.Errorf("SrcAddr = %v, want %v", meta.SrcAddr, srcAddr)
+	}
+	if meta.DstAddr != dstAddr {
+		t.Errorf("DstAddr = %v, want %v", meta.DstAddr, dstAddr)
+	}
+	if meta.NextHeader != ip6.ProtoUDP {
+		t.Errorf("NextHeader = %d, want %d", meta.NextHeader, ip6.ProtoUDP)
+	}
+	if !meta.SecurityEnabled {
+		t.Error("SecurityEnabled should be true")
+	}
+	if meta.Security.KeyIdMode != 1 {
+		t.Errorf("Security.KeyIdMode = %d, want 1", meta.Security.KeyIdMode)
+	}
+	if msg.Priority != uint8(mesh.PriorityNormal) {
+		t.Errorf("Priority = %d, want %d (PriorityNormal)", msg.Priority, mesh.PriorityNormal)
+	}
+}
+
+func TestSendUDP_RLOCDest(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	// Build a mesh-local RLOC address for destination RLOC16 = 0x0800.
+	var dstAddr [16]byte
+	copy(dstAddr[0:8], inst.meshLocalPrefix[:])
+	dstAddr[8] = 0x00
+	dstAddr[9] = 0x00
+	dstAddr[10] = 0x00
+	dstAddr[11] = 0xFF
+	dstAddr[12] = 0xFE
+	dstAddr[13] = 0x00
+	dstAddr[14] = 0x08
+	dstAddr[15] = 0x00
+
+	err := inst.sendUDP([]byte{0x01}, [16]byte{}, 1000, dstAddr, 2000)
+	if err != nil {
+		t.Errorf("sendUDP() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+
+	if msg.MeshDest != 0x0800 {
+		t.Errorf("MeshDest = %04x, want 0800", msg.MeshDest)
+	}
+	if !msg.HasMetadata() {
+		t.Fatal("expected metadata from sendUDP")
+	}
+	if !msg.Metadata.UseDstShort {
+		t.Error("UseDstShort should be true for unicast RLOC destination")
+	}
+}
+
+func TestSendUDP_MulticastDest(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+
+	// ff02::1 is a multicast address, not a routing locator.
+	dstAddr, _ := ip6.AddressFromString("ff02::1")
+
+	err := inst.sendUDP([]byte{0x01}, [16]byte{}, 1000, [16]byte(dstAddr), 2000)
+	if err != nil {
+		t.Errorf("sendUDP() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+
+	if msg.MeshDest != 0xFFFF {
+		t.Errorf("MeshDest = %04x, want FFFF", msg.MeshDest)
+	}
+	if msg.HasMetadata() && msg.Metadata.UseDstShort {
+		t.Error("UseDstShort should be false for multicast destination")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EnergyScan / PanIdScan adapter tests
+// ---------------------------------------------------------------------------
+
+func TestEnergyScanNilMac(t *testing.T) {
+	adapter := &mgmtEnergyScannerAdapter{inst: &Instance{}}
+	rssi, err := adapter.EnergyScan(11, 100)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if rssi != -128 {
+		t.Fatalf("expected -128, got %d", rssi)
+	}
+}
+
+func TestSingleChannelEnergyScanHandler(t *testing.T) {
+	handler := &singleChannelEnergyScanHandler{done: make(chan int8, 1)}
+	handler.HandleEnergyScanResult(11, -45)
+	if handler.maxRSSI != -45 {
+		t.Fatalf("expected maxRSSI -45, got %d", handler.maxRSSI)
+	}
+	handler.HandleEnergyScanComplete()
+	select {
+	case result := <-handler.done:
+		if result != -45 {
+			t.Fatalf("expected -45 from done channel, got %d", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for done channel")
+	}
+}
+
+func TestPanIdScanStub(t *testing.T) {
+	adapter := &mgmtPanIdScannerAdapter{inst: &Instance{}}
+	found, err := adapter.ScanForPanId(11, 0x1234)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if found {
+		t.Fatal("expected false from stub")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ndAgentAddressCheckerAdapter — HasAddress
+// ---------------------------------------------------------------------------
+
+func TestAddressChecker_HasAddress_NilChildTable(t *testing.T) {
+	inst := &Instance{} // childTable is nil
+	a := &ndAgentAddressCheckerAdapter{inst: inst}
+	if a.HasAddress(ip6.Address{1}) {
+		t.Error("expected false when childTable is nil")
+	}
+}
+
+func TestAddressChecker_HasAddress_EmptyChildTable(t *testing.T) {
+	inst := &Instance{childTable: routing.NewChildTable()}
+	a := &ndAgentAddressCheckerAdapter{inst: inst}
+	if a.HasAddress(ip6.Address{1}) {
+		t.Error("expected false when childTable is empty")
+	}
+}
+
+func TestAddressChecker_HasAddress_Found(t *testing.T) {
+	ct := routing.NewChildTable()
+	child := ct.GetNewChild()
+	child.State = routing.StateValid
+	addr := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	child.AddIP6Address(addr)
+
+	inst := &Instance{childTable: ct}
+	a := &ndAgentAddressCheckerAdapter{inst: inst}
+	if !a.HasAddress(addr) {
+		t.Error("expected true when child has the address")
+	}
+}
+
+func TestAddressChecker_HasAddress_NotFound(t *testing.T) {
+	ct := routing.NewChildTable()
+	child := ct.GetNewChild()
+	child.State = routing.StateValid
+	child.AddIP6Address(ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})
+
+	inst := &Instance{childTable: ct}
+	a := &ndAgentAddressCheckerAdapter{inst: inst}
+	other := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	if a.HasAddress(other) {
+		t.Error("expected false when no child has the address")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ndAgentNaSenderAdapter — SendNeighborAdvert
+// ---------------------------------------------------------------------------
+
+// mockInfraIfPlatform implements borderinfra.InfraIfPlatform for testing.
+type mockInfraIfPlatform struct {
+	sendCalled bool
+	sendDest   ip6.Address
+	sendBuf    []byte
+}
+
+func (m *mockInfraIfPlatform) SendIcmp6Nd(_ uint32, dest ip6.Address, buf []byte) error {
+	m.sendCalled = true
+	m.sendDest = dest
+	m.sendBuf = make([]byte, len(buf))
+	copy(m.sendBuf, buf)
+	return nil
+}
+
+func (m *mockInfraIfPlatform) HasAddress(_ uint32, _ ip6.Address) bool { return false }
+func (m *mockInfraIfPlatform) DiscoverNat64Prefix(_ uint32) error     { return nil }
+func (m *mockInfraIfPlatform) GetLinkLayerAddress(_ uint32) []byte     { return nil }
+
+func TestNaSender_SendNeighborAdvert_NilInfraIf(t *testing.T) {
+	inst := &Instance{} // infraIf is nil
+	a := &ndAgentNaSenderAdapter{inst: inst}
+	err := a.SendNeighborAdvert(ip6.Address{}, ip6.Address{})
+	if err != nil {
+		t.Errorf("expected nil error, got %v", err)
+	}
+}
+
+func TestNaSender_SendNeighborAdvert_Valid(t *testing.T) {
+	mp := &mockInfraIfPlatform{}
+	iif := borderinfra.NewInfraIf(mp, nil)
+	iif.Init(1)
+	iif.SetRunning(true)
+
+	inst := &Instance{infraIf: iif}
+	a := &ndAgentNaSenderAdapter{inst: inst}
+
+	target := ip6.Address{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	dest := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+
+	err := a.SendNeighborAdvert(target, dest)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mp.sendCalled {
+		t.Fatal("expected SendIcmp6Nd to be called")
+	}
+	if mp.sendDest != dest {
+		t.Errorf("destination = %v, want %v", mp.sendDest, dest)
+	}
+
+	// Verify NA payload
+	var na nd6.NeighborAdvertHeader
+	if err := na.Unmarshal(mp.sendBuf); err != nil {
+		t.Fatalf("failed to unmarshal NA: %v", err)
+	}
+	if !na.IsSolicitedFlagSet() {
+		t.Error("expected Solicited flag set")
+	}
+	if !na.IsOverrideFlagSet() {
+		t.Error("expected Override flag set")
+	}
+	if na.GetTargetAddress() != target {
+		t.Errorf("target address = %v, want %v", na.GetTargetAddress(), target)
+	}
+}
+
+// --------------------------------------------------------------------------
+// UDP Transport Adapter Tests
+// --------------------------------------------------------------------------
+
+func TestDhcp6ClientTransportAdapter_Send(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	adapter := &dhcp6ClientTransportAdapter{inst: inst}
+
+	dst := ip6.Address{0xfd, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xfe, 0x00, 0x08, 0x00}
+	err := adapter.Send([]byte{0xAA, 0xBB}, dst, 547)
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+	if !msg.HasMetadata() {
+		t.Fatal("expected metadata")
+	}
+	if msg.Metadata.SrcPort != 546 {
+		t.Errorf("SrcPort = %d, want 546 (DHCPv6 client)", msg.Metadata.SrcPort)
+	}
+	if msg.Metadata.DstPort != 547 {
+		t.Errorf("DstPort = %d, want 547", msg.Metadata.DstPort)
+	}
+}
+
+func TestDhcp6ServerTransportAdapter_Send(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	adapter := &dhcp6ServerTransportAdapter{inst: inst}
+
+	dst := ip6.Address{0xfd, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xfe, 0x00, 0x08, 0x00}
+	err := adapter.Send([]byte{0xCC, 0xDD}, dst, 546)
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+	if !msg.HasMetadata() {
+		t.Fatal("expected metadata")
+	}
+	if msg.Metadata.SrcPort != 547 {
+		t.Errorf("SrcPort = %d, want 547 (DHCPv6 server)", msg.Metadata.SrcPort)
+	}
+	if msg.Metadata.DstPort != 546 {
+		t.Errorf("DstPort = %d, want 546", msg.Metadata.DstPort)
+	}
+}
+
+func TestSrpUDPSenderAdapter_Send(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	adapter := &srpUDPSenderAdapter{inst: inst}
+
+	dest := ip6.SockAddr{
+		Address: ip6.Address{0xfd, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xfe, 0x00, 0x0C, 0x00},
+		Port:    53,
+	}
+	err := adapter.Send([]byte{0xEE, 0xFF}, dest)
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+	if !msg.HasMetadata() {
+		t.Fatal("expected metadata")
+	}
+	if msg.Metadata.SrcPort != 0 {
+		t.Errorf("SrcPort = %d, want 0 (ephemeral)", msg.Metadata.SrcPort)
+	}
+	if msg.Metadata.DstPort != 53 {
+		t.Errorf("DstPort = %d, want 53", msg.Metadata.DstPort)
+	}
+	if msg.Metadata.DstAddr != [16]byte(dest.Address) {
+		t.Errorf("DstAddr = %x, want %x", msg.Metadata.DstAddr, dest.Address)
+	}
+}
+
+func TestSntpCallback_Send(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	// The SNTP client's send callback is wired in wireModules. We exercise
+	// it by calling SendQuery which triggers the callback.
+	sntpClient := inst.SntpClient()
+	if sntpClient == nil {
+		t.Fatal("SntpClient() returned nil")
+	}
+
+	serverAddr := ip6.SockAddr{
+		Address: ip6.Address{0xfd, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xfe, 0x00, 0x08, 0x00},
+		Port:    123,
+	}
+	err := sntpClient.SendQuery(serverAddr, func(uint64, error) {})
+	if err != nil {
+		t.Fatalf("SendQuery() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+	if !msg.HasMetadata() {
+		t.Fatal("expected metadata")
+	}
+	if msg.Metadata.DstPort != 123 {
+		t.Errorf("DstPort = %d, want 123 (NTP)", msg.Metadata.DstPort)
+	}
+	if msg.Metadata.DstAddr != [16]byte(serverAddr.Address) {
+		t.Errorf("DstAddr = %x, want %x", msg.Metadata.DstAddr, serverAddr.Address)
+	}
+}
+
+func TestDnsCallback_Send(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+	inst.SetRLOC16(0x0400)
+	inst.SetMeshLocalPrefix([8]byte{0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	dnsClient := inst.DnsClient()
+	if dnsClient == nil {
+		t.Fatal("DnsClient() returned nil")
+	}
+
+	serverAddr := ip6.Address{0xfd, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xfe, 0x00, 0x08, 0x00}
+	dnsClient.SetDefaultConfig(dns.QueryConfig{
+		ServerAddr:      serverAddr,
+		ServerPort:      53,
+		ResponseTimeout: 6000,
+		MaxTxAttempts:   1,
+	})
+
+	dnsClient.Start()
+	defer dnsClient.Stop()
+
+	err := dnsClient.ResolveAddress("example.local", func(err error, resp *dns.AddressResponse) {}, nil)
+	if err != nil {
+		t.Fatalf("ResolveAddress() error: %v", err)
+	}
+
+	queue := inst.forwarder.GetDirectQueue()
+	if len(queue) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(queue))
+	}
+	msg := queue[0]
+	if !msg.HasMetadata() {
+		t.Fatal("expected metadata")
+	}
+	if msg.Metadata.SrcPort != 0 {
+		t.Errorf("SrcPort = %d, want 0 (ephemeral)", msg.Metadata.SrcPort)
+	}
+	if msg.Metadata.DstPort != 53 {
+		t.Errorf("DstPort = %d, want 53 (DNS)", msg.Metadata.DstPort)
+	}
+	if msg.Metadata.DstAddr != [16]byte(serverAddr) {
+		t.Errorf("DstAddr = %x, want %x", msg.Metadata.DstAddr, serverAddr)
+	}
+}
+
+// TestRxDecryptionWithKeyRotation verifies that HandleReceivedFrame
+// successfully decrypts a frame encrypted with the previous key sequence
+// after the instance's key manager has been advanced to the next sequence.
+func TestRxDecryptionWithKeyRotation(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// Set up a network key and advance to a non-zero key sequence.
+	var nk key.NetworkKey
+	nk[0] = 0x42
+	inst.keyManager.SetNetworkKey(nk)
+	inst.keyManager.SetCurrentKeySequence(5, key.ForceUpdate)
+
+	// Capture the MAC key for sequence 5 — the "old" key.
+	oldKey := [16]byte(inst.keyManager.GetCurrentMacKey())
+	oldSeq := inst.keyManager.GetCurrentKeySequence()
+
+	// Build a 6LoWPAN payload that the RX pipeline can process.
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	appData := []byte{0xCA, 0xFE}
+	lowpanPayload := build6LoWPANFrameInlineUDP(srcIP, dstIP, 4444, 9999, appData)
+
+	// Build an encrypted 802.15.4 data frame using the old key.
+	srcExt := [8]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7}
+	dstExt := [8]byte{0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7}
+	ctx := &mesh.FrameContext{
+		SrcExtAddr:      srcExt,
+		DstExtAddr:      dstExt,
+		UseSrcShort:     false,
+		UseDstShort:     false,
+		PanId:           0xBEEF,
+		SequenceNumber:  1,
+		SecurityEnabled: true,
+		Security: mesh.SecurityMaterial{
+			KeyIdMode:    1,
+			KeyId:        uint8(oldSeq & 0x7F),
+			Key:          oldKey,
+			FrameCounter: 100,
+		},
+	}
+	framer := mesh.NewFramer()
+	encFrame, err := framer.BuildDataFrame(ctx, lowpanPayload)
+	if err != nil {
+		t.Fatalf("BuildDataFrame() error: %v", err)
+	}
+
+	// Advance the key manager to the next sequence — the "current"
+	// key no longer matches the frame's encryption key.
+	inst.keyManager.SetCurrentKeySequence(6, key.ForceUpdate)
+	curKey := [16]byte(inst.keyManager.GetCurrentMacKey())
+	if curKey == oldKey {
+		t.Fatal("current key should differ from old key after sequence change")
+	}
+
+	// Register a UDP socket to observe whether the payload arrives.
+	s := &udp.Socket{}
+	var gotPayload []byte
+	inst.udpManager.Open(s, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		gotPayload = make([]byte, len(p))
+		copy(gotPayload, p)
+	})
+	inst.udpManager.Bind(s, ip6.SockAddr{Port: 9999})
+
+	// Feed the encrypted frame through the RX path.
+	rxFrame := &radio.Frame{
+		PSDU:    encFrame,
+		Channel: 11,
+	}
+	inst.HandleReceivedFrame(rxFrame)
+
+	// The fallback to the previous key should have decrypted the frame.
+	if gotPayload == nil {
+		t.Fatal("payload not received — key rotation fallback decryption failed")
+	}
+	if !bytes.Equal(gotPayload, appData) {
+		t.Errorf("received payload = %x, want %x", gotPayload, appData)
+	}
+}
+
+// TestFullEncryptedRxRoundTrip verifies the complete encrypted pipeline:
+// encrypt TX frame → feed into RX path → decrypt → 6LoWPAN decompress →
+// UDP demux → payload arrives at socket. Unlike TestFullTxRxRoundtrip_MLE
+// which uses zero keys, this test uses a real network key so that
+// AES-CCM* encryption and decryption are exercised end-to-end.
+func TestFullEncryptedRxRoundTrip(t *testing.T) {
+	inst := New(Config{})
+	inst.forwarder.SetEnabled(true)
+
+	// Set a real (non-zero) network key so encryption is exercised.
+	var nk key.NetworkKey
+	nk[0], nk[1], nk[2], nk[3] = 0xDE, 0xAD, 0xBE, 0xEF
+	nk[4], nk[5], nk[6], nk[7] = 0xCA, 0xFE, 0xBA, 0xBE
+	inst.keyManager.SetNetworkKey(nk)
+	inst.keyManager.SetCurrentKeySequence(1, key.ForceUpdate)
+
+	macKey := [16]byte(inst.keyManager.GetCurrentMacKey())
+	if macKey == [16]byte{} {
+		t.Fatal("MAC key should be non-zero after setting a real network key")
+	}
+
+	// Build a 6LoWPAN/IPHC-compressed UDP payload.
+	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}
+	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02}
+	appData := []byte{0x48, 0x65, 0x6C, 0x6C, 0x6F} // "Hello"
+	lowpanPayload := build6LoWPANFrameInlineUDP(srcIP, dstIP, 5555, 7777, appData)
+
+	// Build an encrypted 802.15.4 data frame using the current MAC key.
+	srcExt := [8]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	dstExt := [8]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11}
+	ctx := &mesh.FrameContext{
+		SrcExtAddr:      srcExt,
+		DstExtAddr:      dstExt,
+		UseSrcShort:     false,
+		UseDstShort:     false,
+		PanId:           0x1234,
+		SequenceNumber:  42,
+		SecurityEnabled: true,
+		Security: mesh.SecurityMaterial{
+			KeyIdMode:    1,
+			KeyId:        inst.keyManager.GetMacKeyId(),
+			Key:          macKey,
+			FrameCounter: 1,
+		},
+	}
+	framer := mesh.NewFramer()
+	encFrame, err := framer.BuildDataFrame(ctx, lowpanPayload)
+	if err != nil {
+		t.Fatalf("BuildDataFrame() error: %v", err)
+	}
+
+	// Sanity: the encrypted frame should differ from the plaintext payload.
+	if bytes.Contains(encFrame, appData) {
+		t.Fatal("encrypted frame should not contain plaintext application data")
+	}
+
+	// Register a UDP socket to capture the decrypted payload.
+	sock := &udp.Socket{}
+	var gotPayload []byte
+	var gotInfo *ip6.MessageInfo
+	inst.udpManager.Open(sock, udp.NetifThreadHost, func(p []byte, mi *ip6.MessageInfo) {
+		gotPayload = make([]byte, len(p))
+		copy(gotPayload, p)
+		gotInfo = mi
+	})
+	inst.udpManager.Bind(sock, ip6.SockAddr{Port: 7777})
+
+	// Feed the encrypted frame through the full RX pipeline.
+	rxFrame := &radio.Frame{
+		PSDU:    encFrame,
+		Channel: 11,
+	}
+	inst.HandleReceivedFrame(rxFrame)
+
+	// Verify the decrypted payload arrived at the UDP socket.
+	if gotPayload == nil {
+		t.Fatal("UDP socket did not receive payload — encrypted RX pipeline failed")
+	}
+	if !bytes.Equal(gotPayload, appData) {
+		t.Errorf("received payload = %x, want %x", gotPayload, appData)
+	}
+	if gotInfo == nil {
+		t.Fatal("MessageInfo is nil")
+	}
+	if gotInfo.SockPort != 7777 {
+		t.Errorf("SockPort = %d, want 7777", gotInfo.SockPort)
+	}
+	if gotInfo.PeerPort != 5555 {
+		t.Errorf("PeerPort = %d, want 5555", gotInfo.PeerPort)
 	}
 }

@@ -37,3 +37,5 @@ BSD 3-Clause License. See [LICENSE](LICENSE).
 This project is a port of OpenThread, which is Copyright (c) 2016, The OpenThread Authors, also under the BSD 3-Clause License.
 
 `gothread` is in NO WAY affiliated with Nest, Google, or The Thread Group.
+
+This library is verified against github.com/openthread/openthread@3f11074f1e188bd84d7d530da271ce5bc66bc3ec

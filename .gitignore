@@ -17,3 +17,5 @@ Thumbs.db
 
 # Git worktrees
 .worktrees
+gothread
+docs/plans/

@@ -970,10 +970,26 @@ func (inst *Instance) wireModules() {
 	// TMF Address Query / Notification messages.
 	inst.addrResolver = addrresolver.NewResolver()
 	inst.addrResolver.SetQueryCallback(func(target ip6.Address) {
-		// TODO: Send TMF Address Query (a/aq) via CoAP to realm-local all-routers
+		tmf.SendAddressQuery(inst.tmfAgent, target)
 	})
 	inst.addrResolver.SetNotificationCallback(func(target ip6.Address, rloc16 uint16, err error) {
-		// TODO: Resume queued messages for this EID
+		if err != nil {
+			// Resolution failed — leave queued messages to time out or be evicted.
+			return
+		}
+		if inst.forwarder == nil {
+			return
+		}
+		dst := [16]byte(target)
+		for _, msg := range inst.forwarder.GetDirectQueue() {
+			if msg.Metadata != nil && msg.Metadata.DstAddr == dst {
+				msg.MeshDest = rloc16
+				msg.Metadata.UseDstShort = true
+			}
+		}
+		if inst.mac != nil {
+			inst.mac.RequestDirectFrameTransmission()
+		}
 	})
 
 	// Network Data Local — manages this device's own Network Data
@@ -984,8 +1000,8 @@ func (inst *Instance) wireModules() {
 		if inst.mleService != nil && inst.mleService.Mle().IsLeader() {
 			return inst.netdataLeader.RegisterNetworkData(inst.rloc16, data)
 		}
-		// TODO: Send CoAP POST to leader RLOC for non-leader devices
-		return nil
+		leaderRLOC16 := uint16(inst.mleService.Mle().GetLeaderData().LeaderRouterID) << 10
+		return tmf.SendServerData(inst.tmfAgent, ip6.NetworkPrefix(inst.meshLocalPrefix), inst.rloc16, leaderRLOC16, data, nil)
 	})
 	inst.netdataPublisher = netdata.NewPublisher()
 
@@ -1079,16 +1095,14 @@ func (inst *Instance) wireModules() {
 	// SNTP Client
 	// ---------------------------------------------------------------
 	inst.sntpClient = sntp.NewClient(func(payload []byte, messageInfo *ip6.MessageInfo) error {
-		// TODO: Send SNTP query via UDP
-		return nil
+		return inst.sendUDP(payload, [16]byte(messageInfo.SockAddr), messageInfo.SockPort, [16]byte(messageInfo.PeerAddr), messageInfo.PeerPort)
 	})
 
 	// ---------------------------------------------------------------
 	// DNS Client
 	// ---------------------------------------------------------------
 	inst.dnsClient = dns.NewClient(func(data []byte, peerAddr ip6.Address, peerPort uint16) error {
-		// TODO: Send DNS query via UDP
-		return nil
+		return inst.sendUDP(data, [16]byte{}, 0, [16]byte(peerAddr), peerPort)
 	})
 
 	// ---------------------------------------------------------------
