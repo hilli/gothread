@@ -51,6 +51,29 @@ task test
 task ci                # Full CI: fmt + vet + lint + race tests
 ```
 
+## TinyGo Support
+
+gothread builds with [TinyGo](https://tinygo.org/), enabling deployment to
+microcontrollers and WebAssembly:
+
+```sh
+tinygo build -o gothread          ./cmd/gothread/   # Native (3.8 MB vs 5.7 MB with Go)
+tinygo build -o gothread.wasm -target=wasi ./cmd/gothread/   # WebAssembly (5.2 MB)
+tinygo build -o gothread.hex  -target=nrf52840-mdk ./cmd/gothread/   # nRF52840 (660 KB flash)
+```
+
+| Target | Flash | RAM | Notes |
+|--------|------:|----:|-------|
+| Standard Go (macOS arm64) | 5.7 MB | — | Full feature set |
+| TinyGo native | 3.8 MB | — | 33% smaller binary |
+| TinyGo WASI | 5.2 MB | — | Browser / edge runtime |
+| TinyGo nRF52840 | 660 KB | 107 KB | Thread-capable IEEE 802.15.4 SoC |
+
+**Limitations:** The UDP simulation radio (`UDPSimRadio`) is excluded from
+TinyGo builds via build tags, as it requires `net.ListenUDP` and raw syscalls
+not available in TinyGo. All other packages — including the full Thread stack,
+crypto, MAC, mesh, and simulation platform — build and work under TinyGo.
+
 ## OpenThread Interop
 
 gothread can exchange 802.15.4 frames with OpenThread simulation nodes:
