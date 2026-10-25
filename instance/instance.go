@@ -165,8 +165,10 @@ type timer struct {
 	cancelled bool
 }
 
-// timerScheduler maintains a sorted list of pending timers.
+// timerScheduler maintains a sorted list of pending timers. Scheduling,
+// cancellation, and queries may run concurrently with event-loop dispatch.
 type timerScheduler struct {
+	mu     sync.Mutex // protects timers and their cancelled flags
 	timers []*timer
 }
 
@@ -177,10 +179,12 @@ func (ts *timerScheduler) schedule(delay time.Duration, fn func()) {
 
 // scheduleWithCancel adds a timer that fires after delay, calling fn.
 // It returns a cancel function that, when called, prevents the timer
-// from firing. Calling cancel more than once is safe (no-op).
+// from firing if it has not yet been dispatched. Cancellation does not wait
+// for an already-dispatched callback. Calling cancel more than once is safe.
 func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) func() {
 	fireAt := time.Now().Add(delay)
 	t := &timer{fireAt: fireAt, fn: fn}
+	ts.mu.Lock()
 	// Insert in sorted order (earliest first).
 	idx := 0
 	for idx < len(ts.timers) && ts.timers[idx].fireAt.Before(fireAt) {
@@ -189,29 +193,43 @@ func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) fun
 	ts.timers = append(ts.timers, nil)
 	copy(ts.timers[idx+1:], ts.timers[idx:])
 	ts.timers[idx] = t
-	return func() { t.cancelled = true }
+	ts.mu.Unlock()
+	return func() {
+		ts.mu.Lock()
+		t.cancelled = true
+		ts.mu.Unlock()
+	}
 }
 
 // processExpired fires all timers whose deadline has passed, skipping
 // any that have been cancelled. Returns the number of timers fired.
+// Called on the event loop; callbacks run outside the lock so they can
+// schedule timers or cancel timers that have not yet been dispatched.
 func (ts *timerScheduler) processExpired() int {
 	now := time.Now()
 	fired := 0
-	for len(ts.timers) > 0 && !ts.timers[0].fireAt.After(now) {
+	for {
+		ts.mu.Lock()
+		if len(ts.timers) == 0 || ts.timers[0].fireAt.After(now) {
+			ts.mu.Unlock()
+			return fired
+		}
 		t := ts.timers[0]
 		ts.timers = ts.timers[1:]
-		if t.cancelled {
-			continue
+		cancelled := t.cancelled
+		ts.mu.Unlock()
+		if !cancelled {
+			t.fn()
+			fired++
 		}
-		t.fn()
-		fired++
 	}
-	return fired
 }
 
 // nextDeadline returns the time until the next timer fires, or 0 if there
 // are no pending timers. The bool return is false if no timers are pending.
 func (ts *timerScheduler) nextDeadline() (time.Duration, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	if len(ts.timers) == 0 {
 		return 0, false
 	}
@@ -224,6 +242,8 @@ func (ts *timerScheduler) nextDeadline() (time.Duration, bool) {
 
 // count returns the number of pending timers.
 func (ts *timerScheduler) count() int {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	return len(ts.timers)
 }
 
@@ -276,7 +296,7 @@ type Instance struct {
 	stopCh chan struct{}
 	doneCh chan struct{}
 
-	// Timer scheduler (accessed only from event loop goroutine)
+	// Timer scheduler (concurrent access; callbacks run on the event loop)
 	timers *timerScheduler
 
 	// Notifier (accessed only from event loop goroutine)

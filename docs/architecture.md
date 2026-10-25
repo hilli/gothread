@@ -478,6 +478,17 @@ type timer struct {
 `scheduleWithCancel()` returns a cancel function. This is used extensively
 by SubMac (CSMA-CA backoff timers) and Mac (scan dwell timers).
 
+The scheduler protects the queue and cancellation flags with one mutex,
+allowing scheduling, cancellation, and deadline/count queries to run
+concurrently with the event loop. Only the event loop dispatches callbacks.
+It removes one due timer at a time and checks cancellation under the lock,
+then invokes the callback without the lock. A callback can therefore
+reschedule itself or cancel another due timer before it is dispatched.
+Cancellation is idempotent and does not wait for an already-dispatched
+callback. Cancelled timers remain queued until their deadlines are processed.
+Each dispatch pass uses a fixed time cutoff; timers with deadlines after
+that cutoff are handled on a later pass.
+
 ### Notifier System
 
 Two levels of event notification:
