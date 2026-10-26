@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hilli/gothread/common/log"
 	"github.com/hilli/gothread/crc"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/radio"
@@ -174,6 +175,7 @@ func (r *UDPSimRadio) Start() (err error) {
 
 // Stop closes sockets and stops the receive goroutine.
 func (r *UDPSimRadio) Stop() {
+	var stopErr error
 	r.mu.Lock()
 	if r.stopCh != nil {
 		close(r.stopCh)
@@ -182,11 +184,11 @@ func (r *UDPSimRadio) Stop() {
 	// Don't close rxFd here — let the nonblocking receiveLoop exit first,
 	// then clean up. Otherwise Recvfrom on a closed fd hangs on macOS.
 	if r.rxConn != nil {
-		r.rxConn.Close()
+		stopErr = errors.Join(stopErr, r.rxConn.Close())
 		r.rxConn = nil
 	}
 	if r.txConn != nil {
-		r.txConn.Close()
+		stopErr = errors.Join(stopErr, r.txConn.Close())
 		r.txConn = nil
 	}
 	r.mu.Unlock()
@@ -197,13 +199,16 @@ func (r *UDPSimRadio) Stop() {
 	r.mu.Lock()
 	if r.rxFd > 0 {
 		if r.rxMreq != nil {
-			syscall.SetsockoptIPMreq(r.rxFd, syscall.IPPROTO_IP, syscall.IP_DROP_MEMBERSHIP, r.rxMreq)
+			stopErr = errors.Join(stopErr, syscall.SetsockoptIPMreq(r.rxFd, syscall.IPPROTO_IP, syscall.IP_DROP_MEMBERSHIP, r.rxMreq))
 			r.rxMreq = nil
 		}
-		syscall.Close(r.rxFd)
+		stopErr = errors.Join(stopErr, syscall.Close(r.rxFd))
 		r.rxFd = 0
 	}
 	r.mu.Unlock()
+	if stopErr != nil {
+		log.Warn(log.RegionPlatform, "Stop UDP simulation radio: %v", stopErr)
+	}
 }
 
 func (r *UDPSimRadio) receiveLoop() {
@@ -297,6 +302,7 @@ func (r *UDPSimRadio) SetReceiveCallback(cb func(*radio.Frame)) {
 
 // --- radio.Radio interface ---
 
+// Enable turns on the radio.
 func (r *UDPSimRadio) Enable() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -305,6 +311,7 @@ func (r *UDPSimRadio) Enable() error {
 	return nil
 }
 
+// Disable turns off the radio.
 func (r *UDPSimRadio) Disable() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -313,18 +320,21 @@ func (r *UDPSimRadio) Disable() error {
 	return nil
 }
 
+// IsEnabled reports whether the radio is enabled.
 func (r *UDPSimRadio) IsEnabled() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.enabled
 }
 
+// GetState returns the current radio state.
 func (r *UDPSimRadio) GetState() radio.State {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state
 }
 
+// Sleep puts the radio into low-power sleep mode.
 func (r *UDPSimRadio) Sleep() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -332,6 +342,7 @@ func (r *UDPSimRadio) Sleep() error {
 	return nil
 }
 
+// Receive puts the radio into receive mode on the given channel.
 func (r *UDPSimRadio) Receive(channel uint8) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -340,6 +351,7 @@ func (r *UDPSimRadio) Receive(channel uint8) error {
 	return nil
 }
 
+// Transmit begins transmitting the given frame.
 func (r *UDPSimRadio) Transmit(frame *radio.Frame) error {
 	r.mu.Lock()
 	r.state = radio.StateTransmit
@@ -369,44 +381,52 @@ func (r *UDPSimRadio) Transmit(frame *radio.Frame) error {
 	return err
 }
 
+// GetTransmitBuffer returns the pre-allocated transmit frame buffer.
 func (r *UDPSimRadio) GetTransmitBuffer() *radio.Frame {
 	return &r.txBuf
 }
 
+// GetCaps returns the radio capability bitmask.
 func (r *UDPSimRadio) GetCaps() radio.Caps {
 	return radio.CapNone
 }
 
+// GetIEEEEui64 returns the factory-assigned IEEE EUI-64 identifier.
 func (r *UDPSimRadio) GetIEEEEui64() [8]byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.eui64
 }
 
+// SetPanID sets the IEEE 802.15.4 PAN ID for frame filtering.
 func (r *UDPSimRadio) SetPanID(panID uint16) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.panID = panID
 }
 
+// SetExtendedAddress sets the IEEE 802.15.4 extended address.
 func (r *UDPSimRadio) SetExtendedAddress(addr types.ExtAddress) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.extAddr = addr
 }
 
+// SetShortAddress sets the IEEE 802.15.4 short address.
 func (r *UDPSimRadio) SetShortAddress(addr types.ShortAddress) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.shortAddr = addr
 }
 
+// GetTransmitPower returns the current transmit power in dBm.
 func (r *UDPSimRadio) GetTransmitPower() (int8, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.txPower, nil
 }
 
+// SetTransmitPower sets the transmit power in dBm.
 func (r *UDPSimRadio) SetTransmitPower(power int8) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -414,50 +434,72 @@ func (r *UDPSimRadio) SetTransmitPower(power int8) error {
 	return nil
 }
 
+// GetPromiscuous reports whether promiscuous mode is enabled.
 func (r *UDPSimRadio) GetPromiscuous() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.promiscuous
 }
 
+// SetPromiscuous enables or disables promiscuous mode.
 func (r *UDPSimRadio) SetPromiscuous(enable bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.promiscuous = enable
 }
 
+// GetRSSI returns the current RSSI reading in dBm.
 func (r *UDPSimRadio) GetRSSI() int8 { return -50 }
 
+// GetSupportedChannelMask returns a bitmask of supported channels.
 func (r *UDPSimRadio) GetSupportedChannelMask() uint32 { return 0x07FFF800 }
 
+// GetPreferredChannelMask returns a bitmask of preferred channels.
 func (r *UDPSimRadio) GetPreferredChannelMask() uint32 { return 0x07FFF800 }
 
+// GetReceiveSensitivity returns the radio receive sensitivity in dBm.
 func (r *UDPSimRadio) GetReceiveSensitivity() int8 { return -100 }
 
+// EnableSrcMatch enables or disables source address matching.
 func (r *UDPSimRadio) EnableSrcMatch(enable bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.srcMatch = enable
 }
 
+// AddSrcMatchShortEntry adds a short address to the source match table.
 func (r *UDPSimRadio) AddSrcMatchShortEntry(addr types.ShortAddress) error { return nil }
-func (r *UDPSimRadio) AddSrcMatchExtEntry(addr types.ExtAddress) error     { return nil }
+
+// AddSrcMatchExtEntry adds an extended address to the source match table.
+func (r *UDPSimRadio) AddSrcMatchExtEntry(addr types.ExtAddress) error { return nil }
+
+// ClearSrcMatchShortEntry removes a short address from the source match table.
 func (r *UDPSimRadio) ClearSrcMatchShortEntry(addr types.ShortAddress) error {
 	return nil
 }
-func (r *UDPSimRadio) ClearSrcMatchExtEntry(addr types.ExtAddress) error { return nil }
-func (r *UDPSimRadio) ClearSrcMatchShortEntries()                        {}
-func (r *UDPSimRadio) ClearSrcMatchExtEntries()                          {}
 
-func (r *UDPSimRadio) SetMacKey(keyIDMode uint8, keyID uint8, prevKey, currKey, nextKey types.KeyMaterial) {
+// ClearSrcMatchExtEntry removes an extended address from the source match table.
+func (r *UDPSimRadio) ClearSrcMatchExtEntry(addr types.ExtAddress) error { return nil }
+
+// ClearSrcMatchShortEntries removes all short addresses from the source match table.
+func (r *UDPSimRadio) ClearSrcMatchShortEntries() {}
+
+// ClearSrcMatchExtEntries removes all extended addresses from the source match table.
+func (r *UDPSimRadio) ClearSrcMatchExtEntries() {}
+
+// SetMacKey sets the MAC encryption keys for the given key ID mode.
+func (r *UDPSimRadio) SetMacKey(keyIDMode, keyID uint8, prevKey, currKey, nextKey types.KeyMaterial) {
 }
 
+// SetMacFrameCounter sets the MAC frame counter.
 func (r *UDPSimRadio) SetMacFrameCounter(counter uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.macFrameCounter = counter
 }
 
+// SetMacFrameCounterIfLarger sets the MAC frame counter only if the
+// new value is larger than the current value.
 func (r *UDPSimRadio) SetMacFrameCounterIfLarger(counter uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -466,6 +508,8 @@ func (r *UDPSimRadio) SetMacFrameCounterIfLarger(counter uint32) {
 	}
 }
 
+// EnergyScan starts an energy scan on the given channel for the
+// specified duration in milliseconds.
 func (r *UDPSimRadio) EnergyScan(channel uint8, duration uint16) error {
 	return nil
 }

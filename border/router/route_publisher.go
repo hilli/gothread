@@ -23,14 +23,6 @@ type RouteEntry struct {
 	NAT64      bool
 }
 
-// isEqual returns true if two route entries have the same prefix and length.
-func (e RouteEntry) isEqual(other RouteEntry) bool {
-	if e.PrefixLen != other.PrefixLen {
-		return false
-	}
-	return matchBits(e.Prefix[:], other.Prefix[:], e.PrefixLen)
-}
-
 // ---------------------------------------------------------------------------
 // RoutePublisher options
 // ---------------------------------------------------------------------------

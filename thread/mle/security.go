@@ -143,7 +143,7 @@ func BuildAAD(srcIP, dstIP ip6.Address, secHdr [SecurityHeaderSize]byte) [aadSiz
 //   - plaintext: the command byte + TLVs to encrypt
 //
 // Returns the ciphertext (same length as plaintext) and the 4-byte authentication tag.
-func Encrypt(mleKey key.MleKey, nonce [aesccm.NonceSize]byte, aad []byte, plaintext []byte) ([]byte, [SecurityTagSize]byte, error) {
+func Encrypt(mleKey key.MleKey, nonce [aesccm.NonceSize]byte, aad, plaintext []byte) (encrypted []byte, authTag [SecurityTagSize]byte, encryptErr error) {
 	var ccm aesccm.AesCcm
 	var tag [SecurityTagSize]byte
 
@@ -170,7 +170,7 @@ func Encrypt(mleKey key.MleKey, nonce [aesccm.NonceSize]byte, aad []byte, plaint
 //   - tag: the 4-byte authentication tag
 //
 // Returns the plaintext (command byte + TLVs), or an error if authentication fails.
-func Decrypt(mleKey key.MleKey, nonce [aesccm.NonceSize]byte, aad []byte, ciphertext []byte, tag [SecurityTagSize]byte) ([]byte, error) {
+func Decrypt(mleKey key.MleKey, nonce [aesccm.NonceSize]byte, aad, ciphertext []byte, tag [SecurityTagSize]byte) ([]byte, error) {
 	var ccm aesccm.AesCcm
 
 	if err := ccm.SetKey(mleKey[:]); err != nil {

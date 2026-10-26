@@ -128,7 +128,7 @@ func (p *mockHistoryProvider) IterateNetworkInfo() []HistoryNetworkInfoEntry {
 // Helper: build a complete answer payload
 // =========================================================================
 
-func buildAnswerPayload(queryID uint16, answerIndex uint16, isLast bool, entries []*NetworkInfoTlv) []byte {
+func buildAnswerPayload(queryID, answerIndex uint16, isLast bool, entries []*NetworkInfoTlv) []byte {
 	var buf []byte
 	buf = append(buf, MarshalQueryIDTlv(queryID)...)
 	buf = append(buf, MarshalAnswerTlv(&AnswerTlv{Index: answerIndex, IsLast: isLast})...)

@@ -164,6 +164,7 @@ func (m *mockJRDatasetReader) ReadActiveDataset() (Dataset, error) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+//nolint:gocritic // The fixture exposes the router and its independently configurable dependencies.
 func newTestJoinerRouter() (
 	*JoinerRouter,
 	*mockJRTransport,
@@ -680,11 +681,12 @@ func TestJoinerEntrust_SendsAfterTimer(t *testing.T) {
 
 	// Verify NetworkKeySequence TLV.
 	seqBytes := findTLVInBytes(payload, TLVNetworkKeySequence)
-	if seqBytes == nil {
+	switch {
+	case seqBytes == nil:
 		t.Error("payload should contain NetworkKeySequence TLV")
-	} else if len(seqBytes) != 4 {
+	case len(seqBytes) != 4:
 		t.Errorf("NetworkKeySequence should be 4 bytes, got %d", len(seqBytes))
-	} else {
+	default:
 		seq := binary.BigEndian.Uint32(seqBytes)
 		if seq != 42 {
 			t.Errorf("expected key sequence 42, got %d", seq)
@@ -883,13 +885,13 @@ func TestFindTLVInBytesExtended(t *testing.T) {
 
 	// Find short TLV.
 	found := findTLVInBytesExtended(payload, TLVJoinerUDPPort)
-	if found == nil || len(found) != 2 {
+	if len(found) != 2 {
 		t.Error("should find short TLV")
 	}
 
 	// Find extended TLV.
 	found = findTLVInBytesExtended(payload, TLVJoinerDTLSEncapsulation)
-	if found == nil || len(found) != 300 {
+	if len(found) != 300 {
 		t.Errorf("expected 300 bytes from extended TLV, got %d", len(found))
 	}
 

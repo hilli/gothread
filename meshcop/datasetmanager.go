@@ -380,7 +380,7 @@ func (dm *DatasetManager) ProcessSetRequest(
 	currentPanID uint16,
 	currentMeshLocalPrefix [8]byte,
 	currentNetworkKey [16]byte,
-) (processedDataset *Dataset, isFromCommissioner bool, affectsConnectivity bool, affectsNetworkKey bool, err error) {
+) (processedDataset *Dataset, isFromCommissioner, affectsConnectivity, affectsNetworkKey bool, err error) {
 
 	// Parse the incoming request TLVs into a dataset.
 	var reqDS Dataset
@@ -410,11 +410,9 @@ func (dm *DatasetManager) ProcessSetRequest(
 			err = goterrors.ErrRejected
 			return
 		}
-	} else {
-		if Compare(activeTS, &dm.localTimestamp) <= 0 {
-			err = goterrors.ErrRejected
-			return
-		}
+	} else if Compare(activeTS, &dm.localTimestamp) <= 0 {
+		err = goterrors.ErrRejected
+		return
 	}
 
 	// Check connectivity impact.

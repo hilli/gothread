@@ -27,10 +27,6 @@ func (m *mockSender) SendMulticast(payload []byte) error {
 	return nil
 }
 
-func (m *mockSender) reset() {
-	m.sent = nil
-}
-
 // ---------------------------------------------------------------------------
 // SequenceGreater
 // ---------------------------------------------------------------------------

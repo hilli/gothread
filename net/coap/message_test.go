@@ -373,14 +373,14 @@ func TestBlockOptionEncoding(t *testing.T) {
 			name:     "Block2 num=0 more=true szx=6",
 			option:   coap.OptionBlock2,
 			blockNum: 0, more: true, szx: 6,
-			// (0<<4)|0x08|6 = 0x0E
+			// Block value: (0<<4)|0x08|6 yields 0x0E.
 			wantVal: []byte{0x0E},
 		},
 		{
 			name:     "Block1 num=1 more=false szx=2",
 			option:   coap.OptionBlock1,
 			blockNum: 1, more: false, szx: 2,
-			// (1<<4)|0x00|2 = 0x12
+			// Block value: (1<<4)|0x00|2 yields 0x12.
 			wantVal: []byte{0x12},
 		},
 		{

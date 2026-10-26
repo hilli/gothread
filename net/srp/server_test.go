@@ -86,7 +86,7 @@ func defaultPeer() ip6.SockAddr {
 
 // buildSrpUpdate constructs a valid DNS Update message for SRP with SIG(0).
 // Returns the raw bytes ready to be passed to ProcessMessage.
-func (env *serverTestEnv) buildSrpUpdate(opts updateOpts) []byte {
+func (env *serverTestEnv) buildSrpUpdate(opts *updateOpts) []byte {
 	env.t.Helper()
 	return buildSrpUpdateMessage(env.t, env.keyPair, opts)
 }
@@ -132,7 +132,7 @@ func defaultUpdateOpts() updateOpts {
 }
 
 // buildSrpUpdateMessage builds a complete DNS Update message with SIG(0).
-func buildSrpUpdateMessage(t *testing.T, kp *ecdsa.KeyPair, opts updateOpts) []byte {
+func buildSrpUpdateMessage(t *testing.T, kp *ecdsa.KeyPair, opts *updateOpts) []byte {
 	t.Helper()
 
 	if opts.domain == "" {
@@ -233,9 +233,7 @@ func buildSrpUpdateMessage(t *testing.T, kp *ecdsa.KeyPair, opts updateOpts) []b
 	keyBuf := keyRR.MarshalBinary()
 	data = append(data, keyBuf[:]...)
 	// Key RDATA: flags(2) + protocol(1) + algorithm(1) + public key(64).
-	data = append(data, 0x00, 0x00) // flags
-	data = append(data, 3)          // protocol = DNSSEC
-	data = append(data, dns.KeyAlgorithmEcdsaP256Sha256)
+	data = append(data, 0x00, 0x00, 3, dns.KeyAlgorithmEcdsaP256Sha256) // Flags, DNSSEC protocol, ECDSA algorithm.
 	data = append(data, pubKey[:]...)
 	updateCount++
 
@@ -347,8 +345,8 @@ func buildSrpUpdateMessage(t *testing.T, kp *ecdsa.KeyPair, opts updateOpts) []b
 
 	// 2. Modified DNS header (ARCount decremented by 1).
 	// But first, we need to finalize the header counts.
-	binary.BigEndian.PutUint16(data[4:6], 1)                 // ZoneCount = 1
-	binary.BigEndian.PutUint16(data[6:8], 0)                 // PrerequisiteCount = 0
+	binary.BigEndian.PutUint16(data[4:6], 1)                 // One zone.
+	binary.BigEndian.PutUint16(data[6:8], 0)                 // PrerequisiteCount: 0.
 	binary.BigEndian.PutUint16(data[8:10], updateCount)      // UpdateCount
 	binary.BigEndian.PutUint16(data[10:12], additionalCount) // ARCount
 
@@ -661,7 +659,7 @@ func TestServerProcessSimpleRegistration(t *testing.T) {
 		},
 	}
 
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	// Should have a success response.
@@ -714,7 +712,7 @@ func TestServerProcessRegistrationGrantsLease(t *testing.T) {
 	opts.lease = 7200 // Requested: 7200, max=3600 -> will be clamped.
 	opts.keyLease = 604800
 
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	resp := env.lastResponse()
@@ -750,7 +748,7 @@ func TestServerProcessHostRemoval(t *testing.T) {
 	opts.services = []testService{
 		{instanceLabel: "My Printer", serviceType: "_ipp._tcp", port: 631, txtData: []byte{0}},
 	}
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	hosts := env.server.GetHosts()
@@ -762,7 +760,7 @@ func TestServerProcessHostRemoval(t *testing.T) {
 	opts.msgID = 0x5678
 	opts.deleteHost = true
 	opts.keyLease = 604800 // Keep name for key-lease duration.
-	data = env.buildSrpUpdate(opts)
+	data = env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	hosts = env.server.GetHosts()
@@ -780,14 +778,14 @@ func TestServerProcessHostFullRemoval(t *testing.T) {
 
 	// Register a host.
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	// Remove with keyLease=0 (full removal).
 	opts.msgID = 0x5678
 	opts.deleteHost = true
 	opts.keyLease = 0
-	data = env.buildSrpUpdate(opts)
+	data = env.buildSrpUpdate(&opts)
 
 	// For keyLease=0 with short lease, both lease=0 and keyLease=0.
 	env.server.ProcessMessage(data, defaultPeer())
@@ -804,7 +802,7 @@ func TestServerRejectsWrongDomain(t *testing.T) {
 
 	opts := defaultUpdateOpts()
 	opts.domain = "wrong.arpa."
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	resp := env.lastResponse()
@@ -823,7 +821,7 @@ func TestServerNameConflictDifferentKey(t *testing.T) {
 
 	// Register with first key.
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	hosts := env.server.GetHosts()
@@ -838,7 +836,7 @@ func TestServerNameConflictDifferentKey(t *testing.T) {
 	}
 	env.keyPair = kp2
 	opts.msgID = 0xABCD
-	data = env.buildSrpUpdate(opts)
+	data = env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	resp := env.lastResponse()
@@ -863,7 +861,7 @@ func TestServerAllowsRefreshWithSameKey(t *testing.T) {
 
 	// Register.
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	hosts := env.server.GetHosts()
@@ -874,7 +872,7 @@ func TestServerAllowsRefreshWithSameKey(t *testing.T) {
 	// Refresh with same key.
 	env.now = env.now.Add(100 * time.Second)
 	opts.msgID = 0x9999
-	data = env.buildSrpUpdate(opts)
+	data = env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	resp := env.lastResponse()
@@ -903,7 +901,7 @@ func TestServerMultipleServices(t *testing.T) {
 		{instanceLabel: "Web", serviceType: "_http._tcp", port: 80, txtData: []byte{0}},
 	}
 
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	hosts := env.server.GetHosts()
@@ -928,7 +926,7 @@ func TestServerMultipleAddresses(t *testing.T) {
 	opts := defaultUpdateOpts()
 	opts.addresses = []ip6.Address{addr1, addr2}
 
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	hosts := env.server.GetHosts()
@@ -956,7 +954,7 @@ func TestServerShortLeaseOption(t *testing.T) {
 	opts.shortLease = true
 	opts.lease = 7200
 
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	hosts := env.server.GetHosts()
@@ -984,7 +982,7 @@ func TestServerLeaseExpiration(t *testing.T) {
 	opts.lease = 100
 	opts.keyLease = 200
 
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	hosts := env.server.GetHosts()
@@ -1029,7 +1027,7 @@ func TestServerServiceLeaseExpiration(t *testing.T) {
 		{instanceLabel: "Svc1", serviceType: "_test._tcp", port: 8080, txtData: []byte{0}},
 	}
 
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	hosts := env.server.GetHosts()
@@ -1071,7 +1069,7 @@ func TestServerWithServiceUpdateHandler(t *testing.T) {
 	})
 
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	if !handlerCalled {
@@ -1124,7 +1122,7 @@ func TestServerHandlerReturnsError(t *testing.T) {
 	})
 
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	// Handler returns error.
@@ -1154,7 +1152,7 @@ func TestServerHandlerTimeout(t *testing.T) {
 	})
 
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	// No response yet.
@@ -1189,7 +1187,7 @@ func TestServerIgnoresLateHandlerResult(t *testing.T) {
 	})
 
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	// Complete first, then try to complete again (late/stale).
@@ -1222,9 +1220,9 @@ func TestErrorToDnsResponseCode(t *testing.T) {
 		{errors.ErrInvalidArgs, dns.RcodeRefused},
 	}
 	for _, tt := range tests {
-		got := errorToDnsResponseCode(tt.err)
+		got := errorToDNSResponseCode(tt.err)
 		if got != tt.want {
-			t.Errorf("errorToDnsResponseCode(%v) = %d, want %d", tt.err, got, tt.want)
+			t.Errorf("errorToDNSResponseCode(%v) = %d, want %d", tt.err, got, tt.want)
 		}
 	}
 }
@@ -1239,7 +1237,7 @@ func TestServerResponseCounters(t *testing.T) {
 
 	// Successful registration.
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	counters := env.server.GetResponseCounters()
@@ -1250,7 +1248,7 @@ func TestServerResponseCounters(t *testing.T) {
 	// Wrong domain -> refused.
 	opts.msgID = 0x2222
 	opts.domain = "wrong.arpa."
-	data = env.buildSrpUpdate(opts)
+	data = env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	counters = env.server.GetResponseCounters()
@@ -1480,7 +1478,7 @@ func TestServerIgnoresWhenNotRunning(t *testing.T) {
 	env.server.Enable(true)
 
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	if len(env.responses) != 0 {
@@ -1504,7 +1502,7 @@ func TestServerStopClearsHosts(t *testing.T) {
 	env.startServer()
 
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	if len(env.server.GetHosts()) == 0 {
@@ -1573,7 +1571,7 @@ func TestServerDisableWhileRunning(t *testing.T) {
 	env.startServer()
 
 	opts := defaultUpdateOpts()
-	data := env.buildSrpUpdate(opts)
+	data := env.buildSrpUpdate(&opts)
 	env.server.ProcessMessage(data, defaultPeer())
 
 	env.server.Enable(false)

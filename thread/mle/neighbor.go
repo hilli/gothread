@@ -215,7 +215,7 @@ func (r *Router) HasRoute() bool {
 }
 
 // SetNextHopAndCost sets the next hop and cost for routing to this router.
-func (r *Router) SetNextHopAndCost(nextHop uint8, cost uint8) {
+func (r *Router) SetNextHopAndCost(nextHop, cost uint8) {
 	r.NextHop = nextHop
 	r.Cost = cost
 }
@@ -357,14 +357,14 @@ func (c *Child) ClearRequestTLVs() {
 
 // SetRequestTLVs stores the TLV types from a TLV Request TLV value.
 // At most MaxRequestTLVs types are stored; the rest are silently dropped.
-func (c *Child) SetRequestTLVs(types []uint8) {
+func (c *Child) SetRequestTLVs(tlvTypes []uint8) {
 	c.ClearRequestTLVs()
-	n := len(types)
+	n := len(tlvTypes)
 	if n > MaxRequestTLVs {
 		n = MaxRequestTLVs
 	}
 	for i := 0; i < n; i++ {
-		c.RequestTLVs[i] = types[i]
+		c.RequestTLVs[i] = tlvTypes[i]
 	}
 	c.RequestTLVCount = uint8(n)
 }

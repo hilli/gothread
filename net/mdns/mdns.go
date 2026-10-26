@@ -48,21 +48,19 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	errInvalidName  = errors.New("mdns: invalid DNS name")
-	errInvalidState = errors.New("mdns: invalid state")
-	errInvalidArgs  = errors.New("mdns: invalid arguments")
-	errAlready      = errors.New("mdns: already registered or browsing")
-	errNotFound     = errors.New("mdns: not found")
-	errTruncated    = errors.New("mdns: message truncated")
-	errNoSpace      = errors.New("mdns: no space in message")
-	errDuplicated   = errors.New("mdns: name conflict detected")
-	errNotEnabled   = errors.New("mdns: module not enabled")
+	errInvalidName = errors.New("mdns: invalid DNS name")
+	errInvalidArgs = errors.New("mdns: invalid arguments")
+	errAlready     = errors.New("mdns: already registered or browsing")
+	errTruncated   = errors.New("mdns: message truncated")
+	errNoSpace     = errors.New("mdns: no space in message")
+	errNotEnabled  = errors.New("mdns: module not enabled")
 )
 
 // ---------------------------------------------------------------------------
 // Record type constants
 // ---------------------------------------------------------------------------
 
+// DNS resource record types used by multicast DNS.
 const (
 	TypeA    uint16 = 1   // IPv4 host address.
 	TypePTR  uint16 = 12  // Domain name pointer.
@@ -78,6 +76,7 @@ const (
 // Class constants
 // ---------------------------------------------------------------------------
 
+// Multicast DNS record class and cache-flush flag values.
 const (
 	ClassInternet  uint16 = 1      // Internet class (IN).
 	CacheFlushFlag uint16 = 0x8000 // Cache-flush flag (RFC 6762 Section 10.2).
@@ -119,7 +118,7 @@ func (s State) String() string {
 
 const (
 	defaultPort    uint16 = 5353
-	defaultMaxSize        = 1200
+	defaultMaxSize int    = 1200
 
 	probeCount    = 3                      // Number of probes before claiming.
 	probeInterval = 250 * time.Millisecond // Interval between probes.
@@ -573,6 +572,8 @@ func (c *Core) sendHostGoodbyeLocked(h *host) {
 // ---------------------------------------------------------------------------
 
 // RegisterService registers or updates a service entry.
+//
+//nolint:gocritic // Keep the value-parameter signature required by the public API.
 func (c *Core) RegisterService(info ServiceInfo) error {
 	if info.InstanceName == "" || info.ServiceType == "" {
 		return errInvalidArgs
@@ -729,7 +730,7 @@ func (c *Core) UnregisterKey(name string) error {
 
 	// Not found as host key; search all keys.
 	for k, ke := range c.keys {
-		if strings.ToLower(ke.info.Name) == strings.ToLower(name) {
+		if strings.EqualFold(ke.info.Name, name) {
 			c.sendKeyGoodbyeLocked(ke)
 			delete(c.keys, k)
 			return nil
@@ -1215,7 +1216,7 @@ func (c *Core) handleProbeLocked(msg *parsedMessage, qname string) {
 func isKnownAnswer(answers []resourceRecord, name string, rtype uint16, rdata []byte) bool {
 	nameLower := strings.ToLower(name)
 	for _, a := range answers {
-		if strings.ToLower(a.Name) == nameLower &&
+		if strings.EqualFold(a.Name, nameLower) &&
 			a.Type == rtype &&
 			a.TTL > 0 &&
 			rdataEqual(a.RData, rdata) {

@@ -64,7 +64,7 @@ func (m *mockLeaderRouterTable) AllocateWithID(routerID uint8) (uint16, error) {
 	return rloc16, nil
 }
 
-func (m *mockLeaderRouterTable) Allocate() (uint8, uint16, error) {
+func (m *mockLeaderRouterTable) Allocate() (routerID uint8, address uint16, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.allocateErr != nil {
@@ -114,7 +114,7 @@ func (m *mockLeaderRouterTable) AllocateWithIDForRouter(routerID uint8, extAddr 
 	return rloc16, nil
 }
 
-func (m *mockLeaderRouterTable) AllocateForRouter(extAddr types.ExtAddress) (uint8, uint16, error) {
+func (m *mockLeaderRouterTable) AllocateForRouter(extAddr types.ExtAddress) (routerID uint8, address uint16, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.nextRandomErr != nil {
@@ -870,7 +870,7 @@ func TestLeaderServiceSetRouterUpgradeThreshold(t *testing.T) {
 
 	engine, ms := newTestEngine()
 	agent := NewAgent(engine)
-	ls := NewLeaderService(agent, rt, 10) // threshold = 10
+	ls := NewLeaderService(agent, rt, 10) // Use a router upgrade threshold of 10.
 	defer ls.Stop()
 
 	req := &AddrSolicitRequest{

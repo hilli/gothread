@@ -221,7 +221,7 @@ func TestSecurityPolicyFlagsAllEnabled(t *testing.T) {
 	// Byte 0: all standard bits set (0xf8), inverted bits cleared (0x00)
 	// ObtainNetworkKey=0x80, NativeComm=0x40, Routers=0x20, ExternalComm=0x10, Beacons=0x08
 	// CommercialComm bit=0 (enabled=inverted), AutonomousEnrollment bit=0, NetworkKeyProv bit=0
-	wantByte0 := byte(0xf8) // 0x80|0x40|0x20|0x10|0x08 = 0xf8
+	wantByte0 := byte(0xf8) // Bitwise OR of the five flags: 0x80 | 0x40 | 0x20 | 0x10 | 0x08.
 	if flags[0] != wantByte0 {
 		t.Errorf("flags[0]: got 0x%02x, want 0x%02x", flags[0], wantByte0)
 	}

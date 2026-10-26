@@ -130,7 +130,7 @@ type mockDatasetSaver struct {
 	saveErr   error
 }
 
-func (d *mockDatasetSaver) SaveDataset(info Info) error {
+func (d *mockDatasetSaver) SaveDataset(info Info) error { //nolint:gocritic // The DatasetSaver interface requires an Info value.
 	saved := info
 	d.savedInfo = &saved
 	return d.saveErr
@@ -176,7 +176,7 @@ func startJoinerClient(t *testing.T, jc *JoinerClient) *bool {
 	return &completed
 }
 
-func buildScanResult(channel uint8, panID uint16, port uint16, ext types.ExtAddress, permitsAll bool) *JoinerScanResult {
+func buildScanResult(channel uint8, panID, port uint16, ext types.ExtAddress, permitsAll bool) *JoinerScanResult {
 	result := &JoinerScanResult{
 		ExtAddress:    ext,
 		PanID:         panID,
@@ -191,7 +191,7 @@ func buildScanResult(channel uint8, panID uint16, port uint16, ext types.ExtAddr
 	return result
 }
 
-func buildScanResultWithJoinerID(channel uint8, panID uint16, port uint16, ext types.ExtAddress, joinerID [8]byte) *JoinerScanResult {
+func buildScanResultWithJoinerID(channel uint8, panID, port uint16, ext types.ExtAddress, joinerID [8]byte) *JoinerScanResult {
 	result := &JoinerScanResult{
 		ExtAddress:    ext,
 		PanID:         panID,
@@ -770,7 +770,7 @@ func TestFinalizePayload_ContainsRequiredTLVs(t *testing.T) {
 
 	// Check State TLV
 	state := findTLVInBytes(payload, TLVState)
-	if state == nil || state[0] != StateAccept {
+	if len(state) == 0 || state[0] != StateAccept {
 		t.Errorf("missing or wrong State TLV")
 	}
 
@@ -794,7 +794,7 @@ func TestFinalizePayload_ContainsRequiredTLVs(t *testing.T) {
 
 	// Check Vendor Stack Version (6 bytes)
 	vstk := findTLVInBytes(payload, TLVVendorStackVersion)
-	if vstk == nil || len(vstk) != 6 {
+	if len(vstk) != 6 {
 		t.Errorf("missing or wrong VendorStackVersion TLV: %x", vstk)
 	}
 }

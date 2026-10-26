@@ -16,6 +16,7 @@ import (
 // PdClientState represents the PD client state machine state.
 type PdClientState uint8
 
+// Prefix delegation client states.
 const (
 	PdStateStopped    PdClientState = 0
 	PdStateToSolicit  PdClientState = 1
@@ -44,10 +45,7 @@ const (
 	pdMaxRebindTimeout         = 600_000  // ms - REB_MAX_RT
 	pdInitialReleaseTimeout    = 1000     // ms - REL_TIMEOUT
 	pdMaxReleaseRetxCount      = 4        // REL_MAX_RC
-	pdDesiredPrefixLength      = 64       //nolint:unused
-	pdIaid                     = 0        //nolint:unused
 	pdRetxDelayOnFailedTx      = 330      // ms
-	pdJitterDivisor            = 10       //nolint:unused
 
 	// Lifetime adjustment constants (in seconds).
 	pdMinPreferredLifetime                 = 30 * 60     // 30 minutes
@@ -135,17 +133,6 @@ type retxTracker struct {
 	clock         PdClientClock
 }
 
-func (r *retxTracker) reset() {
-	r.startTimeMs = 0
-	r.endTimeMs = 0
-	r.timeoutMs = 0
-	r.maxTimeoutMs = 0
-	r.count = 0
-	r.maxCount = 0
-	r.transactionID = TransactionID{}
-	r.hasEndTime = false
-}
-
 func (r *retxTracker) start(initialTimeoutMs, maxTimeoutMs uint32, maxCount uint16, endTimeMs *int64) {
 	// Generate a new transaction ID different from current.
 	old := r.transactionID
@@ -204,7 +191,7 @@ func (r *retxTracker) nextTimeout() time.Duration {
 
 	// RFC 8415 Section 15: RT = 2*RTprev + RAND*RTprev
 	// Interpreted as RT = RTprev + (RTprev + RAND*RTprev)
-	r.timeoutMs = r.timeoutMs + r.addFullJitter(r.timeoutMs)
+	r.timeoutMs += r.addFullJitter(r.timeoutMs)
 
 	if r.maxTimeoutMs != 0 && r.timeoutMs > r.maxTimeoutMs {
 		r.timeoutMs = r.addFullJitter(r.maxTimeoutMs)
@@ -309,13 +296,14 @@ func (p *pdPrefix) adjustLifetimesT1AndT2() {
 		p.T2 = p.PreferredLifetime * pdDefaultT2FactorNumerator / pdDefaultT2FactorDenominator
 	}
 
-	if p.PreferredLifetime >= pdMinPreferredLifetime {
+	switch {
+	case p.PreferredLifetime >= pdMinPreferredLifetime:
 		p.T1 = clampUint32(p.T1, pdMinT1, p.PreferredLifetime-pdMinT1MarginBeforePreferredLifetime)
 		p.T2 = clampUint32(p.T2, p.T1, p.PreferredLifetime-pdMinT2MarginBeforePreferredLifetime)
-	} else if p.PreferredLifetime >= pdMinT1 {
+	case p.PreferredLifetime >= pdMinT1:
 		p.T1 = clampUint32(p.T1, pdMinT1, p.PreferredLifetime)
 		p.T2 = clampUint32(p.T2, p.T1, p.PreferredLifetime)
-	} else {
+	default:
 		p.T1 = p.PreferredLifetime
 		p.T2 = p.PreferredLifetime
 	}
@@ -1111,12 +1099,12 @@ func prefixLessThan(a, b [16]byte) bool {
 	return false
 }
 
-func clampUint32(v, min, max uint32) uint32 {
-	if v < min {
-		return min
+func clampUint32(v, minimum, maximum uint32) uint32 {
+	if v < minimum {
+		return minimum
 	}
-	if v > max {
-		return max
+	if v > maximum {
+		return maximum
 	}
 	return v
 }
@@ -1173,14 +1161,3 @@ func (t *defaultPdTimer) Stop() bool {
 	}
 	return false
 }
-
-// Ensure Eui64DUID.Init accepts [8]byte by convenience.
-func (d *Eui64DUID) initFromBytes(extAddr [8]byte) {
-	d.Type = DUIDTypeLinkLayer
-	d.HardwareType = HardwareTypeEUI64
-	copy(d.ExtAddress[:], extAddr[:])
-}
-
-// Override the existing Init to also work with [8]byte via the PD client.
-// We use initFromBytes internally so as not to break the existing API.
-func init() {} //nolint:gochecknoinits

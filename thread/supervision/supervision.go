@@ -285,7 +285,7 @@ func WithParentLossHandler(h ParentLossHandler) ListenerOption {
 // SupervisionListener monitors incoming messages from the parent. If no
 // message is received within the configured timeout, it invokes the
 // ParentLossHandler.
-type SupervisionListener struct {
+type SupervisionListener struct { //nolint:revive // Preserve the exported type name for existing callers.
 	mu       sync.Mutex
 	timeout  uint16 // supervision check timeout in seconds (0 = disabled)
 	interval uint16 // supervision interval in seconds

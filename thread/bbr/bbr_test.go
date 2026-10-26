@@ -258,7 +258,7 @@ func TestDuaManager_HandleDuaResponse_DuplicateExhausted(t *testing.T) {
 
 	dm.UpdateDomainUnicastAddress()
 	_ = dm.Register()
-	dm.HandleDuaResponse(DuaStatusDuplicate) // dadCounter = 1, regenerates
+	dm.HandleDuaResponse(DuaStatusDuplicate) // First duplicate increments the DAD counter to 1 and regenerates.
 	// Register and get another duplicate.
 	_ = dm.Register()
 	dm.HandleDuaResponse(DuaStatusDuplicate) // dadCounter = 2, exceeds max (1)

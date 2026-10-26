@@ -192,7 +192,7 @@ func (s *Scheduler) Count() int {
 // Also returns delayFromLastRx = nextTxWindow - LastRxTimestamp.
 //
 // Returns ErrNotSynchronized if the neighbor is not CSL-synchronized.
-func GetNextTransmissionDelay(info *NeighborInfo, radioNowUs uint64, aheadUs uint32) (delayUs uint32, delayFromLastRx uint32, err error) {
+func GetNextTransmissionDelay(info *NeighborInfo, radioNowUs uint64, aheadUs uint32) (delayUs, delayFromLastRx uint32, err error) {
 	if !info.IsCslSynchronized() {
 		return 0, 0, ErrNotSynchronized
 	}

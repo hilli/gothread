@@ -17,8 +17,8 @@ const (
 	uriEnergyScan    = "c/es"
 	uriEnergyReport  = "c/er"
 	uriAnnounceBegin = "c/ab"
-	uriPanIdQuery    = "c/pq"
-	uriPanIdConflict = "c/pc"
+	uriPanIDQuery    = "c/pq"
+	uriPanIDConflict = "c/pc"
 )
 
 // ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ func (esc *EnergyScanClient) SendQuery(
 }
 
 // buildQueryPayload builds the energy scan query TLV payload.
-func (esc *EnergyScanClient) buildQueryPayload(channelMask uint32, count uint8, period uint16, scanDuration uint16) []byte {
+func (esc *EnergyScanClient) buildQueryPayload(channelMask uint32, count uint8, period, scanDuration uint16) []byte {
 	var buf []byte
 
 	// Commissioner Session ID.
@@ -156,7 +156,7 @@ func (esc *EnergyScanClient) handleEnergyReport(msg *coap.Message, info coap.Mes
 	// Parse channel mask.
 	var channelMask uint32
 	channelMaskTLV := findTLVInBytes(payload, TLVChannelMask)
-	if channelMaskTLV != nil && len(channelMaskTLV) >= 6 {
+	if len(channelMaskTLV) >= 6 {
 		channelMask = binary.BigEndian.Uint32(channelMaskTLV[2:6])
 	}
 
@@ -178,8 +178,7 @@ func (esc *EnergyScanClient) buildMessageInfo(addr [16]byte) coap.MessageInfo {
 	mlp := esc.addressing.MeshLocalPrefix()
 	senderRLOC := esc.addressing.RLOC16()
 
-	var localAddr [16]byte
-	localAddr = [16]byte(rlocAddr(mlp, senderRLOC))
+	var localAddr = [16]byte(rlocAddr(mlp, senderRLOC))
 
 	return coap.MessageInfo{
 		PeerPort:  61631, // TMF port
@@ -233,8 +232,7 @@ func (abc *AnnounceBeginClient) SendRequest(
 
 	mlp := abc.addressing.MeshLocalPrefix()
 	senderRLOC := abc.addressing.RLOC16()
-	var localAddr [16]byte
-	localAddr = [16]byte(rlocAddr(mlp, senderRLOC))
+	var localAddr = [16]byte(rlocAddr(mlp, senderRLOC))
 
 	info := coap.MessageInfo{
 		PeerPort:  61631,
@@ -277,11 +275,15 @@ func (abc *AnnounceBeginClient) buildPayload(channelMask uint32, count uint8, pe
 // ---------------------------------------------------------------------------
 
 // PanIdConflictCallback is invoked when a PAN ID conflict is reported.
+//
+//nolint:revive // Preserve the exported spelling for API compatibility.
 type PanIdConflictCallback func(panID uint16, channelMask uint32)
 
 // PanIdQueryClient sends PAN ID Query requests and handles conflict reports.
 //
 // This is a Go port of OpenThread's panid_query_client.hpp/cpp.
+//
+//nolint:revive // Preserve the exported spelling for API compatibility.
 type PanIdQueryClient struct {
 	mu sync.Mutex
 
@@ -293,6 +295,8 @@ type PanIdQueryClient struct {
 }
 
 // NewPanIdQueryClient creates a new PanIdQueryClient.
+//
+//nolint:revive // Preserve the exported spelling for API compatibility.
 func NewPanIdQueryClient(
 	transport CommissionerTransport,
 	addressing CommissionerAddressing,
@@ -327,19 +331,18 @@ func (pqc *PanIdQueryClient) SendQuery(
 
 	// Register handler for PAN ID conflict if not already done.
 	if !pqc.registered {
-		pqc.transport.RegisterHandler(uriPanIdConflict, pqc.handlePanIdConflict)
+		pqc.transport.RegisterHandler(uriPanIDConflict, pqc.handlePanIDConflict)
 		pqc.registered = true
 	}
 
 	pqc.callback = cb
 
 	payload := pqc.buildQueryPayload(panID, channelMask)
-	msg := buildCONPost(uriPanIdQuery, payload)
+	msg := buildCONPost(uriPanIDQuery, payload)
 
 	mlp := pqc.addressing.MeshLocalPrefix()
 	senderRLOC := pqc.addressing.RLOC16()
-	var localAddr [16]byte
-	localAddr = [16]byte(rlocAddr(mlp, senderRLOC))
+	var localAddr = [16]byte(rlocAddr(mlp, senderRLOC))
 
 	info := coap.MessageInfo{
 		PeerPort:  61631,
@@ -384,8 +387,8 @@ func (pqc *PanIdQueryClient) buildQueryPayload(panID uint16, channelMask uint32)
 	return buf
 }
 
-// handlePanIdConflict processes incoming PAN ID conflict messages.
-func (pqc *PanIdQueryClient) handlePanIdConflict(msg *coap.Message, info coap.MessageInfo) {
+// handlePanIDConflict processes incoming PAN ID conflict messages.
+func (pqc *PanIdQueryClient) handlePanIDConflict(msg *coap.Message, info coap.MessageInfo) {
 	// ACK the message if confirmable.
 	if msg.GetType() == coap.TypeConfirmable {
 		_ = pqc.transport.SendResponse(coap.CodeChanged, msg, info)
@@ -396,14 +399,14 @@ func (pqc *PanIdQueryClient) handlePanIdConflict(msg *coap.Message, info coap.Me
 	// Parse PAN ID.
 	var panID uint16
 	panIDTLV := findTLVInBytes(payload, TLVPanID)
-	if panIDTLV != nil && len(panIDTLV) >= 2 {
+	if len(panIDTLV) >= 2 {
 		panID = binary.BigEndian.Uint16(panIDTLV[:2])
 	}
 
 	// Parse channel mask.
 	var channelMask uint32
 	channelMaskTLV := findTLVInBytes(payload, TLVChannelMask)
-	if channelMaskTLV != nil && len(channelMaskTLV) >= 6 {
+	if len(channelMaskTLV) >= 6 {
 		channelMask = binary.BigEndian.Uint32(channelMaskTLV[2:6])
 	}
 

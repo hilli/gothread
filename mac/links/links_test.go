@@ -88,10 +88,10 @@ func (r *mockRadio) ClearSrcMatchExtEntry(_ types.ExtAddress) error     { return
 func (r *mockRadio) ClearSrcMatchShortEntries()                         {}
 func (r *mockRadio) ClearSrcMatchExtEntries()                           {}
 
-func (r *mockRadio) SetMacKey(_ uint8, _ uint8, _, _, _ types.KeyMaterial) {}
-func (r *mockRadio) SetMacFrameCounter(_ uint32)                           {}
-func (r *mockRadio) SetMacFrameCounterIfLarger(_ uint32)                   {}
-func (r *mockRadio) EnergyScan(_ uint8, _ uint16) error                    { return nil }
+func (r *mockRadio) SetMacKey(_, _ uint8, _, _, _ types.KeyMaterial) {}
+func (r *mockRadio) SetMacFrameCounter(_ uint32)                     {}
+func (r *mockRadio) SetMacFrameCounterIfLarger(_ uint32)             {}
+func (r *mockRadio) EnergyScan(_ uint8, _ uint16) error              { return nil }
 
 // --------------------------------------------------------------------------
 // RadioType tests

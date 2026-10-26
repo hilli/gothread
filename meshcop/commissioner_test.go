@@ -26,6 +26,7 @@ type mockTransport struct {
 	sentRequests  []mockSentRequest
 	sentResponses []mockSentResponse
 	handlers      map[string]func(*coap.Message, coap.MessageInfo)
+	sendErr       error
 }
 
 type mockSentRequest struct {
@@ -50,7 +51,7 @@ func (m *mockTransport) SendRequest(msg *coap.Message, info coap.MessageInfo, cb
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sentRequests = append(m.sentRequests, mockSentRequest{Msg: msg, Info: info, CB: cb})
-	return nil
+	return m.sendErr
 }
 
 func (m *mockTransport) SendResponse(code coap.Code, req *coap.Message, info coap.MessageInfo) error {
@@ -497,6 +498,57 @@ func TestPetition_ErrorRetries(t *testing.T) {
 	}
 }
 
+func TestPetition_SendFailureRetries(t *testing.T) {
+	tr := newMockTransport()
+	tr.sendErr = goterrors.ErrFailed
+	c := NewCommissioner(tr, newMockAddressing(), nil, nil)
+	var retry func()
+	c.afterFunc = func(d time.Duration, f func()) *time.Timer {
+		retry = f
+		timer := time.NewTimer(time.Hour)
+		t.Cleanup(func() { timer.Stop() })
+		return timer
+	}
+
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if c.GetState() != CommissionerPetition || retry == nil {
+		t.Fatal("failed petition send should schedule a retry")
+	}
+	retry()
+	if c.GetState() != CommissionerDisabled {
+		t.Fatalf("expected Disabled after failed sends, got %v", c.GetState())
+	}
+	if tr.requestCount() != petitionRetryCount {
+		t.Fatalf("expected %d attempts, got %d", petitionRetryCount, tr.requestCount())
+	}
+}
+
+func TestKeepAlive_SendFailureDisablesCommissioner(t *testing.T) {
+	c, tr, _ := createActiveCommissioner(t)
+	t.Cleanup(func() { c.stop(false) })
+	if err := c.AddJoinerAny("J01NME", time.Minute); err != nil {
+		t.Fatalf("AddJoinerAny: %v", err)
+	}
+	tr.sendErr = goterrors.ErrFailed
+	c.mu.Lock()
+	c.sendKeepAliveLocked(c.sessionID, StateAccept)
+	c.mu.Unlock()
+
+	if c.GetState() != CommissionerDisabled {
+		t.Fatalf("expected Disabled after failed keep-alive send, got %v", c.GetState())
+	}
+	for _, joiner := range c.joiners {
+		if joiner.Type != JoinerTypeUnused {
+			t.Fatal("failed keep-alive send should clear joiners")
+		}
+	}
+	if c.commissionerTimer != nil {
+		t.Fatal("failed keep-alive send should stop the commissioner timer")
+	}
+}
+
 func TestPetition_NilResponse(t *testing.T) {
 	tr := newMockTransport()
 	addr := newMockAddressing()
@@ -612,7 +664,7 @@ func TestStop_WhenActive_SendsResignKeepAlive(t *testing.T) {
 	lastReq := tr.lastRequest()
 	payload := lastReq.Msg.GetPayload()
 	stateTLV := findTLVInBytes(payload, TLVState)
-	if stateTLV == nil || stateTLV[0] != StateReject {
+	if len(stateTLV) == 0 || stateTLV[0] != StateReject {
 		t.Fatalf("expected State=Reject in resign keep-alive")
 	}
 }
@@ -674,7 +726,7 @@ func TestKeepAlive_AcceptedAfterPetition(t *testing.T) {
 	lastReq := tr.lastRequest()
 	payload := lastReq.Msg.GetPayload()
 	stateTLV := findTLVInBytes(payload, TLVState)
-	if stateTLV == nil || stateTLV[0] != StateAccept {
+	if len(stateTLV) == 0 || stateTLV[0] != StateAccept {
 		t.Fatal("expected State=Accept in keep-alive")
 	}
 	sessionTLV := findTLVInBytes(payload, TLVCommissionerSessionID)
@@ -1657,12 +1709,12 @@ func TestFindTLVInBytes(t *testing.T) {
 	data = append(data, encodeTLV(TLVCommissionerSessionID, sidBytes)...)
 
 	val := findTLVInBytes(data, TLVState)
-	if val == nil || len(val) != 1 || val[0] != StateAccept {
+	if len(val) != 1 || val[0] != StateAccept {
 		t.Fatalf("expected StateAccept, got %v", val)
 	}
 
 	val = findTLVInBytes(data, TLVCommissionerSessionID)
-	if val == nil || len(val) != 2 {
+	if len(val) != 2 {
 		t.Fatalf("expected 2-byte session ID, got %v", val)
 	}
 	if binary.BigEndian.Uint16(val) != 0x1234 {

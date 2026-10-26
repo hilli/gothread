@@ -46,9 +46,7 @@ func NewDatasetUpdater(
 		activeManager:  activeManager,
 		pendingManager: pendingManager,
 		store:          store,
-		afterFunc: func(d time.Duration, f func()) *time.Timer {
-			return time.AfterFunc(d, f)
-		},
+		afterFunc:      time.AfterFunc,
 	}
 }
 

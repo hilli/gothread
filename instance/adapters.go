@@ -17,6 +17,7 @@ import (
 	"github.com/hilli/gothread/backbone"
 	borderinfra "github.com/hilli/gothread/border"
 	"github.com/hilli/gothread/border/dhcp6pd"
+	"github.com/hilli/gothread/common/log"
 	"github.com/hilli/gothread/diags"
 	"github.com/hilli/gothread/encoding"
 	"github.com/hilli/gothread/mac/datapoll"
@@ -47,7 +48,7 @@ import (
 	"github.com/hilli/gothread/thread/diag"
 	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/indirect"
-	"github.com/hilli/gothread/thread/key"
+	threadkey "github.com/hilli/gothread/thread/key"
 	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mgmt"
@@ -73,7 +74,7 @@ func (b *submacCallbackBridge) ReceiveDone(frame *radio.Frame, err error) {
 	}
 }
 
-func (b *submacCallbackBridge) TransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error) {
+func (b *submacCallbackBridge) TransmitDone(frame, ackFrame *radio.Frame, err error) {
 	if b.target != nil {
 		b.target.TransmitDone(frame, ackFrame, err)
 	}
@@ -316,7 +317,10 @@ func (h *parentLossHandler) HandleParentLoss() {
 		return
 	}
 	_ = h.inst.mleService.Mle().BecomeDetached()
-	h.inst.mleService.Attacher.Start(mle.AttachAnyPartition)
+	if err := h.inst.mleService.Attacher.Start(mle.AttachAnyPartition); err != nil {
+		log.Warn(log.RegionMle, "Attach after parent loss: %v", err)
+		return
+	}
 	h.inst.scheduleAttachTimer()
 }
 
@@ -876,35 +880,35 @@ func (inst *Instance) GetLinkLocalAllRoutersMulticast() ip6.Address {
 }
 
 // --------------------------------------------------------------------------
-// Instance implements mle.KeyProvider (delegates to key.Manager)
+// Instance implements mle.KeyProvider (delegates to threadkey.Manager)
 // --------------------------------------------------------------------------
 
-// GetCurrentKeySequence delegates to key.Manager.
+// GetCurrentKeySequence delegates to threadkey.Manager.
 func (inst *Instance) GetCurrentKeySequence() uint32 {
 	return inst.keyManager.GetCurrentKeySequence()
 }
 
-// GetCurrentMleKey delegates to key.Manager.
-func (inst *Instance) GetCurrentMleKey() key.MleKey {
+// GetCurrentMleKey delegates to threadkey.Manager.
+func (inst *Instance) GetCurrentMleKey() threadkey.MleKey {
 	return inst.keyManager.GetCurrentMleKey()
 }
 
-// GetTemporaryMleKey delegates to key.Manager.
-func (inst *Instance) GetTemporaryMleKey(seq uint32) key.MleKey {
+// GetTemporaryMleKey delegates to threadkey.Manager.
+func (inst *Instance) GetTemporaryMleKey(seq uint32) threadkey.MleKey {
 	return inst.keyManager.GetTemporaryMleKey(seq)
 }
 
-// GetMleFrameCounter delegates to key.Manager.
+// GetMleFrameCounter delegates to threadkey.Manager.
 func (inst *Instance) GetMleFrameCounter() uint32 {
 	return inst.keyManager.GetMleFrameCounter()
 }
 
-// IncrementMleFrameCounter delegates to key.Manager.
+// IncrementMleFrameCounter delegates to threadkey.Manager.
 func (inst *Instance) IncrementMleFrameCounter() {
 	inst.keyManager.IncrementMleFrameCounter()
 }
 
-// GetMacFrameCounter delegates to key.Manager.
+// GetMacFrameCounter delegates to threadkey.Manager.
 func (inst *Instance) GetMacFrameCounter() uint32 {
 	return inst.keyManager.GetMacFrameCounter()
 }
@@ -918,7 +922,7 @@ func (inst *Instance) updateMacKeys() {
 	keyID := inst.keyManager.GetMacKeyId()
 	seq := inst.keyManager.GetCurrentKeySequence()
 
-	toKeyMaterial := func(mk key.MacKey) types.KeyMaterial {
+	toKeyMaterial := func(mk threadkey.MacKey) types.KeyMaterial {
 		var km types.KeyMaterial
 		km.SetKey(types.Key(mk))
 		return km
@@ -935,8 +939,8 @@ func (inst *Instance) updateMacKeys() {
 	inst.subMac.SetFrameCounter(inst.keyManager.GetMacFrameCounter(), false)
 }
 
-// SetCurrentKeySequence delegates to key.Manager.
-func (inst *Instance) SetCurrentKeySequence(seq uint32, flags key.SeqUpdateFlag) {
+// SetCurrentKeySequence delegates to threadkey.Manager.
+func (inst *Instance) SetCurrentKeySequence(seq uint32, flags threadkey.SeqUpdateFlag) {
 	inst.keyManager.SetCurrentKeySequence(seq, flags)
 	inst.updateMacKeys()
 }
@@ -1033,7 +1037,7 @@ func (inst *Instance) UpdateRouterIDSet(sequence uint8, idSet mle.RouterIDSet, n
 
 // UpdateRoutes converts the raw Route64 components into a RouteTlvData
 // and delegates to the routing table.
-func (inst *Instance) UpdateRoutes(sequence uint8, mask mle.RouterIDSet, entries []mle.Route64Entry, neighborID uint8, selfRouterID uint8) bool {
+func (inst *Instance) UpdateRoutes(sequence uint8, mask mle.RouterIDSet, entries []mle.Route64Entry, neighborID, selfRouterID uint8) bool {
 	tlv := &routing.RouteTlvData{
 		Sequence:     sequence,
 		RouterIDMask: mask,
@@ -1741,7 +1745,7 @@ type discoverySenderAdapter struct {
 
 var _ discover.DiscoverySender = (*discoverySenderAdapter)(nil)
 
-func (d *discoverySenderAdapter) SendDiscoveryRequest(channel uint16, panID uint16, enableFiltering bool) error {
+func (d *discoverySenderAdapter) SendDiscoveryRequest(channel, panID uint16, enableFiltering bool) error {
 	if d.inst.mleService == nil || d.inst.mleService.DiscoveryHandler == nil {
 		return nil
 	}
@@ -1867,7 +1871,7 @@ type ndAgentNaSenderAdapter struct {
 	inst *Instance
 }
 
-func (a *ndAgentNaSenderAdapter) SendNeighborAdvert(target ip6.Address, destination ip6.Address) error {
+func (a *ndAgentNaSenderAdapter) SendNeighborAdvert(target, destination ip6.Address) error {
 	if a.inst.infraIf == nil {
 		return nil
 	}
@@ -1980,6 +1984,7 @@ type dnssdPlatformAdapter struct {
 	inst *Instance
 }
 
+//nolint:gocritic // The dnssd.Platform interface requires a value argument.
 func (a *dnssdPlatformAdapter) RegisterService(info dnssd.ServiceInfo) error             { return nil }
 func (a *dnssdPlatformAdapter) UnregisterService(instanceName, serviceType string) error { return nil }
 func (a *dnssdPlatformAdapter) RegisterHost(info dnssd.HostInfo) error                   { return nil }
@@ -2191,7 +2196,7 @@ type mgmtEnergyScannerAdapter struct {
 	inst *Instance
 }
 
-func (a *mgmtEnergyScannerAdapter) EnergyScan(channel uint16, duration uint16) (int8, error) {
+func (a *mgmtEnergyScannerAdapter) EnergyScan(channel, duration uint16) (int8, error) {
 	m := a.inst.mac
 	if m == nil {
 		return -128, nil
@@ -2225,16 +2230,16 @@ func (h *singleChannelEnergyScanHandler) HandleEnergyScanComplete() {
 }
 
 // ---------------------------------------------------------------------------
-// mgmtPanIdScannerAdapter satisfies mgmt.PanIdScanner.
+// mgmtPanIDScannerAdapter satisfies mgmt.PanIdScanner.
 // ---------------------------------------------------------------------------
 
-var _ mgmt.PanIdScanner = (*mgmtPanIdScannerAdapter)(nil)
+var _ mgmt.PanIdScanner = (*mgmtPanIDScannerAdapter)(nil)
 
-type mgmtPanIdScannerAdapter struct {
+type mgmtPanIDScannerAdapter struct {
 	inst *Instance
 }
 
-func (a *mgmtPanIdScannerAdapter) ScanForPanId(channel uint16, panId uint16) (bool, error) {
+func (a *mgmtPanIDScannerAdapter) ScanForPanId(channel, panId uint16) (bool, error) { //nolint:revive // Retain the established public API spelling for source compatibility.
 	// PAN ID scanning requires active IEEE 802.15.4 scanning (sending beacon
 	// requests and inspecting responses), which is part of the MLE discovery
 	// layer (thread/discover). The radio.Radio interface does not expose a
@@ -2384,7 +2389,7 @@ type trelCallbacksAdapter struct {
 
 func (a *trelCallbacksAdapter) HandleReceiveDone(frame *radio.Frame, err error) {}
 func (a *trelCallbacksAdapter) HandleTransmitStarted(frame *radio.Frame)        {}
-func (a *trelCallbacksAdapter) HandleTransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error) {
+func (a *trelCallbacksAdapter) HandleTransmitDone(frame, ackFrame *radio.Frame, err error) {
 }
 func (a *trelCallbacksAdapter) HandleEnergyScanDone(maxRSSI int8) {}
 
@@ -2648,6 +2653,7 @@ var _ meshcop.JoinerDatasetSaver = (*joinerDatasetSaverAdapter)(nil)
 
 type joinerDatasetSaverAdapter struct{ inst *Instance }
 
+//nolint:gocritic // The meshcop.DatasetSaver interface requires a value snapshot.
 func (a *joinerDatasetSaverAdapter) SaveDataset(info meshcop.Info) error {
 	a.inst.activeDataset.SaveLocalFromInfo(&info)
 	return nil
@@ -2743,7 +2749,7 @@ var _ meshcop.JoinerRouterKeyManager = (*joinerRouterKeyManagerAdapter)(nil)
 type joinerRouterKeyManagerAdapter struct{ inst *Instance }
 
 func (a *joinerRouterKeyManagerAdapter) SetKEK(kek [16]byte) {
-	a.inst.keyManager.SetKek(key.Kek(kek))
+	a.inst.keyManager.SetKek(threadkey.Kek(kek))
 }
 func (a *joinerRouterKeyManagerAdapter) GetCurrentKeySequence() uint32 {
 	return a.inst.keyManager.GetCurrentKeySequence()
@@ -2802,7 +2808,7 @@ var _ utils.EnergyScanner = (*utilsEnergyScannerAdapter)(nil)
 
 type utilsEnergyScannerAdapter struct{ inst *Instance }
 
-func (a *utilsEnergyScannerAdapter) EnergyScan(channel uint16, duration uint16) (int8, error) {
+func (a *utilsEnergyScannerAdapter) EnergyScan(channel, duration uint16) (int8, error) {
 	return -128, nil
 }
 

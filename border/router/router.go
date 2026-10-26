@@ -219,7 +219,7 @@ func (m *RoutingManager) GetOmrPrefix() (OmrPrefix, bool) {
 
 // GetOnLinkPrefix returns the on-link prefix being advertised, or false if
 // none is being advertised.
-func (m *RoutingManager) GetOnLinkPrefix() ([16]byte, uint8, bool) {
+func (m *RoutingManager) GetOnLinkPrefix() (prefix [16]byte, length uint8, found bool) {
 	if !m.onLinkManager.ShouldAdvertise() {
 		return [16]byte{}, 0, false
 	}

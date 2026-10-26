@@ -40,26 +40,26 @@ func (r *mockRadio) GetCaps() Caps             { return r.caps }
 func (r *mockRadio) GetIEEEEui64() [8]byte {
 	return [8]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77}
 }
-func (r *mockRadio) SetPanID(panID uint16)                                 { r.panID = panID }
-func (r *mockRadio) SetExtendedAddress(addr types.ExtAddress)              { r.extAddr = addr }
-func (r *mockRadio) SetShortAddress(addr types.ShortAddress)               { r.shortAddr = addr }
-func (r *mockRadio) GetTransmitPower() (int8, error)                       { return r.txPower, nil }
-func (r *mockRadio) SetTransmitPower(power int8) error                     { r.txPower = power; return nil }
-func (r *mockRadio) GetPromiscuous() bool                                  { return r.promiscuous }
-func (r *mockRadio) SetPromiscuous(enable bool)                            { r.promiscuous = enable }
-func (r *mockRadio) GetRSSI() int8                                         { return RSSIInvalid }
-func (r *mockRadio) GetSupportedChannelMask() uint32                       { return 0x07FFF800 }
-func (r *mockRadio) GetPreferredChannelMask() uint32                       { return 0x07FFF800 }
-func (r *mockRadio) GetReceiveSensitivity() int8                           { return -100 }
-func (r *mockRadio) EnableSrcMatch(enable bool)                            { r.srcMatch = enable }
-func (r *mockRadio) AddSrcMatchShortEntry(_ types.ShortAddress) error      { return nil }
-func (r *mockRadio) AddSrcMatchExtEntry(_ types.ExtAddress) error          { return nil }
-func (r *mockRadio) ClearSrcMatchShortEntry(_ types.ShortAddress) error    { return nil }
-func (r *mockRadio) ClearSrcMatchExtEntry(_ types.ExtAddress) error        { return nil }
-func (r *mockRadio) ClearSrcMatchShortEntries()                            {}
-func (r *mockRadio) ClearSrcMatchExtEntries()                              {}
-func (r *mockRadio) SetMacKey(_ uint8, _ uint8, _, _, _ types.KeyMaterial) {}
-func (r *mockRadio) SetMacFrameCounter(counter uint32)                     { r.counter = counter }
+func (r *mockRadio) SetPanID(panID uint16)                              { r.panID = panID }
+func (r *mockRadio) SetExtendedAddress(addr types.ExtAddress)           { r.extAddr = addr }
+func (r *mockRadio) SetShortAddress(addr types.ShortAddress)            { r.shortAddr = addr }
+func (r *mockRadio) GetTransmitPower() (int8, error)                    { return r.txPower, nil }
+func (r *mockRadio) SetTransmitPower(power int8) error                  { r.txPower = power; return nil }
+func (r *mockRadio) GetPromiscuous() bool                               { return r.promiscuous }
+func (r *mockRadio) SetPromiscuous(enable bool)                         { r.promiscuous = enable }
+func (r *mockRadio) GetRSSI() int8                                      { return RSSIInvalid }
+func (r *mockRadio) GetSupportedChannelMask() uint32                    { return 0x07FFF800 }
+func (r *mockRadio) GetPreferredChannelMask() uint32                    { return 0x07FFF800 }
+func (r *mockRadio) GetReceiveSensitivity() int8                        { return -100 }
+func (r *mockRadio) EnableSrcMatch(enable bool)                         { r.srcMatch = enable }
+func (r *mockRadio) AddSrcMatchShortEntry(_ types.ShortAddress) error   { return nil }
+func (r *mockRadio) AddSrcMatchExtEntry(_ types.ExtAddress) error       { return nil }
+func (r *mockRadio) ClearSrcMatchShortEntry(_ types.ShortAddress) error { return nil }
+func (r *mockRadio) ClearSrcMatchExtEntry(_ types.ExtAddress) error     { return nil }
+func (r *mockRadio) ClearSrcMatchShortEntries()                         {}
+func (r *mockRadio) ClearSrcMatchExtEntries()                           {}
+func (r *mockRadio) SetMacKey(_, _ uint8, _, _, _ types.KeyMaterial)    {}
+func (r *mockRadio) SetMacFrameCounter(counter uint32)                  { r.counter = counter }
 func (r *mockRadio) SetMacFrameCounterIfLarger(counter uint32) {
 	if counter > r.counter {
 		r.counter = counter
@@ -73,10 +73,10 @@ type mockCallbacks struct {
 	maxRSSI int8
 }
 
-func (c *mockCallbacks) HandleReceiveDone(frame *Frame, _ error)        { c.rxFrame = frame }
-func (c *mockCallbacks) HandleTransmitStarted(frame *Frame)             { c.txFrame = frame }
-func (c *mockCallbacks) HandleTransmitDone(_ *Frame, _ *Frame, _ error) {}
-func (c *mockCallbacks) HandleEnergyScanDone(maxRSSI int8)              { c.maxRSSI = maxRSSI }
+func (c *mockCallbacks) HandleReceiveDone(frame *Frame, _ error) { c.rxFrame = frame }
+func (c *mockCallbacks) HandleTransmitStarted(frame *Frame)      { c.txFrame = frame }
+func (c *mockCallbacks) HandleTransmitDone(_, _ *Frame, _ error) {}
+func (c *mockCallbacks) HandleEnergyScanDone(maxRSSI int8)       { c.maxRSSI = maxRSSI }
 
 // Compile-time interface checks.
 var (

@@ -124,7 +124,7 @@ func NewEnergyScanServer(scanner EnergyScanner, opts ...EnergyScanOption) *Energ
 // HandleRequest starts an energy scan across the channels specified by
 // channelMask. The scan will be repeated count times, with period (ms)
 // between passes, and each channel scanned for scanDuration (ms).
-func (s *EnergyScanServer) HandleRequest(channelMask uint32, count uint8, period uint16, scanDuration uint16) error {
+func (s *EnergyScanServer) HandleRequest(channelMask uint32, count uint8, period, scanDuration uint16) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -269,44 +269,41 @@ func (s *EnergyScanServer) Results() []EnergyScanResult {
 // PAN ID Query Server
 // ---------------------------------------------------------------------------
 
-// panIdScanDelay matches OpenThread's PanIdQueryServer::kScanDelay.
-const panIdScanDelay uint32 = 1000
-
 // PanIdScanner performs active scans to detect PAN IDs on channels.
-type PanIdScanner interface {
+type PanIdScanner interface { //nolint:revive // Preserve the exported API spelling for existing callers.
 	// ScanForPanId scans the given channel for the specified PAN ID.
 	// Returns true if the PAN ID was detected, false otherwise.
-	ScanForPanId(channel uint16, panId uint16) (bool, error)
+	ScanForPanId(channel uint16, panID uint16) (bool, error)
 }
 
 // PanIdQueryServer handles PAN ID query TMF requests from the Commissioner.
 // It scans a set of channels for the presence of a given PAN ID and reports
 // which channels have a conflict.
-type PanIdQueryServer struct {
+type PanIdQueryServer struct { //nolint:revive // Preserve the exported API spelling for existing callers.
 	mu sync.Mutex
 
 	scanner     PanIdScanner
-	panId       uint16
+	panID       uint16
 	channelMask uint32
 	scanning    bool
 	currentChan uint16
 	conflicts   uint32 // bitmask of channels where PAN ID was found
 
-	reportCb func(panId uint16, channelMask uint32)
+	reportCb func(panID uint16, channelMask uint32)
 }
 
 // NewPanIdQueryServer creates a new PanIdQueryServer with the given platform
 // scanner.
-func NewPanIdQueryServer(scanner PanIdScanner) *PanIdQueryServer {
+func NewPanIdQueryServer(scanner PanIdScanner) *PanIdQueryServer { //nolint:revive // Preserve the exported API spelling for existing callers.
 	return &PanIdQueryServer{
 		scanner: scanner,
-		panId:   0xffff, // broadcast PAN ID, matching OpenThread's kPanIdBroadcast
+		panID:   0xffff, // broadcast PAN ID, matching OpenThread's kPanIdBroadcast
 	}
 }
 
 // HandleRequest starts a PAN ID query scan across the channels specified by
-// channelMask, looking for the given panId.
-func (s *PanIdQueryServer) HandleRequest(panId uint16, channelMask uint32) error {
+// channelMask, looking for the given panID.
+func (s *PanIdQueryServer) HandleRequest(panID uint16, channelMask uint32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -317,7 +314,7 @@ func (s *PanIdQueryServer) HandleRequest(panId uint16, channelMask uint32) error
 		return errors.ErrBusy
 	}
 
-	s.panId = panId
+	s.panID = panID
 	s.channelMask = channelMask
 	s.conflicts = 0
 	s.scanning = true
@@ -354,7 +351,7 @@ func (s *PanIdQueryServer) HandleTimer() {
 	}
 	s.currentChan = ch
 
-	found, err := s.scanner.ScanForPanId(ch, s.panId)
+	found, err := s.scanner.ScanForPanId(ch, s.panID)
 	if err == nil && found {
 		s.conflicts |= 1 << ch
 	}
@@ -373,10 +370,10 @@ func (s *PanIdQueryServer) HandleTimer() {
 func (s *PanIdQueryServer) sendConflict() {
 	if s.reportCb != nil && s.conflicts != 0 {
 		cb := s.reportCb
-		panId := s.panId
+		panID := s.panID
 		conflicts := s.conflicts
 		s.mu.Unlock()
-		cb(panId, conflicts)
+		cb(panID, conflicts)
 		s.mu.Lock()
 	}
 }

@@ -814,7 +814,7 @@ func (m *mockRouterTableOps) AllocateWithID(routerID uint8) (uint16, error) {
 	return m.allocateIDRLOC, m.allocateIDErr
 }
 
-func (m *mockRouterTableOps) Allocate() (uint8, uint16, error) {
+func (m *mockRouterTableOps) Allocate() (routerID uint8, rloc16 uint16, err error) {
 	m.allocateCalled = true
 	return m.allocateRouterID, m.allocateRLOC, m.allocateErr
 }

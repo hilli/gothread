@@ -35,7 +35,7 @@ func newMockEnergyScanner() *mockEnergyScanner {
 	}
 }
 
-func (m *mockEnergyScanner) EnergyScan(channel uint16, duration uint16) (int8, error) {
+func (m *mockEnergyScanner) EnergyScan(channel, duration uint16) (int8, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, energyScanCall{channel, duration})
@@ -55,32 +55,32 @@ func (m *mockEnergyScanner) callCount() int {
 	return len(m.calls)
 }
 
-// mockPanIdScanner records calls and returns pre-configured presence results.
-type mockPanIdScanner struct {
+// mockPanIDScanner records calls and returns pre-configured presence results.
+type mockPanIDScanner struct {
 	mu          sync.Mutex
-	calls       []panIdScanCall
+	calls       []panIDScanCall
 	foundOnChan map[uint16]bool // channels where PAN ID is found
 }
 
-type panIdScanCall struct {
+type panIDScanCall struct {
 	Channel uint16
-	PanId   uint16
+	PanID   uint16
 }
 
-func newMockPanIdScanner() *mockPanIdScanner {
-	return &mockPanIdScanner{
+func newMockPanIDScanner() *mockPanIDScanner {
+	return &mockPanIDScanner{
 		foundOnChan: make(map[uint16]bool),
 	}
 }
 
-func (m *mockPanIdScanner) ScanForPanId(channel uint16, panId uint16) (bool, error) {
+func (m *mockPanIDScanner) ScanForPanId(channel, panID uint16) (bool, error) { //nolint:revive // Implement the existing PanIdScanner interface without breaking callers.
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, panIdScanCall{channel, panId})
+	m.calls = append(m.calls, panIDScanCall{channel, panID})
 	return m.foundOnChan[channel], nil
 }
 
-func (m *mockPanIdScanner) callCount() int {
+func (m *mockPanIDScanner) callCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.calls)
@@ -453,19 +453,19 @@ func TestEnergyScanServer_ScanDuration(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPanIdQueryServer_New(t *testing.T) {
-	scanner := newMockPanIdScanner()
+	scanner := newMockPanIDScanner()
 	srv := NewPanIdQueryServer(scanner)
 
 	if srv.IsScanning() {
 		t.Error("new server should not be scanning")
 	}
-	if srv.panId != 0xffff {
-		t.Errorf("panId = 0x%04x, want 0xffff", srv.panId)
+	if srv.panID != 0xffff {
+		t.Errorf("panID = 0x%04x, want 0xffff", srv.panID)
 	}
 }
 
 func TestPanIdQueryServer_HandleRequest_InvalidMask(t *testing.T) {
-	scanner := newMockPanIdScanner()
+	scanner := newMockPanIDScanner()
 	srv := NewPanIdQueryServer(scanner)
 
 	err := srv.HandleRequest(0x1234, 0)
@@ -475,7 +475,7 @@ func TestPanIdQueryServer_HandleRequest_InvalidMask(t *testing.T) {
 }
 
 func TestPanIdQueryServer_HandleRequest_Busy(t *testing.T) {
-	scanner := newMockPanIdScanner()
+	scanner := newMockPanIDScanner()
 	srv := NewPanIdQueryServer(scanner)
 
 	mask := maskFromChannels(11)
@@ -490,13 +490,13 @@ func TestPanIdQueryServer_HandleRequest_Busy(t *testing.T) {
 }
 
 func TestPanIdQueryServer_NoConflict(t *testing.T) {
-	scanner := newMockPanIdScanner()
+	scanner := newMockPanIDScanner()
 	// No channels have the PAN ID.
 
 	srv := NewPanIdQueryServer(scanner)
 
 	callbackCalled := false
-	srv.SetReportCallback(func(panId uint16, mask uint32) {
+	srv.SetReportCallback(func(panID uint16, mask uint32) {
 		callbackCalled = true
 	})
 
@@ -518,15 +518,15 @@ func TestPanIdQueryServer_NoConflict(t *testing.T) {
 }
 
 func TestPanIdQueryServer_ConflictOnSingleChannel(t *testing.T) {
-	scanner := newMockPanIdScanner()
+	scanner := newMockPanIDScanner()
 	scanner.foundOnChan[15] = true
 
 	srv := NewPanIdQueryServer(scanner)
 
-	var reportPanId uint16
+	var reportPanID uint16
 	var reportMask uint32
-	srv.SetReportCallback(func(panId uint16, mask uint32) {
-		reportPanId = panId
+	srv.SetReportCallback(func(panID uint16, mask uint32) {
+		reportPanID = panID
 		reportMask = mask
 	})
 
@@ -539,8 +539,8 @@ func TestPanIdQueryServer_ConflictOnSingleChannel(t *testing.T) {
 		srv.HandleTimer()
 	}
 
-	if reportPanId != 0xABCD {
-		t.Errorf("reportPanId = 0x%04x, want 0xABCD", reportPanId)
+	if reportPanID != 0xABCD {
+		t.Errorf("reportPanID = 0x%04x, want 0xABCD", reportPanID)
 	}
 	expectedConflict := maskFromChannels(15)
 	if reportMask != expectedConflict {
@@ -549,7 +549,7 @@ func TestPanIdQueryServer_ConflictOnSingleChannel(t *testing.T) {
 }
 
 func TestPanIdQueryServer_ConflictOnMultipleChannels(t *testing.T) {
-	scanner := newMockPanIdScanner()
+	scanner := newMockPanIDScanner()
 	scanner.foundOnChan[11] = true
 	scanner.foundOnChan[26] = true
 
@@ -576,7 +576,7 @@ func TestPanIdQueryServer_ConflictOnMultipleChannels(t *testing.T) {
 }
 
 func TestPanIdQueryServer_Stop(t *testing.T) {
-	scanner := newMockPanIdScanner()
+	scanner := newMockPanIDScanner()
 	srv := NewPanIdQueryServer(scanner)
 
 	mask := maskFromChannels(11, 15, 26)
@@ -592,7 +592,7 @@ func TestPanIdQueryServer_Stop(t *testing.T) {
 }
 
 func TestPanIdQueryServer_HandleTimerWhenNotScanning(t *testing.T) {
-	scanner := newMockPanIdScanner()
+	scanner := newMockPanIDScanner()
 	srv := NewPanIdQueryServer(scanner)
 
 	// Should be a no-op and not panic.
@@ -603,7 +603,7 @@ func TestPanIdQueryServer_HandleTimerWhenNotScanning(t *testing.T) {
 }
 
 func TestPanIdQueryServer_NoCallbackDoesNotPanic(t *testing.T) {
-	scanner := newMockPanIdScanner()
+	scanner := newMockPanIDScanner()
 	scanner.foundOnChan[11] = true
 
 	srv := NewPanIdQueryServer(scanner)
@@ -621,7 +621,7 @@ func TestPanIdQueryServer_NoCallbackDoesNotPanic(t *testing.T) {
 }
 
 func TestPanIdQueryServer_ScansAllChannels(t *testing.T) {
-	scanner := newMockPanIdScanner()
+	scanner := newMockPanIDScanner()
 	srv := NewPanIdQueryServer(scanner)
 
 	mask := maskFromChannels(11, 15, 26)
@@ -645,8 +645,8 @@ func TestPanIdQueryServer_ScansAllChannels(t *testing.T) {
 		if c.Channel != expectedChannels[i] {
 			t.Errorf("call[%d].Channel = %d, want %d", i, c.Channel, expectedChannels[i])
 		}
-		if c.PanId != 0x1234 {
-			t.Errorf("call[%d].PanId = 0x%04x, want 0x1234", i, c.PanId)
+		if c.PanID != 0x1234 {
+			t.Errorf("call[%d].PanID = 0x%04x, want 0x1234", i, c.PanID)
 		}
 	}
 }

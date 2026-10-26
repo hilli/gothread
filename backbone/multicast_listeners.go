@@ -155,21 +155,22 @@ func (t *MulticastListenersTable) Add(address [16]byte, expireTimeMs int64) erro
 // address is not in the table.
 func (t *MulticastListenersTable) Remove(address [16]byte) error {
 	for i := range t.listeners {
-		if t.listeners[i].address == address {
-			addr := t.listeners[i].address
-			last := len(t.listeners) - 1
-			if i != last {
-				t.listeners[i] = t.listeners[last]
-			}
-			t.listeners = t.listeners[:last]
-			if i < len(t.listeners) {
-				t.fixHeap(i)
-			}
-			if t.callback != nil {
-				t.callback(ListenerRemoved, addr)
-			}
-			return nil
+		if t.listeners[i].address != address {
+			continue
 		}
+		addr := t.listeners[i].address
+		last := len(t.listeners) - 1
+		if i != last {
+			t.listeners[i] = t.listeners[last]
+		}
+		t.listeners = t.listeners[:last]
+		if i < len(t.listeners) {
+			t.fixHeap(i)
+		}
+		if t.callback != nil {
+			t.callback(ListenerRemoved, addr)
+		}
+		return nil
 	}
 	return errors.ErrNotFound
 }

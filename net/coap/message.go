@@ -489,7 +489,7 @@ func ParseMessage(data []byte) (*Message, error) {
 // decodeNibble decodes a 4-bit nibble value and returns the decoded value,
 // the number of extra bytes consumed, and any error. nibble value 15 is
 // reserved and yields ErrParse.
-func decodeNibble(nibble byte, data []byte, offset int) (uint16, int, error) {
+func decodeNibble(nibble byte, data []byte, offset int) (decodedValue uint16, extraBytes int, decodeErr error) {
 	switch {
 	case nibble < 13:
 		return uint16(nibble), 0, nil

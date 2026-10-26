@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hilli/gothread/mac/frame"
+	macframe "github.com/hilli/gothread/mac/frame"
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/radio"
@@ -1070,7 +1070,7 @@ func (m *Mac) ReceiveDone(frame *radio.Frame, err error) {
 }
 
 // TransmitDone is called by the SubMac when a frame transmission completes.
-func (m *Mac) TransmitDone(frame *radio.Frame, _ *radio.Frame, err error) {
+func (m *Mac) TransmitDone(frame, _ *radio.Frame, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -1108,6 +1108,8 @@ func (m *Mac) RecordCcaStatus(success bool, _ uint8) {
 }
 
 // GetCounters returns the current transmission/CCA counters.
+//
+//nolint:gocritic // Preserve the public counter snapshot API.
 func (m *Mac) GetCounters() (txTotal, txSuccess, txRetry, txNoAck, ccaSuccess, ccaFailure uint32) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1222,8 +1224,8 @@ func (m *Mac) parseBeacon(f *radio.Frame) *ActiveScanResult {
 		return nil
 	}
 
-	mf := frame.NewFrame(f.PSDU)
-	if mf.GetType() != frame.TypeBeacon {
+	mf := macframe.NewFrame(f.PSDU)
+	if mf.GetType() != macframe.TypeBeacon {
 		return nil
 	}
 

@@ -270,7 +270,7 @@ func makeSendError(err error) SendFunc {
 }
 
 // buildResponse builds a server response header that matches a request.
-func buildResponse(request []byte, ntpTimeSec uint32, ntpTimeFrac uint32) []byte {
+func buildResponse(request []byte, ntpTimeSec, ntpTimeFrac uint32) []byte {
 	var req Header
 	_ = req.Unmarshal(request)
 

@@ -250,14 +250,15 @@ func (u *UDP) Connect(s *Socket, addr ip6.SockAddr) error {
 // Closing a socket that is not open is a no-op (returns nil).
 func (u *UDP) Close(s *Socket) error {
 	for i, existing := range u.sockets {
-		if existing == s {
-			u.sockets = append(u.sockets[:i], u.sockets[i+1:]...)
-			s.sockName = ip6.SockAddr{}
-			s.peerName = ip6.SockAddr{}
-			s.netifID = NetifUnspecified
-			s.handler = nil
-			return nil
+		if existing != s {
+			continue
 		}
+		u.sockets = append(u.sockets[:i], u.sockets[i+1:]...)
+		s.sockName = ip6.SockAddr{}
+		s.peerName = ip6.SockAddr{}
+		s.netifID = NetifUnspecified
+		s.handler = nil
+		return nil
 	}
 	// Not open — no-op.
 	return nil

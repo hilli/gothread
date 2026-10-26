@@ -56,7 +56,7 @@ const (
 	OptionTypeTargetLinkLayerAddress uint8 = 2
 	OptionTypePrefixInfo             uint8 = 3
 	OptionTypeRouteInfo              uint8 = 24
-	OptionTypeRaDnsServer            uint8 = 25
+	OptionTypeRaDnsServer            uint8 = 25 //nolint:revive // Preserve the exported API spelling for existing callers.
 	OptionTypeRaFlagsExtension       uint8 = 26
 	OptionTypeNat64Prefix            uint8 = 38
 )
@@ -754,7 +754,7 @@ func (n *Nat64PrefixOption) Unmarshal(b []byte) error {
 // ---------------------------------------------------------------------------
 
 // RaDnsServerOption represents the Recursive DNS Server Option (Type 25).
-type RaDnsServerOption struct {
+type RaDnsServerOption struct { //nolint:revive // Preserve the exported API spelling for existing callers.
 	header    Option
 	Reserved  uint16
 	Lifetime  uint32

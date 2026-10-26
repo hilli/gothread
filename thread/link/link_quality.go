@@ -266,7 +266,7 @@ func GetTypicalRSSForQuality(noiseFloor int8, quality uint8) int8 {
 // calculateQuality determines the link quality level from the link margin,
 // applying hysteresis based on the last known quality. If lastQuality is
 // noLinkQuality, no hysteresis is applied.
-func calculateQuality(linkMargin uint8, lastQuality uint8) uint8 {
+func calculateQuality(linkMargin, lastQuality uint8) uint8 {
 	t1 := threshold1
 	t2 := threshold2
 	t3 := threshold3

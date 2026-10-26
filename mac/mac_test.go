@@ -55,30 +55,30 @@ func (r *mockRadio) Transmit(_ *radio.Frame) error {
 	r.state = radio.StateTransmit
 	return nil
 }
-func (r *mockRadio) GetTransmitBuffer() *radio.Frame                       { return &r.transmitBuf }
-func (r *mockRadio) GetCaps() radio.Caps                                   { return r.caps }
-func (r *mockRadio) GetIEEEEui64() [8]byte                                 { return [8]byte{} }
-func (r *mockRadio) SetPanID(panID uint16)                                 { r.panID = panID }
-func (r *mockRadio) SetExtendedAddress(addr types.ExtAddress)              { r.extAddr = addr }
-func (r *mockRadio) SetShortAddress(addr types.ShortAddress)               { r.shortAddr = addr }
-func (r *mockRadio) GetTransmitPower() (int8, error)                       { return r.txPower, nil }
-func (r *mockRadio) SetTransmitPower(power int8) error                     { r.txPower = power; return nil }
-func (r *mockRadio) GetPromiscuous() bool                                  { return false }
-func (r *mockRadio) SetPromiscuous(_ bool)                                 {}
-func (r *mockRadio) GetRSSI() int8                                         { return r.rssi }
-func (r *mockRadio) GetSupportedChannelMask() uint32                       { return 0x07FFF800 }
-func (r *mockRadio) GetPreferredChannelMask() uint32                       { return 0x07FFF800 }
-func (r *mockRadio) GetReceiveSensitivity() int8                           { return -100 }
-func (r *mockRadio) EnableSrcMatch(_ bool)                                 {}
-func (r *mockRadio) AddSrcMatchShortEntry(_ types.ShortAddress) error      { return nil }
-func (r *mockRadio) AddSrcMatchExtEntry(_ types.ExtAddress) error          { return nil }
-func (r *mockRadio) ClearSrcMatchShortEntry(_ types.ShortAddress) error    { return nil }
-func (r *mockRadio) ClearSrcMatchExtEntry(_ types.ExtAddress) error        { return nil }
-func (r *mockRadio) ClearSrcMatchShortEntries()                            {}
-func (r *mockRadio) ClearSrcMatchExtEntries()                              {}
-func (r *mockRadio) SetMacKey(_ uint8, _ uint8, _, _, _ types.KeyMaterial) {}
-func (r *mockRadio) SetMacFrameCounter(_ uint32)                           {}
-func (r *mockRadio) SetMacFrameCounterIfLarger(_ uint32)                   {}
+func (r *mockRadio) GetTransmitBuffer() *radio.Frame                    { return &r.transmitBuf }
+func (r *mockRadio) GetCaps() radio.Caps                                { return r.caps }
+func (r *mockRadio) GetIEEEEui64() [8]byte                              { return [8]byte{} }
+func (r *mockRadio) SetPanID(panID uint16)                              { r.panID = panID }
+func (r *mockRadio) SetExtendedAddress(addr types.ExtAddress)           { r.extAddr = addr }
+func (r *mockRadio) SetShortAddress(addr types.ShortAddress)            { r.shortAddr = addr }
+func (r *mockRadio) GetTransmitPower() (int8, error)                    { return r.txPower, nil }
+func (r *mockRadio) SetTransmitPower(power int8) error                  { r.txPower = power; return nil }
+func (r *mockRadio) GetPromiscuous() bool                               { return false }
+func (r *mockRadio) SetPromiscuous(_ bool)                              {}
+func (r *mockRadio) GetRSSI() int8                                      { return r.rssi }
+func (r *mockRadio) GetSupportedChannelMask() uint32                    { return 0x07FFF800 }
+func (r *mockRadio) GetPreferredChannelMask() uint32                    { return 0x07FFF800 }
+func (r *mockRadio) GetReceiveSensitivity() int8                        { return -100 }
+func (r *mockRadio) EnableSrcMatch(_ bool)                              {}
+func (r *mockRadio) AddSrcMatchShortEntry(_ types.ShortAddress) error   { return nil }
+func (r *mockRadio) AddSrcMatchExtEntry(_ types.ExtAddress) error       { return nil }
+func (r *mockRadio) ClearSrcMatchShortEntry(_ types.ShortAddress) error { return nil }
+func (r *mockRadio) ClearSrcMatchExtEntry(_ types.ExtAddress) error     { return nil }
+func (r *mockRadio) ClearSrcMatchShortEntries()                         {}
+func (r *mockRadio) ClearSrcMatchExtEntries()                           {}
+func (r *mockRadio) SetMacKey(_, _ uint8, _, _, _ types.KeyMaterial)    {}
+func (r *mockRadio) SetMacFrameCounter(_ uint32)                        {}
+func (r *mockRadio) SetMacFrameCounterIfLarger(_ uint32)                {}
 func (r *mockRadio) EnergyScan(channel uint8, duration uint16) error {
 	r.energyScanCh = channel
 	r.energyScanDu = duration
@@ -1169,13 +1169,11 @@ func buildBeaconFrame(srcExt types.ExtAddress, panID uint16, networkName string,
 
 	// FCF: beacon(0) | SrcAddrExt(0xC000) | Version2003(0) = 0xC000
 	// Little-endian: [0x00, 0xC0]
-	d = append(d, 0x00, 0xC0)
-
-	// Sequence number
-	d = append(d, 0x01)
-
-	// Source PAN ID (little-endian) — present because src addr present, no compression
-	d = append(d, byte(panID), byte(panID>>8))
+	d = append(d,
+		0x00, 0xC0,
+		0x01,                        // Sequence number.
+		byte(panID), byte(panID>>8), // Source PAN ID, little-endian.
+	)
 
 	// Source Extended Address (8 bytes, little-endian on the wire —
 	// the frame parser reverses it back to big-endian).
@@ -1183,17 +1181,12 @@ func buildBeaconFrame(srcExt types.ExtAddress, panID uint16, networkName string,
 		d = append(d, srcExt[i])
 	}
 
-	// Superframe Specification (2 bytes)
-	d = append(d, 0xFF, 0xCF) // typical non-PAN-coordinator values
-
-	// GTS Specification (1 byte)
-	d = append(d, 0x00)
-
-	// Pending Address Specification (1 byte)
-	d = append(d, 0x00)
-
-	// Thread beacon payload
-	d = append(d, 0x03) // Protocol ID = 3 (Thread)
+	d = append(d,
+		0xFF, 0xCF, // Superframe specification: non-PAN-coordinator.
+		0x00, // GTS specification.
+		0x00, // Pending address specification.
+		0x03, // Thread protocol ID.
+	)
 
 	var flags byte
 	if isNative {

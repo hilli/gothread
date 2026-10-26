@@ -102,7 +102,7 @@ func NewDefaultScheduler() *Scheduler {
 // sequence. nowUs is the current radio time in microseconds.
 //
 // Returns ErrInvalidState if a sequence is already running.
-func (s *Scheduler) Start(intervalUs uint16, durationMs uint16, nowUs uint64) error {
+func (s *Scheduler) Start(intervalUs, durationMs uint16, nowUs uint64) error {
 	if s.isRunning {
 		return ErrInvalidState
 	}

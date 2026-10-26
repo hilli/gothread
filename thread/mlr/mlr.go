@@ -9,7 +9,7 @@
 package mlr
 
 // MlrStatus represents the result of an MLR.req message.
-type MlrStatus uint8
+type MlrStatus uint8 //nolint:revive // Preserve the exported type name for existing callers.
 
 const (
 	// StatusSuccess indicates the MLR request succeeded.
@@ -51,7 +51,7 @@ func (s MlrStatus) String() string {
 const MaxAddresses = 15
 
 // MlrState represents the MLR registration state for a multicast address.
-type MlrState uint8
+type MlrState uint8 //nolint:revive // Preserve the exported type name for existing callers.
 
 const (
 	// StateToRegister indicates the address needs to be registered.

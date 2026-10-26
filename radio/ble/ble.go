@@ -67,6 +67,8 @@ type Platform interface {
 }
 
 // BleSecure provides a BLE secure transport with connection state management.
+//
+//nolint:revive // Retain the exported type name for source compatibility.
 type BleSecure struct {
 	mu        sync.Mutex
 	platform  Platform

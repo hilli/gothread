@@ -42,7 +42,7 @@ func (m *serviceTestRouterOps) IsRouteTlvIDSequenceMoreRecent(_ uint8) bool { re
 func (m *serviceTestRouterOps) UpdateRouterIDSet(_ uint8, _ RouterIDSet, _ uint32) bool {
 	return false
 }
-func (m *serviceTestRouterOps) UpdateRoutes(_ uint8, _ RouterIDSet, _ []Route64Entry, _ uint8, _ uint8) bool {
+func (m *serviceTestRouterOps) UpdateRoutes(_ uint8, _ RouterIDSet, _ []Route64Entry, _, _ uint8) bool {
 	return false
 }
 func (m *serviceTestRouterOps) UpdateRouterOnFtdChild(_ uint8, _ RouterIDSet, _ []Route64Entry, _ uint8) {

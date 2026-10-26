@@ -28,7 +28,7 @@ import (
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/discover"
-	"github.com/hilli/gothread/thread/key"
+	threadkey "github.com/hilli/gothread/thread/key"
 	"github.com/hilli/gothread/thread/link"
 	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
@@ -137,7 +137,7 @@ func TestWireModules_Tier1_KeyProviderDelegation(t *testing.T) {
 	}
 
 	// Set and verify.
-	inst.SetCurrentKeySequence(42, key.ForceUpdate)
+	inst.SetCurrentKeySequence(42, threadkey.ForceUpdate)
 	if seq := inst.GetCurrentKeySequence(); seq != 42 {
 		t.Errorf("after set, GetCurrentKeySequence() = %d, want 42", seq)
 	}
@@ -1758,18 +1758,21 @@ var errNotFound = &instanceError{msg: "not found"}
 //
 // IPHC = 0x6000: TF=00, NH=inline, HLIM=inline, SAC=0, SAM=00, M=0, DAC=0, DAM=00
 func build6LoWPANFrameInlineUDP(srcIP, dstIP ip6.Address, srcPort, dstPort uint16, payload []byte) []byte {
-	d := []byte{0x60, 0x00}               // IPHC dispatch
-	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00: ECN=0, DSCP=0, Flow=0
-	d = append(d, 0x11)                   // NH = UDP (17)
-	d = append(d, 0x40)                   // HL = 64
-	d = append(d, srcIP[:]...)            // 16 bytes source
-	d = append(d, dstIP[:]...)            // 16 bytes destination
+	d := []byte{0x60, 0x00} // IPHC dispatch
+	d = append(d,
+		0x00, 0x00, 0x00, 0x00, // TF=00: ECN=0, DSCP=0, Flow=0.
+		0x11, 0x40, // NH=UDP, hop limit=64.
+	)
+	d = append(d, srcIP[:]...) // 16 bytes source.
+	d = append(d, dstIP[:]...) // 16 bytes destination.
 	// 8-byte UDP header: src port, dst port, length, checksum (all big-endian)
 	udpLen := uint16(8 + len(payload))
-	d = append(d, byte(srcPort>>8), byte(srcPort))
-	d = append(d, byte(dstPort>>8), byte(dstPort))
-	d = append(d, byte(udpLen>>8), byte(udpLen))
-	d = append(d, 0x00, 0x00) // checksum = 0
+	d = append(d,
+		byte(srcPort>>8), byte(srcPort),
+		byte(dstPort>>8), byte(dstPort),
+		byte(udpLen>>8), byte(udpLen),
+		0x00, 0x00, // Checksum.
+	)
 	d = append(d, payload...)
 	return d
 }
@@ -1780,16 +1783,17 @@ func build6LoWPANFrameInlineUDP(srcIP, dstIP ip6.Address, srcPort, dstPort uint1
 //
 // IPHC = 0x6400: TF=00, NH=compressed(1), HLIM=inline, SAC=0, SAM=00, M=0, DAC=0, DAM=00
 func build6LoWPANFrameNHCUDP(srcIP, dstIP ip6.Address, srcPort, dstPort uint16, payload []byte) []byte {
-	d := []byte{0x64, 0x00}               // IPHC dispatch with NH=compressed
-	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00: ECN=0, DSCP=0, Flow=0
-	d = append(d, 0x40)                   // HL = 64  (no NH byte since compressed)
-	d = append(d, srcIP[:]...)            // 16 bytes source
-	d = append(d, dstIP[:]...)            // 16 bytes destination
-	// NHC UDP: dispatch=0xF0 (PP=00 both full, C=0 checksum inline)
-	d = append(d, 0xF0)
-	d = append(d, byte(srcPort>>8), byte(srcPort))
-	d = append(d, byte(dstPort>>8), byte(dstPort))
-	d = append(d, 0x00, 0x00) // checksum
+	d := []byte{0x64, 0x00} // IPHC dispatch with NH=compressed
+	// TF=00: ECN=0, DSCP=0, Flow=0
+	d = append(d, 0x00, 0x00, 0x00, 0x00, 0x40) // HL = 64  (no NH byte since compressed)
+	d = append(d, srcIP[:]...)                  // 16 bytes source.
+	d = append(d, dstIP[:]...)                  // 16 bytes destination.
+	d = append(d,
+		0xF0, // NHC UDP: PP=00 (both ports full), C=0 (checksum inline).
+		byte(srcPort>>8), byte(srcPort),
+		byte(dstPort>>8), byte(dstPort),
+		0x00, 0x00, // Checksum.
+	)
 	d = append(d, payload...)
 	return d
 }
@@ -1898,12 +1902,13 @@ func TestFullRxPath_ProtoHopOpts_NotMisidentifiedAsNHC(t *testing.T) {
 
 	// Build a 6LoWPAN frame with NH=0 (HopByHop) inline, NOT NHC-compressed.
 	// IPHC = 0x6000: TF=00, NH=0 (inline), HLIM=inline, SAC=0, SAM=00, M=0, DAC=0, DAM=00
-	d := []byte{0x60, 0x00}               // IPHC dispatch, NH flag NOT set
-	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00: ECN=0, DSCP=0, Flow=0
-	d = append(d, 0x00)                   // NH = 0 (ProtoHopOpts, inline)
-	d = append(d, 0x40)                   // HL = 64
-	d = append(d, srcIP[:]...)            // 16 bytes source
-	d = append(d, dstIP[:]...)            // 16 bytes destination
+	d := []byte{0x60, 0x00} // IPHC dispatch, NH flag NOT set
+	d = append(d,
+		0x00, 0x00, 0x00, 0x00, // TF=00: ECN=0, DSCP=0, Flow=0.
+		0x00, 0x40, // NH=HopByHop, hop limit=64.
+	)
+	d = append(d, srcIP[:]...) // 16 bytes source.
+	d = append(d, dstIP[:]...) // 16 bytes destination.
 	// Some trailing bytes that should NOT be interpreted as NHC UDP.
 	d = append(d, 0xF0, 0x00, 0x00, 0x27, 0x0F, 0x00, 0x00, 0xAA, 0xBB)
 
@@ -2011,10 +2016,11 @@ func TestFullRxPath_NonUDPProtocolDropped(t *testing.T) {
 	// Build a 6LoWPAN frame with NH=ICMPv6 (58) instead of UDP.
 	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
 	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
-	d := []byte{0x60, 0x00}               // IPHC
-	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00
-	d = append(d, 0x3A)                   // NH = ICMPv6 (58)
-	d = append(d, 0x40)                   // HL = 64
+	d := []byte{0x60, 0x00} // IPHC
+	d = append(d,
+		0x00, 0x00, 0x00, 0x00, // TF=00.
+		0x3A, 0x40, // NH=ICMPv6, hop limit=64.
+	)
 	d = append(d, srcIP[:]...)
 	d = append(d, dstIP[:]...)
 	d = append(d, 0x80, 0x00, 0x00, 0x00) // ICMPv6 echo request (fake)
@@ -2137,18 +2143,19 @@ func TestFullRxPath_ICMPv6Dispatched(t *testing.T) {
 	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
 	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc}
 
-	d := []byte{0x60, 0x00}               // IPHC dispatch: TF=00, NH=inline, HLIM=inline
-	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00: 4 bytes
-	d = append(d, 0x3A)                   // NH = ICMPv6 (58)
-	d = append(d, 0x40)                   // HL = 64
-	d = append(d, srcIP[:]...)            // 16 bytes source
-	d = append(d, dstIP[:]...)            // 16 bytes destination
-	// 8-byte ICMPv6 header: Echo Request
-	d = append(d, 0x80)       // type: Echo Request (128)
-	d = append(d, 0x00)       // code: 0
-	d = append(d, 0x00, 0x00) // checksum
-	d = append(d, 0x00, 0x01) // ID
-	d = append(d, 0x00, 0x01) // Sequence
+	d := []byte{0x60, 0x00} // IPHC dispatch: TF=00, NH=inline, HLIM=inline
+	d = append(d,
+		0x00, 0x00, 0x00, 0x00, // TF=00.
+		0x3A, 0x40, // NH=ICMPv6, hop limit=64.
+	)
+	d = append(d, srcIP[:]...) // 16 bytes source.
+	d = append(d, dstIP[:]...) // 16 bytes destination.
+	d = append(d,
+		0x80, 0x00, // Echo Request (128), code 0.
+		0x00, 0x00, // Checksum.
+		0x00, 0x01, // ID.
+		0x00, 0x01, // Sequence.
+	)
 
 	frame := &radio.Frame{
 		PSDU:    d,
@@ -2228,17 +2235,19 @@ func TestFullRxPath_LinkInfo_Populated_ICMPv6(t *testing.T) {
 	srcIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
 	dstIP := ip6.Address{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc}
 
-	d := []byte{0x60, 0x00}               // IPHC
-	d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00
-	d = append(d, 0x3A)                   // NH = ICMPv6 (58)
-	d = append(d, 0x40)                   // HL = 64
+	d := []byte{0x60, 0x00} // IPHC
+	d = append(d,
+		0x00, 0x00, 0x00, 0x00, // TF=00.
+		0x3A, 0x40, // NH=ICMPv6, hop limit=64.
+	)
 	d = append(d, srcIP[:]...)
 	d = append(d, dstIP[:]...)
-	d = append(d, 0x80)       // Echo Request
-	d = append(d, 0x00)       // code
-	d = append(d, 0x00, 0x00) // checksum
-	d = append(d, 0x00, 0x01) // ID
-	d = append(d, 0x00, 0x01) // Sequence
+	d = append(d,
+		0x80, 0x00, // Echo Request, code 0.
+		0x00, 0x00, // Checksum.
+		0x00, 0x01, // ID.
+		0x00, 0x01, // Sequence.
+	)
 
 	frame := &radio.Frame{
 		PSDU:    d,
@@ -2304,8 +2313,8 @@ func TestLinkMarginCalculation(t *testing.T) {
 		{"typical_weak", -90, 10},
 		{"boundary_low", -128, 0},     // -128 is InvalidRSSI → margin 0
 		{"just_above_floor", -127, 0}, // -127 + 100 < 0 → 0 (wait: -127-(-100)=-27 → clamped to 0)
-		{"at_noise_floor", -100, 0},   // -100 - (-100) = 0
-		{"very_strong", -10, 90},      // -10 + 100 = 90
+		{"at_noise_floor", -100, 0},   // Margin is -100 - (-100) = 0 dB.
+		{"very_strong", -10, 90},      // Margin is -10 + 100 = 90 dB.
 		{"zero_rssi", 0, 100},         // 0 + 100 = 100
 		{"positive_rssi", 8, 108},     // 8 + 100 = 108
 	}
@@ -2821,10 +2830,6 @@ type fakeTimer struct {
 	resetDur time.Duration
 }
 
-func newFakeTimer() *fakeTimer {
-	return &fakeTimer{ch: make(chan time.Time, 1)}
-}
-
 func (ft *fakeTimer) Reset(d time.Duration) {
 	ft.running = true
 	ft.resetDur = d
@@ -3027,17 +3032,18 @@ func TestHandleReceivedFrame_MACDataRequest(t *testing.T) {
 	fcf := uint16(macframe.FcfFrameMacCmd | macframe.FcfAckRequest |
 		macframe.FcfFrameVersion2006 | macframe.FcfSrcAddrExt)
 	psdu := make([]byte, 0, 16)
-	psdu = append(psdu, byte(fcf), byte(fcf>>8)) // FCF (LE)
-	psdu = append(psdu, 0x01)                    // Sequence number
-	psdu = append(psdu, 0xCE, 0xFA)              // Src PAN ID (LE) = 0xFACE
+	psdu = append(psdu,
+		byte(fcf), byte(fcf>>8), // FCF, little-endian.
+		0x01,       // Sequence number.
+		0xCE, 0xFA, // Source PAN ID 0xFACE, little-endian.
+	)
 	// Src Extended Address — written in reverse byte order because the
 	// 802.15.4 frame parser reads ext addresses with ReverseByteOrder,
 	// i.e. it reverses the bytes to reconstruct the ExtAddress value.
 	for i := types.ExtAddressSize - 1; i >= 0; i-- {
 		psdu = append(psdu, childExt[i])
 	}
-	psdu = append(psdu, 0x04)       // MAC command: Data Request
-	psdu = append(psdu, 0x00, 0x00) // FCS placeholder
+	psdu = append(psdu, 0x04, 0x00, 0x00) // Data Request command, then FCS placeholder.
 
 	frame := &radio.Frame{
 		PSDU:    psdu,
@@ -3071,12 +3077,13 @@ func TestHandleReceivedFrame_MACDataRequest_NoForwardTo6LoWPAN(t *testing.T) {
 	fcf := uint16(macframe.FcfFrameMacCmd | macframe.FcfAckRequest |
 		macframe.FcfFrameVersion2006 | macframe.FcfSrcAddrExt)
 	psdu := make([]byte, 0, 16)
-	psdu = append(psdu, byte(fcf), byte(fcf>>8))
-	psdu = append(psdu, 0x02)
-	psdu = append(psdu, 0xCE, 0xFA)
-	psdu = append(psdu, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11) // random ext addr
-	psdu = append(psdu, 0x04)                                           // Data Request
-	psdu = append(psdu, 0x00, 0x00)
+	psdu = append(psdu,
+		byte(fcf), byte(fcf>>8), 0x02,
+		// random ext addr
+		0xCE, 0xFA, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11,
+		// Data Request
+		0x04, 0x00, 0x00,
+	)
 
 	frame := &radio.Frame{PSDU: psdu, Channel: 11}
 	inst.HandleReceivedFrame(frame)
@@ -3133,15 +3140,18 @@ func TestFullRxPath_FragmentReassembly_ToSocket(t *testing.T) {
 	fcf := uint16(macframe.FcfFrameData | macframe.FcfSrcAddrExt | macframe.FcfFrameVersion2006)
 	for i, frag := range fragments {
 		psdu := make([]byte, 0, 15+len(frag))
-		psdu = append(psdu, byte(fcf), byte(fcf>>8)) // FCF LE
-		psdu = append(psdu, byte(i))                 // Sequence number
-		psdu = append(psdu, 0xCE, 0xFA)              // Source PAN ID
+		// FCF LE
+		// Sequence number
+		// Source PAN ID
+		psdu = append(psdu, byte(fcf), byte(fcf>>8), byte(i), 0xCE, 0xFA)
 		// Extended address in frame is reversed byte order.
 		for j := 7; j >= 0; j-- {
 			psdu = append(psdu, srcExt[j])
 		}
-		psdu = append(psdu, frag...)    // 6LoWPAN fragment payload
-		psdu = append(psdu, 0x00, 0x00) // FCS placeholder
+		// 6LoWPAN fragment payload
+		// FCS placeholder
+		psdu = append(psdu, frag...)
+		psdu = append(psdu, 0x00, 0x00)
 
 		frame := &radio.Frame{PSDU: psdu, Channel: 15}
 		inst.HandleReceivedFrame(frame)
@@ -4043,11 +4053,9 @@ func TestDnsClientAccessor(t *testing.T) {
 func TestDnsClient_InitialState(t *testing.T) {
 	inst := New(Config{})
 	cfg := inst.dnsClient.GetDefaultConfig()
-	if cfg.ServerAddr.IsUnspecified() == false && cfg.ServerPort != 0 {
-		// default config should have sensible defaults
+	if want := dns.DefaultQueryConfig(); cfg != want {
+		t.Errorf("default DNS config = %+v, want %+v", cfg, want)
 	}
-	// Just verify it's usable and doesn't panic
-	_ = cfg
 }
 
 // ---------------------------------------------------------------------------
@@ -4734,17 +4742,12 @@ func TestMeshcopScannerAdapter_NilDiscoveryScanner(t *testing.T) {
 	_ = adapter.StartScan(func(result *seeker.DiscoverResult) {})
 }
 
-func TestMeshcopScannerAdapter_ImplementsScanner(t *testing.T) {
-	var s seeker.Scanner = &meshcopScannerAdapter{inst: New(Config{})}
-	if s == nil {
-		t.Fatal("meshcopScannerAdapter should implement seeker.Scanner")
-	}
-}
+var _ seeker.Scanner = (*meshcopScannerAdapter)(nil)
 
 // stubDiscoverySender is a no-op DiscoverySender for meshcop scanner tests.
 type stubDiscoverySender struct{}
 
-func (s *stubDiscoverySender) SendDiscoveryRequest(channel uint16, panID uint16, enableFiltering bool) error {
+func (s *stubDiscoverySender) SendDiscoveryRequest(channel, panID uint16, enableFiltering bool) error {
 	return nil
 }
 
@@ -4763,8 +4766,8 @@ func (t *stubDiscoverTimer) IsRunning() bool      { return t.running }
 
 func TestPanIdQueryServer_Created(t *testing.T) {
 	inst := New(Config{})
-	if inst.panIdQueryServer == nil {
-		t.Fatal("panIdQueryServer should be created during wireModules")
+	if inst.panIDQueryServer == nil {
+		t.Fatal("panIDQueryServer should be created during wireModules")
 	}
 }
 
@@ -4774,7 +4777,7 @@ func TestPanIdQueryServerAccessor(t *testing.T) {
 	if got == nil {
 		t.Fatal("PanIdQueryServer() accessor should return non-nil")
 	}
-	if got != inst.panIdQueryServer {
+	if got != inst.panIDQueryServer {
 		t.Error("PanIdQueryServer() should return the same pointer")
 	}
 }
@@ -5401,8 +5404,8 @@ func TestAnnounceBeginClientAccessor(t *testing.T) {
 
 func TestPanIdQueryClient_Created(t *testing.T) {
 	inst := New(Config{})
-	if inst.panIdQueryClient == nil {
-		t.Fatal("panIdQueryClient should be created during wireModules")
+	if inst.panIDQueryClient == nil {
+		t.Fatal("panIDQueryClient should be created during wireModules")
 	}
 }
 
@@ -5412,7 +5415,7 @@ func TestPanIdQueryClientAccessor(t *testing.T) {
 	if got == nil {
 		t.Fatal("PanIdQueryClient() accessor should return non-nil")
 	}
-	if got != inst.panIdQueryClient {
+	if got != inst.panIDQueryClient {
 		t.Error("PanIdQueryClient() should return the same pointer")
 	}
 }
@@ -5781,7 +5784,7 @@ func TestSingleChannelEnergyScanHandler(t *testing.T) {
 }
 
 func TestPanIdScanStub(t *testing.T) {
-	adapter := &mgmtPanIdScannerAdapter{inst: &Instance{}}
+	adapter := &mgmtPanIDScannerAdapter{inst: &Instance{}}
 	found, err := adapter.ScanForPanId(11, 0x1234)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -6102,10 +6105,10 @@ func TestRxDecryptionWithKeyRotation(t *testing.T) {
 	inst.forwarder.SetEnabled(true)
 
 	// Set up a network key and advance to a non-zero key sequence.
-	var nk key.NetworkKey
+	var nk threadkey.NetworkKey
 	nk[0] = 0x42
 	inst.keyManager.SetNetworkKey(nk)
-	inst.keyManager.SetCurrentKeySequence(5, key.ForceUpdate)
+	inst.keyManager.SetCurrentKeySequence(5, threadkey.ForceUpdate)
 
 	// Capture the MAC key for sequence 5 — the "old" key.
 	oldKey := [16]byte(inst.keyManager.GetCurrentMacKey())
@@ -6143,7 +6146,7 @@ func TestRxDecryptionWithKeyRotation(t *testing.T) {
 
 	// Advance the key manager to the next sequence — the "current"
 	// key no longer matches the frame's encryption key.
-	inst.keyManager.SetCurrentKeySequence(6, key.ForceUpdate)
+	inst.keyManager.SetCurrentKeySequence(6, threadkey.ForceUpdate)
 	curKey := [16]byte(inst.keyManager.GetCurrentMacKey())
 	if curKey == oldKey {
 		t.Fatal("current key should differ from old key after sequence change")
@@ -6184,11 +6187,11 @@ func TestFullEncryptedRxRoundTrip(t *testing.T) {
 	inst.forwarder.SetEnabled(true)
 
 	// Set a real (non-zero) network key so encryption is exercised.
-	var nk key.NetworkKey
+	var nk threadkey.NetworkKey
 	nk[0], nk[1], nk[2], nk[3] = 0xDE, 0xAD, 0xBE, 0xEF
 	nk[4], nk[5], nk[6], nk[7] = 0xCA, 0xFE, 0xBA, 0xBE
 	inst.keyManager.SetNetworkKey(nk)
-	inst.keyManager.SetCurrentKeySequence(1, key.ForceUpdate)
+	inst.keyManager.SetCurrentKeySequence(1, threadkey.ForceUpdate)
 
 	macKey := [16]byte(inst.keyManager.GetCurrentMacKey())
 	if macKey == [16]byte{} {

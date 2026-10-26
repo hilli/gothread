@@ -207,7 +207,7 @@ func (r *Resolver) Resolve(target ip6.Address, now time.Time) (uint16, error) {
 			CanEvict:            true,
 		}
 		r.removeSnoopedEntry(target)
-		if !r.addCacheEntry(promoted) {
+		if !r.addCacheEntry(&promoted) {
 			return 0, goterrors.ErrNoBufs
 		}
 		return rloc16, nil
@@ -222,7 +222,7 @@ func (r *Resolver) Resolve(target ip6.Address, now time.Time) (uint16, error) {
 		RetryAttempts: 0,
 		CanEvict:      true,
 	}
-	if !r.addCacheEntry(queryEntry) {
+	if !r.addCacheEntry(&queryEntry) {
 		return 0, goterrors.ErrNoBufs
 	}
 	r.sendQuery(target)
@@ -232,7 +232,7 @@ func (r *Resolver) Resolve(target ip6.Address, now time.Time) (uint16, error) {
 // HandleAddressQueryResponse processes a successful address query response.
 // It updates the cache entry for the target EID with the resolved RLOC16
 // and mesh-local IID.
-func (r *Resolver) HandleAddressQueryResponse(target ip6.Address, rloc16 uint16, meshLocalIID ip6.InterfaceIdentifier, lastTransactionTime time.Time, now time.Time) {
+func (r *Resolver) HandleAddressQueryResponse(target ip6.Address, rloc16 uint16, meshLocalIID ip6.InterfaceIdentifier, lastTransactionTime, now time.Time) {
 	entry := r.findInCache(target)
 	if entry == nil {
 		// No pending query — add as a cached entry.
@@ -245,7 +245,7 @@ func (r *Resolver) HandleAddressQueryResponse(target ip6.Address, rloc16 uint16,
 			Timeout:             now.Add(CacheEntryTimeout),
 			CanEvict:            true,
 		}
-		r.addCacheEntry(cached)
+		r.addCacheEntry(&cached)
 		r.notifyResolution(target, rloc16, nil)
 		return
 	}
@@ -272,7 +272,7 @@ func (r *Resolver) HandleAddressError(target ip6.Address, _ types.ExtAddress) {
 
 // HandleAddressNotification processes a proactive Address Notification
 // that may update or create a cached entry.
-func (r *Resolver) HandleAddressNotification(target ip6.Address, rloc16 uint16, meshLocalIID ip6.InterfaceIdentifier, lastTransactionTime time.Time, now time.Time) {
+func (r *Resolver) HandleAddressNotification(target ip6.Address, rloc16 uint16, meshLocalIID ip6.InterfaceIdentifier, lastTransactionTime, now time.Time) {
 	entry := r.findInCache(target)
 	if entry != nil {
 		// Update existing entry if notification is newer.
@@ -307,7 +307,7 @@ func (r *Resolver) HandleAddressNotification(target ip6.Address, rloc16 uint16, 
 		Timeout:             now.Add(CacheEntryTimeout),
 		CanEvict:            true,
 	}
-	r.addCacheEntry(cached)
+	r.addCacheEntry(&cached)
 }
 
 // UpdateSnoopedEntry adds or updates a snooped entry learned from
@@ -334,7 +334,7 @@ func (r *Resolver) UpdateSnoopedEntry(target ip6.Address, rloc16 uint16, now tim
 		Timeout:             now.Add(SnoopedEntryTimeout),
 		CanEvict:            true,
 	}
-	r.addSnoopedEntry(entry)
+	r.addSnoopedEntry(&entry)
 }
 
 // LookUp returns the cache entry for the given target, or nil if not found.
@@ -455,24 +455,24 @@ func (r *Resolver) findInSnooped(target ip6.Address) *CacheEntry {
 	return nil
 }
 
-func (r *Resolver) addCacheEntry(entry CacheEntry) bool {
+func (r *Resolver) addCacheEntry(entry *CacheEntry) bool {
 	if len(r.cache) < cap(r.cache) {
-		r.cache = append(r.cache, entry)
+		r.cache = append(r.cache, *entry)
 		return true
 	}
 	// Try to evict an expired or evictable entry.
 	for i := range r.cache {
 		if r.cache[i].CanEvict {
-			r.cache[i] = entry
+			r.cache[i] = *entry
 			return true
 		}
 	}
 	return false
 }
 
-func (r *Resolver) addSnoopedEntry(entry CacheEntry) {
+func (r *Resolver) addSnoopedEntry(entry *CacheEntry) {
 	if len(r.snooped) < cap(r.snooped) {
-		r.snooped = append(r.snooped, entry)
+		r.snooped = append(r.snooped, *entry)
 		return
 	}
 	// Evict oldest entry.
@@ -483,7 +483,7 @@ func (r *Resolver) addSnoopedEntry(entry CacheEntry) {
 				oldest = i
 			}
 		}
-		r.snooped[oldest] = entry
+		r.snooped[oldest] = *entry
 	}
 }
 

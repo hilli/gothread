@@ -40,12 +40,6 @@ func (m *mockSender) getCalls() []sendCall {
 	return out
 }
 
-func (m *mockSender) reset() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.calls = nil
-}
-
 // mockTimer is a deterministic timer for testing.
 type mockTimer struct {
 	mu      sync.Mutex

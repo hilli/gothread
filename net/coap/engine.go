@@ -107,7 +107,7 @@ func (p TxParameters) CalculateInitialRetxTimeout() time.Duration {
 func (p TxParameters) calculateSpan(maxRetx uint8) time.Duration {
 	// 2^maxRetx - 1
 	factor := (uint64(1) << maxRetx) - 1
-	// span = AckTimeout * factor * numerator / denominator
+	// Scale AckTimeout by factor and the random-factor ratio (numerator / denominator).
 	spanMs := uint64(p.AckTimeout) * factor * uint64(p.AckRandomFactorNumerator) / uint64(p.AckRandomFactorDenominator)
 	return time.Duration(spanMs) * time.Millisecond
 }

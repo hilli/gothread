@@ -372,7 +372,7 @@ func UnmarshalUint32TLV(data []byte) (uint32, error) {
 }
 
 // MarshalByteTLV creates a TLV with a single-byte value.
-func MarshalByteTLV(typ uint8, val uint8) tlv.TLV {
+func MarshalByteTLV(typ, val uint8) tlv.TLV {
 	return tlv.TLV{Type: typ, Length: 1, Value: []byte{val}}
 }
 

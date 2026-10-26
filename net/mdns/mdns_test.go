@@ -167,10 +167,11 @@ func TestDecodeName(t *testing.T) {
 func TestDecodeNamePointer(t *testing.T) {
 	// Build a message with a name at offset 0, then a pointer to it.
 	var buf []byte
-	// Offset 0: "local" => 5 'l' 'o' 'c' 'a' 'l' 0  (7 bytes)
-	buf = append(buf, 5, 'l', 'o', 'c', 'a', 'l', 0)
-	// Offset 7: "myhost" label + pointer to offset 0.
-	buf = append(buf, 6, 'm', 'y', 'h', 'o', 's', 't', 0xC0, 0x00)
+	buf = append(buf,
+		// Offset 0: the "local" label occupies 7 bytes.
+		5, 'l', 'o', 'c', 'a', 'l', 0,
+		// Offset 7: "myhost" label + pointer to offset 0.
+		6, 'm', 'y', 'h', 'o', 's', 't', 0xC0, 0x00)
 
 	name, consumed, err := decodeName(buf, 7)
 	if err != nil {
@@ -2081,7 +2082,8 @@ func TestCompressorAppendServiceInstanceName(t *testing.T) {
 
 	// Should be compressed (instance label + pointer).
 	instPartLen := len(buf) - startLen
-	// Full: 1+10 + 1+5 + 1+4 + 1+5 + 0 = 28; compressed: 1+10 + 2 = 13
+	// Full encoding takes 1+10 + 1+5 + 1+4 + 1+5 + 0 (28) bytes;
+	// compression reduces this to 1+10 + 2 (13) bytes.
 	if instPartLen >= 20 {
 		t.Fatalf("expected compression, instance part took %d bytes", instPartLen)
 	}

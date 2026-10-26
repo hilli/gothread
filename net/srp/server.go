@@ -51,12 +51,6 @@ const (
 
 	// serviceSubTypeLabel is the sub-type separator.
 	serviceSubTypeLabel = "._sub."
-
-	// serverUDPPortMin is the minimum UDP port in the range.
-	serverUDPPortMin uint16 = 53535
-
-	// serverUDPPortMax is the maximum UDP port in the range.
-	serverUDPPortMax uint16 = 53554
 )
 
 // -------------------------------------------------------
@@ -376,10 +370,9 @@ func (m *messageMetadata) isDirectRxFromClient() bool {
 type Server struct {
 	mu sync.Mutex
 
-	state       ServerState
-	domain      string
-	port        uint16
-	addressMode AddressMode
+	state  ServerState
+	domain string
+	port   uint16
 
 	ttlConfig   TTLConfig
 	leaseConfig LeaseConfig
@@ -648,16 +641,17 @@ func (s *Server) HandleServiceUpdateResult(id uint32, err error) {
 func (s *Server) handleServiceUpdateResult(id uint32, err error) {
 	// Find the update in the outstanding list.
 	for i, um := range s.outstandingUpdates {
-		if um.id == id {
-			um.err = err
-			um.completed = true
-			// Move to completed list.
-			s.outstandingUpdates = append(s.outstandingUpdates[:i], s.outstandingUpdates[i+1:]...)
-			s.completedUpdates = append(s.completedUpdates, um)
-			// Process completed updates asynchronously.
-			s.processCompletedUpdatesAsync()
-			return
+		if um.id != id {
+			continue
 		}
+		um.err = err
+		um.completed = true
+		// Move to completed list.
+		s.outstandingUpdates = append(s.outstandingUpdates[:i], s.outstandingUpdates[i+1:]...)
+		s.completedUpdates = append(s.completedUpdates, um)
+		// Process completed updates asynchronously.
+		s.processCompletedUpdatesAsync()
+		return
 	}
 	// Update not found (late callback), silently ignore.
 }
@@ -713,17 +707,17 @@ func (s *Server) processMessage(data []byte, peer *ip6.SockAddr) {
 	}
 
 	meta.offset = dns.HeaderSize
-	s.processDnsUpdate(data, &meta)
+	s.processDNSUpdate(data, &meta)
 }
 
 // -------------------------------------------------------
 // DNS Update processing
 // -------------------------------------------------------
 
-func (s *Server) processDnsUpdate(data []byte, meta *messageMetadata) {
+func (s *Server) processDNSUpdate(data []byte, meta *messageMetadata) {
 	// Step 1: Process zone section.
 	if err := s.processZoneSection(data, meta); err != nil {
-		s.sendErrorResponse(meta.dnsHeader, errorToDnsResponseCode(err), meta.peer)
+		s.sendErrorResponse(meta.dnsHeader, errorToDNSResponseCode(err), meta.peer)
 		return
 	}
 
@@ -745,19 +739,19 @@ func (s *Server) processDnsUpdate(data []byte, meta *messageMetadata) {
 
 	// Process update records (3 passes).
 	if err := s.processUpdateSection(data, meta, host); err != nil {
-		s.sendErrorResponse(meta.dnsHeader, errorToDnsResponseCode(err), meta.peer)
+		s.sendErrorResponse(meta.dnsHeader, errorToDNSResponseCode(err), meta.peer)
 		return
 	}
 
 	// Step 5: Check for name conflicts.
 	if err := s.hasNameConflictsWith(host); err != nil {
-		s.sendErrorResponse(meta.dnsHeader, errorToDnsResponseCode(err), meta.peer)
+		s.sendErrorResponse(meta.dnsHeader, errorToDNSResponseCode(err), meta.peer)
 		return
 	}
 
 	// Step 6: Process additional section (OPT + SIG(0)).
 	if err := s.processAdditionalSection(data, meta, host); err != nil {
-		s.sendErrorResponse(meta.dnsHeader, errorToDnsResponseCode(err), meta.peer)
+		s.sendErrorResponse(meta.dnsHeader, errorToDNSResponseCode(err), meta.peer)
 		return
 	}
 
@@ -998,11 +992,8 @@ func (s *Server) processHostDescriptionInstruction(data []byte, meta *messageMet
 				host.parsedKey = true
 
 			default:
-				// "Delete all RRsets" for the host: Class=Any, Type=Any, RDLength=0.
-				if rr.Class == dns.ClassAny && rr.Type == dns.RRTypeAny && rr.RDLength == 0 {
-					// Host is being deleted (name retained). No action needed here;
-					// lease=0 handling happens in processAdditionalSection.
-				}
+				// Host deletion (Class=Any, Type=Any, RDLength=0) needs no
+				// action here; processAdditionalSection handles lease=0.
 			}
 		}
 
@@ -1392,14 +1383,15 @@ func (s *Server) scheduleUpdateTimeout(um *updateMetadata) {
 
 func (s *Server) handleUpdateTimeout(id uint32) {
 	for i, um := range s.outstandingUpdates {
-		if um.id == id {
-			um.err = errors.ErrResponseTimeout
-			um.completed = true
-			s.outstandingUpdates = append(s.outstandingUpdates[:i], s.outstandingUpdates[i+1:]...)
-			s.commitSrpUpdate(um.host, um.err, um.dnsHeader, um.ttlConfig, um.leaseConfig,
-				um.isDirectFromClient, um.peer)
-			return
+		if um.id != id {
+			continue
 		}
+		um.err = errors.ErrResponseTimeout
+		um.completed = true
+		s.outstandingUpdates = append(s.outstandingUpdates[:i], s.outstandingUpdates[i+1:]...)
+		s.commitSrpUpdate(um.host, um.err, um.dnsHeader, um.ttlConfig, um.leaseConfig,
+			um.isDirectFromClient, um.peer)
+		return
 	}
 }
 
@@ -1415,7 +1407,7 @@ func (s *Server) commitSrpUpdate(host *RegHost, err error, header dns.UpdateHead
 	}
 
 	if err != nil {
-		s.sendErrorResponse(header, errorToDnsResponseCode(err), peerPtr(isDirectFromClient, peer))
+		s.sendErrorResponse(header, errorToDNSResponseCode(err), peerPtr(isDirectFromClient, peer))
 		return
 	}
 
@@ -1735,7 +1727,7 @@ func (s *Server) incrementResponseCounter(rcode dns.ResponseCode) {
 // Error to DNS response code mapping
 // -------------------------------------------------------
 
-func errorToDnsResponseCode(err error) dns.ResponseCode {
+func errorToDNSResponseCode(err error) dns.ResponseCode {
 	if err == nil {
 		return dns.RcodeSuccess
 	}
@@ -1755,12 +1747,12 @@ func errorToDnsResponseCode(err error) dns.ResponseCode {
 // Helper functions
 // -------------------------------------------------------
 
-func clampU32(v, min, max uint32) uint32 {
-	if v < min {
-		return min
+func clampU32(v, minimum, maximum uint32) uint32 {
+	if v < minimum {
+		return minimum
 	}
-	if v > max {
-		return max
+	if v > maximum {
+		return maximum
 	}
 	return v
 }
@@ -1847,7 +1839,7 @@ func isServiceInstanceName(name, domain string) bool {
 
 // parseSubType checks if a name is a sub-type PTR and returns the sub-type label.
 // "_print._sub._ipp._tcp.default.service.arpa." -> true, "_print"
-func parseSubType(name string) (bool, string) {
+func parseSubType(name string) (isSubType bool, label string) {
 	idx := strings.Index(strings.ToLower(name), serviceSubTypeLabel)
 	if idx < 0 {
 		return false, ""

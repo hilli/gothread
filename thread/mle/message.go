@@ -45,8 +45,7 @@ func NewMessage(command Command) *Message {
 // NewUnsecuredMessage creates a new unsecured MLE message (for Discovery).
 func NewUnsecuredMessage(command Command) *Message {
 	buf := make([]byte, 0, 64)
-	buf = append(buf, SecuritySuiteNone)
-	buf = append(buf, byte(command))
+	buf = append(buf, SecuritySuiteNone, byte(command))
 	return &Message{buf: buf}
 }
 
@@ -696,7 +695,7 @@ func ParseMessage(data []byte) (*ParsedMessage, error) {
 
 	switch data[0] {
 	case SecuritySuiteEncMic32:
-		// Minimum: suite(1) + secHeader(10) + command(1) + mic(4) = 16
+		// The 16-byte minimum comprises suite(1), secHeader(10), command(1), and MIC(4).
 		minLen := 1 + SecurityHeaderSize + 1 + SecurityTagSize
 		if len(data) < minLen {
 			return nil, fmt.Errorf("mle: secured message too short: %d < %d", len(data), minLen)

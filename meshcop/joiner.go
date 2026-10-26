@@ -422,13 +422,13 @@ func (j *JoinerClient) Start(
 	if len(provisioningURL) > MaxProvisioningURLLength {
 		return errors.ErrInvalidArgs
 	}
-	if len(vendorName) > MaxVendorNameLength || len(vendorName) == 0 {
+	if len(vendorName) > MaxVendorNameLength || vendorName == "" {
 		return errors.ErrInvalidArgs
 	}
-	if len(vendorModel) > MaxVendorModelLength || len(vendorModel) == 0 {
+	if len(vendorModel) > MaxVendorModelLength || vendorModel == "" {
 		return errors.ErrInvalidArgs
 	}
-	if len(vendorSWVersion) > MaxVendorSWVersionLength || len(vendorSWVersion) == 0 {
+	if len(vendorSWVersion) > MaxVendorSWVersionLength || vendorSWVersion == "" {
 		return errors.ErrInvalidArgs
 	}
 	if len(vendorData) > MaxVendorDataLength {
@@ -722,12 +722,12 @@ func (j *JoinerClient) buildFinalizePayload() []byte {
 	payload = append(payload, encodeTLV(TLVVendorStackVersion, j.stackVersion.Encode())...)
 
 	// Vendor Data TLV (optional)
-	if len(j.vendorData) > 0 {
+	if j.vendorData != "" {
 		payload = append(payload, encodeTLV(TLVVendorData, []byte(j.vendorData))...)
 	}
 
 	// Provisioning URL TLV (optional)
-	if len(j.provisioningURL) > 0 {
+	if j.provisioningURL != "" {
 		payload = append(payload, encodeTLV(TLVProvisioningURL, []byte(j.provisioningURL))...)
 	}
 
@@ -764,7 +764,7 @@ func (j *JoinerClient) handleSecureReceive(data []byte) {
 	// Parse State TLV from response payload.
 	payload := msg.GetPayload()
 	stateBytes := findTLVInBytes(payload, TLVState)
-	if stateBytes == nil || len(stateBytes) < 1 {
+	if len(stateBytes) < 1 {
 		j.finishLocked(errors.ErrParse)
 		return
 	}
@@ -815,7 +815,7 @@ func (j *JoinerClient) handleJoinerEntrust(msg *coap.Message, info coap.MessageI
 
 	// Parse Network Key TLV (required).
 	networkKeyBytes := findTLVInBytes(payload, TLVNetworkKey)
-	if networkKeyBytes == nil || len(networkKeyBytes) != 16 {
+	if len(networkKeyBytes) != 16 {
 		return
 	}
 
@@ -863,19 +863,19 @@ func (j *JoinerClient) parseEntrustOptionalTLVs(payload []byte, info *Info) {
 	}
 
 	// Extended PAN ID
-	if v := findTLVInBytes(payload, TLVExtendedPanID); v != nil && len(v) == 8 {
+	if v := findTLVInBytes(payload, TLVExtendedPanID); len(v) == 8 {
 		copy(info.ExtendedPanID[:], v)
 		info.Components.ExtendedPanID = true
 	}
 
 	// Mesh-Local Prefix
-	if v := findTLVInBytes(payload, TLVMeshLocalPrefix); v != nil && len(v) == 8 {
+	if v := findTLVInBytes(payload, TLVMeshLocalPrefix); len(v) == 8 {
 		copy(info.MeshLocalPrefix[:], v)
 		info.Components.MeshLocalPrefix = true
 	}
 
 	// Active Timestamp
-	if v := findTLVInBytes(payload, TLVActiveTimestamp); v != nil && len(v) == TimestampSize {
+	if v := findTLVInBytes(payload, TLVActiveTimestamp); len(v) == TimestampSize {
 		var ts Timestamp
 		if err := ts.UnmarshalBinary(v); err == nil {
 			info.ActiveTimestamp = ts
@@ -884,19 +884,19 @@ func (j *JoinerClient) parseEntrustOptionalTLVs(payload []byte, info *Info) {
 	}
 
 	// PSKc
-	if v := findTLVInBytes(payload, TLVPSKc); v != nil && len(v) == 16 {
+	if v := findTLVInBytes(payload, TLVPSKc); len(v) == 16 {
 		copy(info.PSKc[:], v)
 		info.Components.PSKc = true
 	}
 
 	// Channel Mask
-	if v := findTLVInBytes(payload, TLVChannelMask); v != nil && len(v) == 4 {
+	if v := findTLVInBytes(payload, TLVChannelMask); len(v) == 4 {
 		info.ChannelMask = binary.BigEndian.Uint32(v)
 		info.Components.ChannelMask = true
 	}
 
 	// Security Policy (rotation time 2 bytes + flags, handled by ParseFlags)
-	if v := findTLVInBytes(payload, TLVSecurityPolicy); v != nil && len(v) >= 3 {
+	if v := findTLVInBytes(payload, TLVSecurityPolicy); len(v) >= 3 {
 		info.SecurityPolicy.RotationTime = binary.BigEndian.Uint16(v[0:2])
 		info.SecurityPolicy.SetFlags(v[2:])
 		info.Components.SecurityPolicy = true

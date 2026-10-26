@@ -26,17 +26,17 @@ const (
 //
 // The salt is the concatenation of the network name and the Extended PAN ID.
 // The passphrase must be 6-255 UTF-8 characters.
-func GeneratePSKc(passphrase string, networkName string, extPanID [8]byte) ([16]byte, error) {
+func GeneratePSKc(passphrase, networkName string, extPanID [8]byte) ([16]byte, error) {
 	var pskc [16]byte
 
 	if len(passphrase) < 6 || len(passphrase) > 255 {
 		return pskc, fmt.Errorf("meshcop: passphrase length %d out of range [6, 255]", len(passphrase))
 	}
-	if len(networkName) == 0 || len(networkName) > MaxNetworkNameLength {
+	if networkName == "" || len(networkName) > MaxNetworkNameLength {
 		return pskc, fmt.Errorf("meshcop: network name length %d out of range [1, %d]", len(networkName), MaxNetworkNameLength)
 	}
 
-	// Salt = networkName || extPanID
+	// Concatenate networkName and extPanID to form the salt.
 	salt := make([]byte, len(networkName)+8)
 	copy(salt, networkName)
 	copy(salt[len(networkName):], extPanID[:])
@@ -52,6 +52,8 @@ func GeneratePSKc(passphrase string, networkName string, extPanID [8]byte) ([16]
 
 // ComputeJoinerId derives a Joiner ID from an IEEE EUI-64. This is a
 // convenience wrapper around ComputeJoinerIDFromEUI64.
+//
+//nolint:revive // Preserve the exported spelling for API compatibility.
 func ComputeJoinerId(eui64 [8]byte) [8]byte {
 	return ComputeJoinerIDFromEUI64(types.ExtAddress(eui64))
 }

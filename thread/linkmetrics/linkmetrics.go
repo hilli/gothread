@@ -47,7 +47,7 @@ func (s *Subject) countSeriesForNeighbor(source mac_types.ExtAddress) int {
 // request. It registers or clears series based on the seriesFlags.
 //
 // Returns a Link Metrics status code.
-func (s *Subject) HandleManagementRequest(source mac_types.ExtAddress, seriesID uint8, seriesFlags uint8, metrics uint8) uint8 {
+func (s *Subject) HandleManagementRequest(source mac_types.ExtAddress, seriesID, seriesFlags, metrics uint8) uint8 {
 	// Series ID must be > 0 (0 is reserved for single probe).
 	if seriesID == queryIDSingleProbe {
 		return StatusOtherError
@@ -97,7 +97,7 @@ func (s *Subject) HandleManagementRequest(source mac_types.ExtAddress, seriesID 
 // all three simultaneously.
 //
 // Returns a Link Metrics status code.
-func (s *Subject) HandleEnhAckProbingRequest(source mac_types.ExtAddress, flags uint8, metrics uint8) uint8 {
+func (s *Subject) HandleEnhAckProbingRequest(source mac_types.ExtAddress, flags, metrics uint8) uint8 {
 	switch flags {
 	case EnhAckRegister:
 		// PDU count is not allowed in Enh-ACK probing.
@@ -147,7 +147,7 @@ func (s *Subject) HandleLinkProbe(source mac_types.ExtAddress, seriesID uint8) {
 // For seriesID 0 (single probe), the caller should provide metrics directly.
 //
 // Returns the MetricsValues and a status code.
-func (s *Subject) HandleSeriesQuery(source mac_types.ExtAddress, seriesID uint8) (*MetricsValues, uint8) {
+func (s *Subject) HandleSeriesQuery(source mac_types.ExtAddress, seriesID uint8) (values *MetricsValues, status uint8) {
 	key := seriesKey{Addr: source, SeriesID: seriesID}
 	info, ok := s.seriesMap[key]
 	if !ok {
@@ -162,7 +162,7 @@ func (s *Subject) HandleSeriesQuery(source mac_types.ExtAddress, seriesID uint8)
 
 // AggregateLinkMetrics records a received frame's metrics for the specified
 // series.
-func (s *Subject) AggregateLinkMetrics(source mac_types.ExtAddress, seriesID uint8, lqi uint8, linkMargin uint8, rssi int8) {
+func (s *Subject) AggregateLinkMetrics(source mac_types.ExtAddress, seriesID, lqi, linkMargin uint8, rssi int8) {
 	key := seriesKey{Addr: source, SeriesID: seriesID}
 	info, ok := s.seriesMap[key]
 	if !ok {
@@ -262,7 +262,7 @@ func (i *Initiator) SetMgmtResponseCallback(cb MgmtResponseCallback) {
 // SendLinkMetricsQuery prepares a Link Metrics query for the given destination.
 // For single probe (seriesID=0), metrics must be non-zero. For forward
 // tracking series (seriesID>0), metrics must be zero (query existing series).
-func (i *Initiator) SendLinkMetricsQuery(destination mac_types.ExtAddress, seriesID uint8, metrics uint8) error {
+func (i *Initiator) SendLinkMetricsQuery(destination mac_types.ExtAddress, seriesID, metrics uint8) error {
 	if seriesID != queryIDSingleProbe && metrics != 0 {
 		return errors.ErrInvalidArgs
 	}
@@ -280,7 +280,7 @@ func (i *Initiator) SendLinkMetricsQuery(destination mac_types.ExtAddress, serie
 
 // SendMgmtRequest prepares a Forward Tracking Series management request.
 // seriesID must be > 0 (0 is reserved for single probe).
-func (i *Initiator) SendMgmtRequest(destination mac_types.ExtAddress, seriesID uint8, seriesFlags uint8, metrics uint8) error {
+func (i *Initiator) SendMgmtRequest(destination mac_types.ExtAddress, seriesID, seriesFlags, metrics uint8) error {
 	if seriesID == queryIDSingleProbe {
 		return errors.ErrInvalidArgs
 	}
@@ -296,7 +296,7 @@ func (i *Initiator) SendMgmtRequest(destination mac_types.ExtAddress, seriesID u
 
 // SendEnhAckProbingRequest prepares an Enhanced ACK probing request.
 // When flags is EnhAckClear, metrics must be 0.
-func (i *Initiator) SendEnhAckProbingRequest(destination mac_types.ExtAddress, flags uint8, metrics uint8) error {
+func (i *Initiator) SendEnhAckProbingRequest(destination mac_types.ExtAddress, flags, metrics uint8) error {
 	if flags == EnhAckClear && metrics != 0 {
 		return errors.ErrInvalidArgs
 	}
@@ -467,16 +467,13 @@ func EncodeReport(values *MetricsValues) []byte {
 		buf = append(buf, b...)
 	}
 	if values.Metrics&MetricLqi != 0 {
-		buf = append(buf, TypeIDLqi)
-		buf = append(buf, values.Lqi)
+		buf = append(buf, TypeIDLqi, values.Lqi)
 	}
 	if values.Metrics&MetricLinkMargin != 0 {
-		buf = append(buf, TypeIDLinkMargin)
-		buf = append(buf, ScaleLinkMarginToRaw(values.LinkMargin))
+		buf = append(buf, TypeIDLinkMargin, ScaleLinkMarginToRaw(values.LinkMargin))
 	}
 	if values.Metrics&MetricRssi != 0 {
-		buf = append(buf, TypeIDRssi)
-		buf = append(buf, ScaleRssiToRaw(values.Rssi))
+		buf = append(buf, TypeIDRssi, ScaleRssiToRaw(values.Rssi))
 	}
 
 	return buf

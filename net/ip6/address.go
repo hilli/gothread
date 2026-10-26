@@ -46,7 +46,7 @@ type Address [16]byte
 // :: compression, mixed-case hex, and embedded IPv4 suffixes.
 func AddressFromString(s string) (Address, error) {
 	var addr Address
-	if len(s) == 0 {
+	if s == "" {
 		return addr, errors.ErrParse
 	}
 
@@ -159,7 +159,7 @@ func AddressFromString(s string) (Address, error) {
 
 // parseHexGroup parses a 1-4 digit hex group, returning 0..65535.
 func parseHexGroup(s string) (uint16, error) {
-	if len(s) == 0 || len(s) > 4 {
+	if s == "" || len(s) > 4 {
 		return 0, errors.ErrParse
 	}
 	var v uint16
@@ -195,7 +195,7 @@ func parseIPv4(s string) ([4]byte, error) {
 		return result, errors.ErrParse
 	}
 	for i, p := range parts {
-		if len(p) == 0 {
+		if p == "" {
 			return result, errors.ErrParse
 		}
 		var v int
@@ -473,7 +473,7 @@ func PrefixFromString(s string) (Prefix, error) {
 	addrStr := s[:slashIdx]
 	lenStr := s[slashIdx+1:]
 
-	if len(lenStr) == 0 {
+	if lenStr == "" {
 		return Prefix{}, errors.ErrParse
 	}
 

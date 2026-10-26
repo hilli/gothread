@@ -28,9 +28,30 @@ package log
 
 import (
 	"bytes"
+	"io"
+	stdlog "log"
 	"strings"
 	"testing"
 )
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func TestDefaultLoggerReportsWriteFailure(t *testing.T) {
+	var diagnostics bytes.Buffer
+	original := stdlog.Writer()
+	stdlog.SetOutput(&diagnostics)
+	t.Cleanup(func() { stdlog.SetOutput(original) })
+
+	logger := NewDefaultLogger(failingWriter{}, LevelInfo)
+	logger.Log(LevelWarn, RegionCore, "message")
+	if !strings.Contains(diagnostics.String(), "write log: "+io.ErrClosedPipe.Error()) {
+		t.Fatalf("missing write failure diagnostic: %q", diagnostics.String())
+	}
+}
 
 func TestLevelString(t *testing.T) {
 	tests := []struct {

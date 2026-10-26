@@ -425,8 +425,7 @@ func TestHandleMessageNilHandler(t *testing.T) {
 	m := New()
 
 	// Manually append a nil handler and a handler with nil callback.
-	m.handlers = append(m.handlers, nil)
-	m.handlers = append(m.handlers, &Handler{callback: nil})
+	m.handlers = append(m.handlers, nil, &Handler{callback: nil})
 
 	// Build a valid 8-byte ICMPv6 payload.
 	var echoHdr Header

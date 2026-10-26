@@ -181,17 +181,17 @@ func (tf *TxFrames) GetTxFrame(t RadioType) *radio.Frame {
 // GetTxFrameForTypes returns the transmit frame with the smallest MTU
 // among the given set of radio types. It adds all types from the set
 // to the selected set.
-func (tf *TxFrames) GetTxFrameForTypes(types RadioTypes) *radio.Frame {
+func (tf *TxFrames) GetTxFrameForTypes(radioTypes RadioTypes) *radio.Frame {
 	var best *radio.Frame
 	for _, t := range AllRadioTypes {
-		if types.Contains(t) {
+		if radioTypes.Contains(t) {
 			f := tf.frames[t]
 			if best == nil || cap(f.PSDU) < cap(best.PSDU) {
 				best = f
 			}
 		}
 	}
-	tf.selectedTypes = tf.selectedTypes.AddTypes(types)
+	tf.selectedTypes = tf.selectedTypes.AddTypes(radioTypes)
 	return best
 }
 
@@ -218,8 +218,8 @@ func (tf *TxFrames) GetRequiredRadioTypes() RadioTypes {
 }
 
 // SetRequiredRadioTypes sets the required radio types.
-func (tf *TxFrames) SetRequiredRadioTypes(types RadioTypes) {
-	tf.requiredTypes = types
+func (tf *TxFrames) SetRequiredRadioTypes(radioTypes RadioTypes) {
+	tf.requiredTypes = radioTypes
 }
 
 // Clear resets all frames and clears selected/required radio types.

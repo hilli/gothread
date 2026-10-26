@@ -261,7 +261,7 @@ func (c *compressor) appendServiceInstanceName(buf []byte, instance, serviceType
 // decodeName reads a DNS name from data starting at offset, following
 // compression pointers. Returns the name and the number of bytes consumed
 // at the original position (before any pointer jumps).
-func decodeName(data []byte, offset int) (string, int, error) {
+func decodeName(data []byte, offset int) (decodedName string, consumedBytes int, decodeErr error) {
 	var labels []string
 	visited := make(map[int]bool) // detect pointer loops
 	pos := offset
@@ -434,8 +434,7 @@ func buildNSECRData(ownerName string, rrTypes []uint16) ([]byte, error) {
 	// Window block: window=0, length=bitmapLen, bitmap
 	buf := make([]byte, 0, len(nameWire)+2+bitmapLen)
 	buf = append(buf, nameWire...)
-	buf = append(buf, 0)               // window number 0
-	buf = append(buf, byte(bitmapLen)) // bitmap length
+	buf = append(buf, 0, byte(bitmapLen)) // Window number 0 followed by bitmap length.
 	buf = append(buf, bitmapBuf[:bitmapLen]...)
 	return buf, nil
 }

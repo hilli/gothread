@@ -48,7 +48,7 @@ func (s Status) String() string {
 
 // TimeSyncCallback is called when the network time is updated.
 // The argument is the new network time in microseconds.
-type TimeSyncCallback func(networkTime int64)
+type TimeSyncCallback func(networkTime int64) //nolint:revive // Preserve the exported type name for existing callers.
 
 // ---------------------------------------------------------------------------
 // Constants and defaults

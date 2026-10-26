@@ -63,7 +63,7 @@ func (m *mockAdvRouterOps) UpdateRouterIDSet(sequence uint8, idSet RouterIDSet, 
 	return true
 }
 
-func (m *mockAdvRouterOps) UpdateRoutes(sequence uint8, _ RouterIDSet, _ []Route64Entry, neighborID uint8, _ uint8) bool {
+func (m *mockAdvRouterOps) UpdateRoutes(sequence uint8, _ RouterIDSet, _ []Route64Entry, neighborID, _ uint8) bool {
 	m.updateRoutesCalled = true
 	m.updateRoutesSequence = sequence
 	m.updateRoutesNeighborID = neighborID

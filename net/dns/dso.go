@@ -159,6 +159,7 @@ const (
 // DisconnectReason indicates why a connection was terminated.
 type DisconnectReason uint8
 
+// Reasons a DNS Stateful Operations connection can be disconnected.
 const (
 	DisconnectReasonFailedToConnect         DisconnectReason = iota // TCP connection failed.
 	DisconnectReasonResponseTimeout                                 // No response to a request.
@@ -329,6 +330,8 @@ type DSOConnectionConfig struct {
 }
 
 // NewDSOConnection creates a new DSO connection in the Disconnected state.
+//
+//nolint:gocritic // Keep the value-parameter signature required by the public API.
 func NewDSOConnection(cfg DSOConnectionConfig) *DSOConnection {
 	now := cfg.Now
 	if now == nil {
@@ -1147,15 +1150,16 @@ func (c *DSOConnection) processResponseLocked(hdr Header, tlvData []byte) {
 
 	// If this was the first request and we're establishing session:
 	if c.state == DSOStateEstablishingSession {
-		if rcode == RcodeSuccess {
+		switch rcode {
+		case RcodeSuccess:
 			c.state = DSOStateSessionEstablished
 			if c.callbacks.OnSessionEstablished != nil {
 				c.callbacks.OnSessionEstablished(c)
 			}
-		} else if rcode == RcodeDsoNotImpl || rcode == RcodeNotImplemented {
+		case RcodeDsoNotImpl, RcodeNotImplemented:
 			c.disconnectLocked(DisconnectGracefullyClose, DisconnectReasonPeerDoesNotSupportDso)
 			return
-		} else {
+		default:
 			c.disconnectLocked(DisconnectGracefullyClose, DisconnectReasonPeerMisbehavior)
 			return
 		}

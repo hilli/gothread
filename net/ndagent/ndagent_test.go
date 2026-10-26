@@ -43,7 +43,7 @@ type naSent struct {
 	destination ip6.Address
 }
 
-func (m *mockSender) SendNeighborAdvert(target ip6.Address, destination ip6.Address) error {
+func (m *mockSender) SendNeighborAdvert(target, destination ip6.Address) error {
 	m.calls = append(m.calls, naSent{target: target, destination: destination})
 	return m.sendErr
 }

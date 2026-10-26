@@ -95,7 +95,7 @@ func NewHTClient(transport HTClientTransport) *HTClient {
 // Errors:
 //   - ErrBusy: a query is already in progress.
 //   - Any error from the transport layer.
-func (c *HTClient) QueryNetInfo(rloc16 uint16, maxEntries uint16, maxEntryAge uint32, callback NetInfoCallback) error {
+func (c *HTClient) QueryNetInfo(rloc16, maxEntries uint16, maxEntryAge uint32, callback NetInfoCallback) error {
 	c.mu.Lock()
 	if c.active {
 		c.mu.Unlock()
@@ -271,8 +271,7 @@ func (c *HTClient) handleAnswer(payload []byte, senderRloc16 uint16) {
 	c.mu.Unlock()
 
 	// Process data TLVs based on the query type.
-	switch tlvType {
-	case HTTlvNetworkInfo:
+	if tlvType == HTTlvNetworkInfo {
 		c.processNetInfoAnswer(dataBytes, cb)
 	}
 }
@@ -343,11 +342,8 @@ func (c *HTClient) finalizeLocked(err error) {
 	tlvType := c.tlvType
 	c.mu.Unlock()
 
-	if cb != nil {
-		switch tlvType {
-		case HTTlvNetworkInfo:
-			cb(err, nil, 0)
-		}
+	if cb != nil && tlvType == HTTlvNetworkInfo {
+		cb(err, nil, 0)
 	}
 }
 

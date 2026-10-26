@@ -53,9 +53,9 @@ func TestBuildDataFrame_ShortAddrs_NoSecurity(t *testing.T) {
 	}
 
 	// Destination PAN ID
-	panId := binary.LittleEndian.Uint16(frame[3:5])
-	if panId != 0xCAFE {
-		t.Errorf("DstPanId = 0x%04X, want 0xCAFE", panId)
+	panID := binary.LittleEndian.Uint16(frame[3:5])
+	if panID != 0xCAFE {
+		t.Errorf("DstPanId = 0x%04X, want 0xCAFE", panID)
 	}
 
 	// Destination short address
@@ -171,9 +171,9 @@ func TestBuildDataFrame_Security_KeyIdMode1(t *testing.T) {
 		t.Errorf("security level = %d, want %d", gotSecLevel, wantSecLevel)
 	}
 
-	gotKeyIdMode := (secCtl >> 3) & 0x03
-	if gotKeyIdMode != 1 {
-		t.Errorf("key ID mode = %d, want 1", gotKeyIdMode)
+	gotKeyIDMode := (secCtl >> 3) & 0x03
+	if gotKeyIDMode != 1 {
+		t.Errorf("key ID mode = %d, want 1", gotKeyIDMode)
 	}
 
 	// Frame counter (4 bytes LE at offset 10).
@@ -226,9 +226,9 @@ func TestBuildDataFrame_Security_KeyIdMode2(t *testing.T) {
 	// Key ID mode 2: 4 zero bytes key source + key index.
 	secOffset := 9 // after addressing fields
 	secCtl := frame[secOffset]
-	gotKeyIdMode := (secCtl >> 3) & 0x03
-	if gotKeyIdMode != 2 {
-		t.Errorf("key ID mode = %d, want 2", gotKeyIdMode)
+	gotKeyIDMode := (secCtl >> 3) & 0x03
+	if gotKeyIDMode != 2 {
+		t.Errorf("key ID mode = %d, want 2", gotKeyIDMode)
 	}
 
 	// Key source (4 zero bytes) at offset 14.
@@ -580,7 +580,7 @@ func TestFrameControl_BuildParseRoundTrip(t *testing.T) {
 		secEnabled   bool
 		framePending bool
 		ackRequest   bool
-		panIdComp    bool
+		panIDComp    bool
 		iePresent    bool
 		dstAddrMode  uint8
 		srcAddrMode  uint8
@@ -600,7 +600,7 @@ func TestFrameControl_BuildParseRoundTrip(t *testing.T) {
 		{
 			name:      "all_flags_set",
 			frameType: uint8(FrameTypeData), secEnabled: true, framePending: true,
-			ackRequest: true, panIdComp: true, iePresent: true,
+			ackRequest: true, panIDComp: true, iePresent: true,
 			dstAddrMode: AddrModeExtended, srcAddrMode: AddrModeShort,
 			frameVersion: FrameVersion2015,
 		},
@@ -614,36 +614,36 @@ func TestFrameControl_BuildParseRoundTrip(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fc := buildFrameControl(tt.frameType, tt.secEnabled, tt.framePending, tt.ackRequest, tt.panIdComp, tt.iePresent, tt.dstAddrMode, tt.srcAddrMode, tt.frameVersion)
+			fc := buildFrameControl(tt.frameType, tt.secEnabled, tt.framePending, tt.ackRequest, tt.panIDComp, tt.iePresent, tt.dstAddrMode, tt.srcAddrMode, tt.frameVersion)
 
-			gotType, gotDst, gotSrc, gotVer, gotSec, gotPend, gotAck, gotPanComp, gotIE := parseFrameControl(fc)
+			got := parseFrameControl(fc)
 
-			if gotType != tt.frameType {
-				t.Errorf("frameType = %d, want %d", gotType, tt.frameType)
+			if got.frameType != tt.frameType {
+				t.Errorf("frameType = %d, want %d", got.frameType, tt.frameType)
 			}
-			if gotDst != tt.dstAddrMode {
-				t.Errorf("dstAddrMode = %d, want %d", gotDst, tt.dstAddrMode)
+			if got.dstAddrMode != tt.dstAddrMode {
+				t.Errorf("dstAddrMode = %d, want %d", got.dstAddrMode, tt.dstAddrMode)
 			}
-			if gotSrc != tt.srcAddrMode {
-				t.Errorf("srcAddrMode = %d, want %d", gotSrc, tt.srcAddrMode)
+			if got.srcAddrMode != tt.srcAddrMode {
+				t.Errorf("srcAddrMode = %d, want %d", got.srcAddrMode, tt.srcAddrMode)
 			}
-			if gotVer != tt.frameVersion {
-				t.Errorf("frameVersion = %d, want %d", gotVer, tt.frameVersion)
+			if got.frameVersion != tt.frameVersion {
+				t.Errorf("frameVersion = %d, want %d", got.frameVersion, tt.frameVersion)
 			}
-			if gotSec != tt.secEnabled {
-				t.Errorf("secEnabled = %v, want %v", gotSec, tt.secEnabled)
+			if got.securityEnabled != tt.secEnabled {
+				t.Errorf("secEnabled = %v, want %v", got.securityEnabled, tt.secEnabled)
 			}
-			if gotPend != tt.framePending {
-				t.Errorf("framePending = %v, want %v", gotPend, tt.framePending)
+			if got.framePending != tt.framePending {
+				t.Errorf("framePending = %v, want %v", got.framePending, tt.framePending)
 			}
-			if gotAck != tt.ackRequest {
-				t.Errorf("ackRequest = %v, want %v", gotAck, tt.ackRequest)
+			if got.ackRequest != tt.ackRequest {
+				t.Errorf("ackRequest = %v, want %v", got.ackRequest, tt.ackRequest)
 			}
-			if gotPanComp != tt.panIdComp {
-				t.Errorf("panIdComp = %v, want %v", gotPanComp, tt.panIdComp)
+			if got.panIDCompression != tt.panIDComp {
+				t.Errorf("panIDComp = %v, want %v", got.panIDCompression, tt.panIDComp)
 			}
-			if gotIE != tt.iePresent {
-				t.Errorf("iePresent = %v, want %v", gotIE, tt.iePresent)
+			if got.iePresent != tt.iePresent {
+				t.Errorf("iePresent = %v, want %v", got.iePresent, tt.iePresent)
 			}
 		})
 	}
@@ -750,7 +750,7 @@ func TestBuildDataFrame_MixedAddressing(t *testing.T) {
 			t.Fatalf("BuildDataFrame() error = %v", err)
 		}
 
-		// Header: FCF(2) + Seq(1) + DstPan(2) + DstExt(8) + SrcShort(2) = 15
+		// The 15-byte header comprises FCF(2), Seq(1), DstPan(2), DstExt(8), and SrcShort(2).
 		expectedHeaderSize := 15
 		if len(frame) != expectedHeaderSize+1 {
 			t.Fatalf("frame length = %d, want %d", len(frame), expectedHeaderSize+1)
@@ -791,7 +791,7 @@ func TestBuildDataFrame_MixedAddressing(t *testing.T) {
 			t.Fatalf("BuildDataFrame() error = %v", err)
 		}
 
-		// Header: FCF(2) + Seq(1) + DstPan(2) + DstShort(2) + SrcExt(8) = 15
+		// The 15-byte header comprises FCF(2), Seq(1), DstPan(2), DstShort(2), and SrcExt(8).
 		expectedHeaderSize := 15
 		if len(frame) != expectedHeaderSize+1 {
 			t.Fatalf("frame length = %d, want %d", len(frame), expectedHeaderSize+1)

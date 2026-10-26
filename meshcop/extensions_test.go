@@ -219,8 +219,7 @@ func TestExtendedPanID_Equal(t *testing.T) {
 
 func TestExtendedPanID_AssignmentCompatibility(t *testing.T) {
 	// Verify that ExtendedPanID can be assigned to/from [8]byte.
-	var raw [8]byte
-	raw = [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+	var raw = [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
 	e := ExtendedPanID(raw)
 	if e != ExtendedPanID(raw) {
 		t.Fatal("assignment from [8]byte failed")
@@ -661,7 +660,7 @@ func TestPanIdQueryClient_SendQuery(t *testing.T) {
 	}
 
 	// Verify handler was registered.
-	handler := transport.getHandler(uriPanIdConflict)
+	handler := transport.getHandler(uriPanIDConflict)
 	if handler == nil {
 		t.Fatal("expected handler for PAN ID conflict URI")
 	}

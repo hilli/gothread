@@ -209,9 +209,6 @@ func TestAppendRequestedTLV_ActiveTimestamp_NilProvider(t *testing.T) {
 	initialLen := len(msg.buf)
 	ch.appendRequestedTLV(msg, TLVActiveTimestamp)
 
-	if len(msg.buf) == initialLen {
-		// With nil provider, nothing should be appended.
-	}
 	// Verify no panic and no data appended.
 	if len(msg.buf) != initialLen {
 		t.Error("appendRequestedTLV(TLVActiveTimestamp) should not append when datasets is nil")
@@ -1323,7 +1320,7 @@ func TestParentLinkLocalIP(t *testing.T) {
 	// fe80::0302:0304:0506:0708 (with U/L bit toggled on byte[8])
 	expected := [16]byte{
 		0xfe, 0x80, 0, 0, 0, 0, 0, 0,
-		0x03, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // 0x01 ^ 0x02 = 0x03
+		0x03, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // Toggle the U/L bit: XOR 0x01 with 0x02 to obtain 0x03.
 	}
 
 	if ip != expected {

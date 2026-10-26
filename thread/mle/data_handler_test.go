@@ -17,10 +17,7 @@ import (
 
 // newDataRequestHandlerTestSetup creates a DataRequestHandler with a fully
 // initialized Mle (router state) and Dispatcher mocks.
-func newDataRequestHandlerTestSetup(role DeviceRole, routerID uint8) (
-	*DataRequestHandler, *Mle, *Dispatcher, *mockTransport,
-	*mockKeyProvider, *ChildTable,
-) {
+func newDataRequestHandlerTestSetup(role DeviceRole, routerID uint8) (handler *DataRequestHandler, mleInstance *Mle, dispatcher *Dispatcher, sender *mockTransport, table *ChildTable) {
 	m := NewMle()
 	_ = m.Enable()
 
@@ -53,7 +50,7 @@ func newDataRequestHandlerTestSetup(role DeviceRole, routerID uint8) (
 	childTable := NewChildTable()
 
 	h := NewDataRequestHandler(m, d, keyMgr, childTable, nil, nil)
-	return h, m, d, transport, keyMgr, childTable
+	return h, m, d, transport, childTable
 }
 
 // makeActiveTimestampTLVValue creates a serialized Active Timestamp TLV value
@@ -109,7 +106,7 @@ func buildDataRequestRxInfo(
 func TestNewDataRequestHandler_RegistersOnDispatcher(t *testing.T) {
 	t.Parallel()
 
-	h, _, d, _, _, _ := newDataRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, d, _, _ := newDataRequestHandlerTestSetup(RoleRouter, 2)
 
 	if h == nil {
 		t.Fatal("NewDataRequestHandler returned nil")
@@ -356,7 +353,7 @@ func TestHandleDataRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h, m, _, transport, _, ct := newDataRequestHandlerTestSetup(tt.role, tt.routerID)
+			h, m, _, transport, ct := newDataRequestHandlerTestSetup(tt.role, tt.routerID)
 
 			if tt.setup != nil {
 				tt.setup(h, m, ct)

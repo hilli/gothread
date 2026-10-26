@@ -19,7 +19,7 @@ import (
 const DefaultMaxPeers = 16
 
 // PeerState represents the connection state of a peer.
-type PeerState uint8
+type PeerState uint8 //nolint:revive // Preserve the exported type name for existing callers.
 
 const (
 	// StateDiscovered indicates the peer has been discovered but no
@@ -65,7 +65,7 @@ type Peer struct {
 }
 
 // PeerTable manages a collection of peers with a fixed maximum capacity.
-type PeerTable struct {
+type PeerTable struct { //nolint:revive // Preserve the exported type name for existing callers.
 	peers    []Peer
 	maxPeers int
 }

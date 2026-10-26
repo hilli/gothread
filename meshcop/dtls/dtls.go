@@ -20,6 +20,7 @@ package dtls
 import (
 	"crypto/ecdsa"
 	"crypto/x509"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -347,10 +348,10 @@ func (s *Session) SetReceiveHandler(h ReceiveHandler) {
 
 // SetMaxAttempts configures the maximum number of connection attempts.
 // A value of 0 means unlimited attempts.
-func (s *Session) SetMaxAttempts(max uint16) {
+func (s *Session) SetMaxAttempts(maxAttempts uint16) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.maxAttempts = max
+	s.maxAttempts = maxAttempts
 }
 
 // Connect initiates a client-side DTLS connection to the given peer using
@@ -444,7 +445,9 @@ func (s *Session) handleHandshakeFailure(event ConnectEvent) {
 	s.mu.Lock()
 	s.state = StateDisconnected
 	if s.conn != nil {
-		s.conn.Close()
+		if err := s.conn.Close(); err != nil {
+			slog.Warn("Failed to close DTLS connection after handshake failure", "error", err)
+		}
 		s.conn = nil
 	}
 	s.mu.Unlock()
@@ -532,7 +535,9 @@ func (s *Session) disconnectWithEvent(event ConnectEvent) {
 
 	// Close the underlying connection (sends close_notify).
 	if s.conn != nil {
-		s.conn.Close()
+		if err := s.conn.Close(); err != nil {
+			slog.Warn("Failed to close DTLS connection during disconnect", "error", err)
+		}
 		s.conn = nil
 	}
 
@@ -580,7 +585,9 @@ func (s *Session) KEK() ([32]byte, bool) {
 func (s *Session) Reset() {
 	s.mu.Lock()
 	if s.conn != nil {
-		s.conn.Close()
+		if err := s.conn.Close(); err != nil {
+			slog.Warn("Failed to close DTLS connection during reset", "error", err)
+		}
 		s.conn = nil
 	}
 	if s.guardTimer != nil {

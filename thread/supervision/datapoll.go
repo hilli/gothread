@@ -239,11 +239,12 @@ func (d *DataPollSender) SendDataPoll() error {
 
 	d.mu.Lock()
 
-	if err == nil {
+	switch err {
+	case nil:
 		d.scheduleNextPoll(false)
-	} else if err == errors.ErrInvalidState {
+	case errors.ErrInvalidState:
 		d.stopInternal()
-	} else {
+	default:
 		d.scheduleNextPoll(true)
 	}
 
@@ -261,8 +262,8 @@ func (d *DataPollSender) HandlePollSent(err error) {
 
 	shouldRecalc := false
 
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		if d.remainingFastPolls > 0 {
 			d.remainingFastPolls--
 			if d.remainingFastPolls == 0 {
@@ -276,7 +277,7 @@ func (d *DataPollSender) HandlePollSent(err error) {
 			shouldRecalc = true
 		}
 
-	case err == errors.ErrChannelAccessFailure || err == errors.ErrAbort:
+	case errors.ErrChannelAccessFailure, errors.ErrAbort:
 		d.retxMode = true
 		shouldRecalc = true
 

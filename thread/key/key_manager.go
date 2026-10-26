@@ -143,7 +143,7 @@ func (m *Manager) GetCurrentMacKey() MacKey {
 // GetMacKeyId returns the key ID byte derived from the current key sequence.
 // Thread uses the low 7 bits of the key sequence as the Key ID (mod 128),
 // matching OpenThread's GetCurrentKeyId().
-func (m *Manager) GetMacKeyId() uint8 {
+func (m *Manager) GetMacKeyId() uint8 { //nolint:revive // Preserve the exported API spelling for existing callers.
 	return uint8(m.keySequence & 0x7F)
 }
 

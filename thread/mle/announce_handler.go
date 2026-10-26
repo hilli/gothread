@@ -273,7 +273,7 @@ func (h *AnnounceHandler) getActiveTimestamp() *meshcop.Timestamp {
 
 // getMacInfo returns the current PAN channel and PAN ID from the MAC
 // info provider. Returns (0, 0) if no provider is configured.
-func (h *AnnounceHandler) getMacInfo() (channel uint16, panID uint16) {
+func (h *AnnounceHandler) getMacInfo() (channel, panID uint16) {
 	if h.macInfo == nil {
 		return 0, 0
 	}

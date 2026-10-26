@@ -109,7 +109,6 @@ type MlrManager struct {
 
 	// Registration tracking.
 	pendingAddresses    [][16]byte
-	registrationDelay   uint16
 	reregistrationDelay uint32
 	sendDelay           uint16
 	mlrPending          bool

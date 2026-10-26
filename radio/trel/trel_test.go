@@ -91,7 +91,7 @@ func (m *mockCallbacks) HandleReceiveDone(frame *radio.Frame, err error) {
 
 func (m *mockCallbacks) HandleTransmitStarted(frame *radio.Frame) {}
 
-func (m *mockCallbacks) HandleTransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error) {
+func (m *mockCallbacks) HandleTransmitDone(frame, ackFrame *radio.Frame, err error) {
 	m.transmitDoneCalls = append(m.transmitDoneCalls, transmitDoneCall{frame: frame, ackFrame: ackFrame, err: err})
 }
 

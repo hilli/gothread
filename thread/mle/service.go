@@ -136,7 +136,7 @@ type Service struct {
 // The caller provides external dependencies via ServiceConfig. All handler
 // registrations on the dispatcher happen during construction, so the
 // service is ready to receive messages immediately after creation.
-func NewService(cfg ServiceConfig) *Service {
+func NewService(cfg ServiceConfig) *Service { //nolint:gocritic // Preserve the public constructor's by-value configuration API.
 	mle := NewMle()
 	childTable := NewChildTable()
 	dispatcher := NewDispatcher(mle, cfg.KeyProvider, cfg.Transport)

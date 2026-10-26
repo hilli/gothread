@@ -163,7 +163,7 @@ func (c *mockCallbacks) ReceiveDone(_ *radio.Frame, _ error) {
 	c.receiveDoneCount++
 }
 
-func (c *mockCallbacks) TransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error) {
+func (c *mockCallbacks) TransmitDone(frame, ackFrame *radio.Frame, err error) {
 	c.transmitDoneCount++
 	c.transmitDoneFrame = frame
 	c.transmitDoneAck = ackFrame

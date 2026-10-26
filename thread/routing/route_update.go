@@ -106,7 +106,7 @@ func (rt *RouterTable) addRouter(routerID uint8) {
 //  3. For each Router ID in the TLV (skip self, skip sender):
 //     apply Bellman-Ford relaxation.
 //  4. Compare reachable set before/after.
-func (rt *RouterTable) UpdateRoutes(routeTlv *RouteTlvData, neighborID uint8, selfRouterID uint8) bool {
+func (rt *RouterTable) UpdateRoutes(routeTlv *RouteTlvData, neighborID, selfRouterID uint8) bool {
 	// Phase 1: Snapshot reachable set.
 	var beforeReachable [mle.MaxRouterID + 1]bool
 	for id := uint8(0); id <= mle.MaxRouterID; id++ {

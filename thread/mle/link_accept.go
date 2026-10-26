@@ -209,8 +209,8 @@ func SendLinkAccept(
 }
 
 // containsTLVType checks whether a TLV type appears in a list.
-func containsTLVType(types []uint8, target uint8) bool {
-	for _, t := range types {
+func containsTLVType(tlvTypes []uint8, target uint8) bool {
+	for _, t := range tlvTypes {
 		if t == target {
 			return true
 		}

@@ -171,7 +171,7 @@ func (t *NdProxyTable) Register(addressIid, meshLocalIid [8]byte, rloc16 uint16,
 	}
 
 	// Check for existing entry with same mesh-local IID (device changed DUA).
-	var slot int = -1
+	var slot = -1
 	if idx := t.findByMeshLocalIid(meshLocalIid); idx >= 0 {
 		if t.callback != nil {
 			t.callback(NdProxyRemoved, t.proxies[idx].addressIid)

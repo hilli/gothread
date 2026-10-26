@@ -59,7 +59,7 @@ func (m *mockPlatform) UnregisterHost(requestID uint32, name string) {
 	})
 }
 
-func (m *mockPlatform) RegisterService(requestID uint32, hostName string, instanceName string, serviceType string, port uint16, priority uint16, weight uint16, txtData []byte, subTypes []string, ttl uint32) {
+func (m *mockPlatform) RegisterService(requestID uint32, hostName, instanceName, serviceType string, port, priority, weight uint16, txtData []byte, subTypes []string, ttl uint32) {
 	m.calls = append(m.calls, platformCall{
 		op:           "RegisterService",
 		requestID:    requestID,
@@ -75,7 +75,7 @@ func (m *mockPlatform) RegisterService(requestID uint32, hostName string, instan
 	})
 }
 
-func (m *mockPlatform) UnregisterService(requestID uint32, instanceName string, serviceType string) {
+func (m *mockPlatform) UnregisterService(requestID uint32, instanceName, serviceType string) {
 	m.calls = append(m.calls, platformCall{
 		op:           "UnregisterService",
 		requestID:    requestID,
@@ -84,7 +84,7 @@ func (m *mockPlatform) UnregisterService(requestID uint32, instanceName string, 
 	})
 }
 
-func (m *mockPlatform) RegisterKey(requestID uint32, name string, serviceType string, keyData []byte, ttl uint32) {
+func (m *mockPlatform) RegisterKey(requestID uint32, name, serviceType string, keyData []byte, ttl uint32) {
 	m.calls = append(m.calls, platformCall{
 		op:          "RegisterKey",
 		requestID:   requestID,
@@ -95,7 +95,7 @@ func (m *mockPlatform) RegisterKey(requestID uint32, name string, serviceType st
 	})
 }
 
-func (m *mockPlatform) UnregisterKey(requestID uint32, name string, serviceType string) {
+func (m *mockPlatform) UnregisterKey(requestID uint32, name, serviceType string) {
 	m.calls = append(m.calls, platformCall{
 		op:          "UnregisterKey",
 		requestID:   requestID,
@@ -107,9 +107,10 @@ func (m *mockPlatform) UnregisterKey(requestID uint32, name string, serviceType 
 // findCalls returns all calls matching the given op.
 func (m *mockPlatform) findCalls(op string) []platformCall {
 	var result []platformCall
-	for _, c := range m.calls {
+	for i := range m.calls {
+		c := &m.calls[i]
 		if c.op == op {
-			result = append(result, c)
+			result = append(result, *c)
 		}
 	}
 	return result
@@ -170,17 +171,12 @@ func (env *advProxyTestEnv) fireTimer() {
 // completeAll completes all outstanding request IDs successfully.
 func (env *advProxyTestEnv) completeAll() {
 	env.t.Helper()
-	for _, c := range env.platform.calls {
+	for i := range env.platform.calls {
+		c := &env.platform.calls[i]
 		if c.requestID != 0 {
 			env.proxy.HandleRegistered(c.requestID, nil)
 		}
 	}
-}
-
-// completeRequestID completes a specific request ID.
-func (env *advProxyTestEnv) completeRequestID(id uint32, err error) {
-	env.t.Helper()
-	env.proxy.HandleRegistered(id, err)
 }
 
 // -------------------------------------------------------

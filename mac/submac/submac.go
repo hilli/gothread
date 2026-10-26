@@ -130,7 +130,7 @@ type Callbacks interface {
 	ReceiveDone(frame *radio.Frame, err error)
 	// TransmitDone is called when transmission of a frame completes
 	// (after all CSMA retries and frame retries are exhausted or success).
-	TransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error)
+	TransmitDone(frame, ackFrame *radio.Frame, err error)
 	// RecordFrameTransmitStatus is called after each transmission attempt
 	// (before retry decisions) for statistics.
 	RecordFrameTransmitStatus(frame *radio.Frame, err error, retryCount uint8, willRetx bool)
@@ -500,7 +500,7 @@ func (sm *SubMac) HandleTransmitStarted(_ *radio.Frame) {
 }
 
 // HandleTransmitDone is called by the radio when transmission completes.
-func (sm *SubMac) HandleTransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error) {
+func (sm *SubMac) HandleTransmitDone(frame, ackFrame *radio.Frame, err error) {
 	sm.stopTimer()
 	sm.handleTransmitResult(frame, ackFrame, err)
 }
@@ -561,7 +561,7 @@ func (sm *SubMac) beginTransmit() {
 	}
 }
 
-func (sm *SubMac) handleTransmitResult(frame *radio.Frame, ackFrame *radio.Frame, err error) {
+func (sm *SubMac) handleTransmitResult(frame, ackFrame *radio.Frame, err error) {
 	willRetx := false
 
 	// Record CCA status.

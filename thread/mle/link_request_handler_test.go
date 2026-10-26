@@ -31,10 +31,7 @@ func (m *mockRouterLookup) FindRouterByExtAddress(addr types.ExtAddress) *Router
 
 // --- test setup ---
 
-func newLinkRequestHandlerTestSetup(role DeviceRole, routerID uint8) (
-	*FtdLinkHandlers, *Mle, *Dispatcher, *mockTransport, *mockKeyProvider,
-	*mockRouterLookup, *mockRouteDataProvider,
-) {
+func newLinkRequestHandlerTestSetup(role DeviceRole, routerID uint8) (handler *FtdLinkHandlers, mleInstance *Mle, dispatcher *Dispatcher, sender *mockTransport, table *mockRouterLookup) {
 	m := NewMle()
 	_ = m.Enable()
 
@@ -77,7 +74,7 @@ func newLinkRequestHandlerTestSetup(role DeviceRole, routerID uint8) (
 	}
 
 	h := NewFtdLinkHandlers(m, d, keyMgr, routerLookup, routeData)
-	return h, m, d, transport, keyMgr, routerLookup, routeData
+	return h, m, d, transport, routerLookup
 }
 
 func makeVersionTLVValue(version uint16) []byte {
@@ -333,7 +330,7 @@ func TestHandleLinkRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(tt.role, tt.routerID)
+			h, _, _, transport, rl := newLinkRequestHandlerTestSetup(tt.role, tt.routerID)
 
 			rxInfo := tt.buildInfo()
 
@@ -365,7 +362,7 @@ func TestHandleLinkRequest(t *testing.T) {
 func TestHandleLinkRequest_Leader(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleLeader, 5)
+	h, _, _, transport, rl := newLinkRequestHandlerTestSetup(RoleLeader, 5)
 
 	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
@@ -398,7 +395,7 @@ func TestHandleLinkRequest_Leader(t *testing.T) {
 func TestHandleLinkRequest_MatchingPartitionID(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, rl := newLinkRequestHandlerTestSetup(RoleRouter, 2)
 
 	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
@@ -480,7 +477,7 @@ func TestInitNeighbor(t *testing.T) {
 func TestNewFtdLinkHandlers_RegistersHandler(t *testing.T) {
 	t.Parallel()
 
-	h, _, d, _, _, _, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, d, _, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
 
 	if h == nil {
 		t.Fatal("NewFtdLinkHandlers returned nil")
@@ -509,7 +506,7 @@ func buildMulticastLinkRequestRxInfo(
 func TestHandleLinkRequest_MulticastQueuesDelayedAccept(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, rl := newLinkRequestHandlerTestSetup(RoleRouter, 2)
 
 	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
@@ -546,7 +543,7 @@ func TestHandleLinkRequest_MulticastQueuesDelayedAccept(t *testing.T) {
 func TestHandleLinkRequest_UnicastSendsImmediately(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, rl := newLinkRequestHandlerTestSetup(RoleRouter, 2)
 
 	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
@@ -581,7 +578,7 @@ func TestHandleLinkRequest_UnicastSendsImmediately(t *testing.T) {
 func TestFlushPendingAccepts_SendsWhenDue(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, rl := newLinkRequestHandlerTestSetup(RoleRouter, 2)
 
 	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
@@ -625,7 +622,7 @@ func TestFlushPendingAccepts_SendsWhenDue(t *testing.T) {
 func TestFlushPendingAccepts_KeepsNotYetDue(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, rl := newLinkRequestHandlerTestSetup(RoleRouter, 2)
 
 	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
@@ -669,7 +666,7 @@ func TestFlushPendingAccepts_KeepsNotYetDue(t *testing.T) {
 func TestSendAllPendingAccepts(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, rl := newLinkRequestHandlerTestSetup(RoleRouter, 2)
 
 	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
@@ -715,7 +712,7 @@ func TestSendAllPendingAccepts(t *testing.T) {
 func TestFlushPendingAccepts_RouterRemovedBetweenQueueAndFlush(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, _, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, _, rl := newLinkRequestHandlerTestSetup(RoleRouter, 2)
 
 	peerAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}

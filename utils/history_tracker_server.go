@@ -147,8 +147,7 @@ func (s *HTServer) handleQuery(payload []byte, senderRloc16 uint16) {
 
 	// Process each request TLV.
 	for _, req := range requests {
-		switch req.TlvType {
-		case HTTlvNetworkInfo:
+		if req.TlvType == HTTlvNetworkInfo {
 			currentAnswer = s.appendNetworkInfo(currentAnswer, info, req)
 			if currentAnswer == nil {
 				return // allocation failure

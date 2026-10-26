@@ -202,7 +202,7 @@ func newSleepyChild(rloc uint16) *mle.Child {
 	c := &mle.Child{}
 	c.State = mle.StateValid
 	c.RLOC16 = rloc
-	c.Mode = mle.NewDeviceMode(0) // RxOnWhenIdle = false
+	c.Mode = mle.NewDeviceMode(0) // Sleepy child: receiver disabled while idle.
 	c.MacAddr = types.ExtAddress{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, byte(rloc >> 8), byte(rloc)}
 	return c
 }

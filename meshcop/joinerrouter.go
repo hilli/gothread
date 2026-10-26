@@ -376,10 +376,10 @@ func (jr *JoinerRouter) handleRelayTx(msg *coap.Message, info coap.MessageInfo) 
 	joinerIIDBytes := findTLVInBytesExtended(payload, TLVJoinerIID)
 	dtlsData := findTLVInBytesExtended(payload, TLVJoinerDTLSEncapsulation)
 
-	if joinerPortBytes == nil || len(joinerPortBytes) != 2 {
+	if len(joinerPortBytes) != 2 {
 		return
 	}
-	if joinerIIDBytes == nil || len(joinerIIDBytes) != 8 {
+	if len(joinerIIDBytes) != 8 {
 		return
 	}
 	if dtlsData == nil {
@@ -398,7 +398,7 @@ func (jr *JoinerRouter) handleRelayTx(msg *coap.Message, info coap.MessageInfo) 
 
 	// Check for KEK TLV — indicates DTLS handshake completed.
 	kekBytes := findTLVInBytesExtended(payload, TLVJoinerRouterKEK)
-	if kekBytes != nil && len(kekBytes) == 16 {
+	if len(kekBytes) == 16 {
 		var kek [16]byte
 		copy(kek[:], kekBytes)
 		jr.delaySendingJoinerEntrust(joinerAddr, kek)
@@ -412,7 +412,7 @@ func (jr *JoinerRouter) handleRelayTx(msg *coap.Message, info coap.MessageInfo) 
 // delaySendingJoinerEntrust queues a Joiner Entrust to be sent after the
 // configured delay (50ms). The delay allows the Joiner to process the
 // DTLS Finalize Response before receiving the entrust.
-func (jr *JoinerRouter) delaySendingJoinerEntrust(joinerAddr [16]byte, kek [16]byte) {
+func (jr *JoinerRouter) delaySendingJoinerEntrust(joinerAddr, kek [16]byte) {
 	pe := pendingEntrust{
 		joinerAddr: joinerAddr,
 		kek:        kek,
@@ -549,7 +549,7 @@ func EncodeRelayTxPayload(joinerIID [8]byte, joinerPort uint16, dtlsData []byte,
 // EncodeRelayRxPayload builds a RelayRx ("c/rx") payload. This is the
 // inverse of what the JoinerRouter produces internally when relaying
 // a Joiner's DTLS packet.
-func EncodeRelayRxPayload(joinerIID [8]byte, joinerPort uint16, joinerRouterRLOC uint16, dtlsData []byte) []byte {
+func EncodeRelayRxPayload(joinerIID [8]byte, joinerPort, joinerRouterRLOC uint16, dtlsData []byte) []byte {
 	var payload []byte
 
 	portBytes := make([]byte, 2)
@@ -573,6 +573,8 @@ func EncodeRelayRxPayload(joinerIID [8]byte, joinerPort uint16, joinerRouterRLOC
 // ParseRelayPayload parses TLVs from a relay (Rx or Tx) CoAP payload.
 // Returns the Joiner IID, UDP port, router locator (from Rx only), DTLS data,
 // and optional KEK (from Tx only).
+//
+//nolint:gocritic // Preserve the exported return signature for API compatibility.
 func ParseRelayPayload(payload []byte) (
 	joinerIID [8]byte,
 	joinerPort uint16,
@@ -585,10 +587,10 @@ func ParseRelayPayload(payload []byte) (
 	iidBytes := findTLVInBytesExtended(payload, TLVJoinerIID)
 	dtlsData = findTLVInBytesExtended(payload, TLVJoinerDTLSEncapsulation)
 
-	if portBytes == nil || len(portBytes) != 2 {
+	if len(portBytes) != 2 {
 		return joinerIID, 0, 0, nil, nil, goterrors.ErrParse
 	}
-	if iidBytes == nil || len(iidBytes) != 8 {
+	if len(iidBytes) != 8 {
 		return joinerIID, 0, 0, nil, nil, goterrors.ErrParse
 	}
 	if dtlsData == nil {
@@ -600,13 +602,13 @@ func ParseRelayPayload(payload []byte) (
 
 	// Optional: JoinerRouterLocator (in RelayRx)
 	rlocBytes := findTLVInBytesExtended(payload, TLVJoinerRouterLocator)
-	if rlocBytes != nil && len(rlocBytes) == 2 {
+	if len(rlocBytes) == 2 {
 		joinerRouterLocator = binary.BigEndian.Uint16(rlocBytes)
 	}
 
 	// Optional: KEK (in RelayTx)
 	kekBytes := findTLVInBytesExtended(payload, TLVJoinerRouterKEK)
-	if kekBytes != nil && len(kekBytes) == 16 {
+	if len(kekBytes) == 16 {
 		k := [16]byte{}
 		copy(k[:], kekBytes)
 		kek = &k

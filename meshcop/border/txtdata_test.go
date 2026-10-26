@@ -5,6 +5,7 @@
 package border
 
 import (
+	"bytes"
 	"testing"
 	"time"
 )
@@ -92,7 +93,7 @@ func TestTxtDataEncodeDecodeRoundTrip(t *testing.T) {
 	for _, key := range []string{"nn", "vn", "tv"} {
 		orig := td.Get(key)
 		decoded := td2.Get(key)
-		if string(orig) != string(decoded) {
+		if !bytes.Equal(orig, decoded) {
 			t.Errorf("key %q: orig=%q, decoded=%q", key, orig, decoded)
 		}
 	}

@@ -49,7 +49,7 @@ func (c *Client) nextID() uint16 {
 // diagnostic TLV types.
 //
 // Returns the serialized request payload and the assigned query ID.
-func (c *Client) BuildDiagnosticGetRequest(tlvTypes []uint8) ([]byte, uint16) {
+func (c *Client) BuildDiagnosticGetRequest(tlvTypes []uint8) (request []byte, id uint16) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

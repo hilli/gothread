@@ -12,6 +12,7 @@
 package instance
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/hilli/gothread/border/multiail"
 	"github.com/hilli/gothread/border/router"
 	"github.com/hilli/gothread/border/tracker"
+	"github.com/hilli/gothread/common/log"
 	"github.com/hilli/gothread/common/message"
 	cnotifier "github.com/hilli/gothread/common/notifier"
 	csettings "github.com/hilli/gothread/common/settings"
@@ -542,8 +544,8 @@ type Instance struct {
 	// energyScanServer handles Thread Management energy scan requests.
 	energyScanServer *mgmt.EnergyScanServer
 
-	// panIdQueryServer handles Thread Management PAN ID query requests.
-	panIdQueryServer *mgmt.PanIdQueryServer
+	// panIDQueryServer handles Thread Management PAN ID query requests.
+	panIDQueryServer *mgmt.PanIdQueryServer
 
 	// anycastLocator resolves anycast ALOC addresses to RLOC addresses.
 	anycastLocator *mgmt.AnycastLocator
@@ -629,8 +631,8 @@ type Instance struct {
 	// announceBeginClient sends commissioner announce begin requests.
 	announceBeginClient *meshcop.AnnounceBeginClient
 
-	// panIdQueryClient sends commissioner PAN ID query requests.
-	panIdQueryClient *meshcop.PanIdQueryClient
+	// panIDQueryClient sends commissioner PAN ID query requests.
+	panIDQueryClient *meshcop.PanIdQueryClient
 
 	// tcatAgent provides BLE-based TCAT commissioning.
 	tcatAgent *tcat.Agent
@@ -747,6 +749,8 @@ type Instance struct {
 // New creates a new Instance with the given platform configuration.
 // All Thread stack modules are created and wired together during
 // construction. Call Start() to begin the event loop.
+//
+//nolint:gocritic // Keep the public constructor's value-based configuration API.
 func New(config Config) *Instance {
 	inst := &Instance{
 		alarm:            config.Alarm,
@@ -988,7 +992,9 @@ func (inst *Instance) wireModules() {
 	// TMF Address Query / Notification messages.
 	inst.addrResolver = addrresolver.NewResolver()
 	inst.addrResolver.SetQueryCallback(func(target ip6.Address) {
-		tmf.SendAddressQuery(inst.tmfAgent, target)
+		if err := tmf.SendAddressQuery(inst.tmfAgent, target); err != nil {
+			log.Warn(log.RegionTmf, "Send address query: %v", err)
+		}
 	})
 	inst.addrResolver.SetNotificationCallback(func(target ip6.Address, rloc16 uint16, err error) {
 		if err != nil {
@@ -1159,7 +1165,9 @@ func (inst *Instance) wireModules() {
 	// Border Router / Routing Manager subsystem
 	// ---------------------------------------------------------------
 	inst.routingManager = router.NewRoutingManager()
-	inst.routingManager.Init(inst.mac.GetExtAddress())
+	if err := inst.routingManager.Init(inst.mac.GetExtAddress()); err != nil {
+		log.Warn(log.RegionBr, "Initialize routing manager: %v", err)
+	}
 	inst.omrPrefixMgr = router.NewOmrPrefixManager()
 	inst.onLinkPrefixMgr = router.NewOnLinkPrefixManager()
 	inst.routePublisher = router.NewRoutePublisher()
@@ -1208,7 +1216,7 @@ func (inst *Instance) wireModules() {
 	// Thread Management services
 	// ---------------------------------------------------------------
 	inst.energyScanServer = mgmt.NewEnergyScanServer(&mgmtEnergyScannerAdapter{inst: inst})
-	inst.panIdQueryServer = mgmt.NewPanIdQueryServer(&mgmtPanIdScannerAdapter{inst: inst})
+	inst.panIDQueryServer = mgmt.NewPanIdQueryServer(&mgmtPanIDScannerAdapter{inst: inst})
 	inst.anycastLocator = mgmt.NewAnycastLocator()
 
 	// ---------------------------------------------------------------
@@ -1364,7 +1372,7 @@ func (inst *Instance) wireModules() {
 	commSessionID := func() uint16 { return inst.commissioner.GetSessionID() }
 	inst.energyScanClient = meshcop.NewEnergyScanClient(commTransport, commAddressing, commSessionID)
 	inst.announceBeginClient = meshcop.NewAnnounceBeginClient(commTransport, commAddressing, commSessionID)
-	inst.panIdQueryClient = meshcop.NewPanIdQueryClient(commTransport, commAddressing, commSessionID)
+	inst.panIDQueryClient = meshcop.NewPanIdQueryClient(commTransport, commAddressing, commSessionID)
 
 	// ---------------------------------------------------------------
 	// TCAT Agent
@@ -1601,10 +1609,11 @@ func (inst *Instance) ThreadStart() error {
 	if err := m.Enable(); err != nil {
 		return err
 	}
-	inst.threadEnabled = true
-
 	// Kick off the attach state machine.
-	inst.mleService.Attacher.Start(mle.AttachAnyPartition)
+	if err := inst.mleService.Attacher.Start(mle.AttachAnyPartition); err != nil {
+		return errors.Join(err, m.Disable())
+	}
+	inst.threadEnabled = true
 	inst.scheduleAttachTimer()
 	return nil
 }
@@ -1836,7 +1845,7 @@ func (inst *Instance) CslScheduler() *csl.Scheduler { return inst.cslScheduler }
 func (inst *Instance) SntpClient() *sntp.Client { return inst.sntpClient }
 
 // DnsClient returns the DNS client for name resolution.
-func (inst *Instance) DnsClient() *dns.Client { return inst.dnsClient }
+func (inst *Instance) DnsClient() *dns.Client { return inst.dnsClient } //nolint:revive // Retain the established public API spelling for source compatibility.
 
 // DSO returns the DNS Stateful Operations manager.
 func (inst *Instance) DSO() *dns.DSO { return inst.dso }
@@ -1910,7 +1919,7 @@ func (inst *Instance) MlrManager() *bbr.MlrManager { return inst.mlrManager }
 func (inst *Instance) EnergyScanServer() *mgmt.EnergyScanServer { return inst.energyScanServer }
 
 // PanIdQueryServer returns the Thread Management PAN ID query server.
-func (inst *Instance) PanIdQueryServer() *mgmt.PanIdQueryServer { return inst.panIdQueryServer }
+func (inst *Instance) PanIdQueryServer() *mgmt.PanIdQueryServer { return inst.panIDQueryServer } //nolint:revive // Retain the established public API spelling for source compatibility.
 
 // AnycastLocator returns the anycast ALOC resolver.
 func (inst *Instance) AnycastLocator() *mgmt.AnycastLocator { return inst.anycastLocator }
@@ -1922,7 +1931,7 @@ func (inst *Instance) DiagnosticsModule() *diags.Diags { return inst.diagsModule
 func (inst *Instance) Nat64Translator() *nat64.Translator { return inst.nat64Translator }
 
 // TcpStack returns the TCP stack.
-func (inst *Instance) TcpStack() *tcp.TCP { return inst.tcpStack }
+func (inst *Instance) TcpStack() *tcp.TCP { return inst.tcpStack } //nolint:revive // Retain the established public API spelling for source compatibility.
 
 // MeshcopSeeker returns the MeshCoP network seeker.
 func (inst *Instance) MeshcopSeeker() *seeker.Seeker { return inst.meshcopSeeker }
@@ -2001,7 +2010,7 @@ func (inst *Instance) AnnounceBeginClient() *meshcop.AnnounceBeginClient {
 }
 
 // PanIdQueryClient returns the commissioner PAN ID query client.
-func (inst *Instance) PanIdQueryClient() *meshcop.PanIdQueryClient { return inst.panIdQueryClient }
+func (inst *Instance) PanIdQueryClient() *meshcop.PanIdQueryClient { return inst.panIDQueryClient } //nolint:revive // Retain the established public API spelling for source compatibility.
 
 // TcatAgent returns the TCAT agent.
 func (inst *Instance) TcatAgent() *tcat.Agent { return inst.tcatAgent }
@@ -2103,11 +2112,9 @@ func (inst *Instance) scheduleAttachTimer() {
 			inst.syncParentAddress()
 			inst.scheduleAttachTimer() // re-arm if needed
 		})
-	} else {
+	} else if inst.dataPollSender != nil {
 		// Attach sequence complete — disable attach-mode polling.
-		if inst.dataPollSender != nil {
-			inst.dataPollSender.SetAttachMode(false)
-		}
+		inst.dataPollSender.SetAttachMode(false)
 	}
 }
 
@@ -2213,11 +2220,14 @@ func (inst *Instance) updateSlaacAddresses() {
 // processAnnounce is invoked by the AnnounceHandler when a received
 // Announce carries a newer or equal timestamp. The instance switches
 // to the announced channel/PAN, detaches, and starts a fresh attach.
-func (inst *Instance) processAnnounce(channel uint16, panID uint16) {
+func (inst *Instance) processAnnounce(channel, panID uint16) {
 	inst.mac.SetPanChannel(uint8(channel))
 	inst.mac.SetPanID(types.PanID(panID))
 	_ = inst.mleService.Mle().BecomeDetached()
-	inst.mleService.Attacher.Start(mle.AttachAnyPartition)
+	if err := inst.mleService.Attacher.Start(mle.AttachAnyPartition); err != nil {
+		log.Warn(log.RegionMle, "Attach after announce: %v", err)
+		return
+	}
 	inst.scheduleAttachTimer()
 }
 
@@ -2321,8 +2331,8 @@ func (inst *Instance) handlePeriodicTick() {
 	// current leader data and advance publisher timers.
 	if inst.netdataPublisher != nil && inst.netdataLeader != nil {
 		actions := inst.netdataPublisher.Process(inst.netdataLeader.Data())
-		for _, a := range actions {
-			inst.applyPublisherAction(a)
+		for i := range actions {
+			inst.applyPublisherAction(&actions[i])
 		}
 		inst.netdataPublisher.AdvanceTime(1000) // 1 second in ms
 	}
@@ -2394,8 +2404,8 @@ func (inst *Instance) handlePeriodicTick() {
 	}
 
 	// PAN ID Query Server — advance management PAN ID scan.
-	if inst.panIdQueryServer != nil {
-		inst.panIdQueryServer.HandleTimer()
+	if inst.panIDQueryServer != nil {
+		inst.panIDQueryServer.HandleTimer()
 	}
 
 	// Channel Monitor — sample channel quality metrics.
@@ -2429,7 +2439,7 @@ func (inst *Instance) handlePeriodicTick() {
 
 // applyPublisherAction applies a single PublisherAction from the
 // Publisher to the local Network Data.
-func (inst *Instance) applyPublisherAction(a netdata.PublisherAction) {
+func (inst *Instance) applyPublisherAction(a *netdata.PublisherAction) {
 	if inst.netdataLocal == nil {
 		return
 	}

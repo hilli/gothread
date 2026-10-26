@@ -290,7 +290,7 @@ func (r *Response) populateFrom(data []byte) error {
 }
 
 // selectSection returns the offset and record count for the given section.
-func (r *Response) selectSection(s section) (offset int, numRecords int) {
+func (r *Response) selectSection(s section) (offset, numRecords int) {
 	switch s {
 	case sectionAnswer:
 		return r.answerOffset, r.answerRecordCount
