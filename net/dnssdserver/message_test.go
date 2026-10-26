@@ -231,7 +231,7 @@ func TestDecodeDnsNamePointerToMiddle(t *testing.T) {
 	data := []byte{
 		7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', // offset 0: "example"
 		3, 'c', 'o', 'm', // offset 8: "com"
-		0,                 // offset 12: root
+		0,                // offset 12: root
 		3, 'f', 'o', 'o', // offset 13: "foo"
 		0xC0, 8, // offset 17: pointer to offset 8 ("com.")
 	}

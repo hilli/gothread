@@ -185,8 +185,8 @@ func (r *SimRadio) ClearSrcMatchShortEntry(addr types.ShortAddress) error {
 	return nil
 }
 func (r *SimRadio) ClearSrcMatchExtEntry(addr types.ExtAddress) error { return nil }
-func (r *SimRadio) ClearSrcMatchShortEntries()                       {}
-func (r *SimRadio) ClearSrcMatchExtEntries()                         {}
+func (r *SimRadio) ClearSrcMatchShortEntries()                        {}
+func (r *SimRadio) ClearSrcMatchExtEntries()                          {}
 
 func (r *SimRadio) SetMacKey(keyIDMode uint8, keyID uint8, prevKey, currKey, nextKey types.KeyMaterial) {
 }

@@ -1714,8 +1714,8 @@ func TestDecompressHeaderStatefulEdgeCases(t *testing.T) {
 		// = 0111 1001 1110 0011 = 0x79E3
 		data := func() []byte {
 			d := []byte{0x79, 0xE3}
-			d = append(d, 0x00) // CID: SCI=0, DCI=0
-			d = append(d, 0x11) // NH=UDP
+			d = append(d, 0x00)       // CID: SCI=0, DCI=0
+			d = append(d, 0x11)       // NH=UDP
 			d = append(d, 0xAB, 0xCD) // 16-bit short
 			return d
 		}()
@@ -1774,8 +1774,8 @@ func TestDecompressHeaderStatefulEdgeCases(t *testing.T) {
 		// = 0111 1001 1011 0110 = 0x79B6
 		data := func() []byte {
 			d := []byte{0x79, 0xB6}
-			d = append(d, 0x01) // CID: SCI=0, DCI=1
-			d = append(d, 0x11) // NH=UDP
+			d = append(d, 0x01)       // CID: SCI=0, DCI=1
+			d = append(d, 0x11)       // NH=UDP
 			d = append(d, 0xC0, 0x03) // 16-bit short
 			return d
 		}()

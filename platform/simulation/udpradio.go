@@ -446,8 +446,8 @@ func (r *UDPSimRadio) ClearSrcMatchShortEntry(addr types.ShortAddress) error {
 	return nil
 }
 func (r *UDPSimRadio) ClearSrcMatchExtEntry(addr types.ExtAddress) error { return nil }
-func (r *UDPSimRadio) ClearSrcMatchShortEntries()                       {}
-func (r *UDPSimRadio) ClearSrcMatchExtEntries()                         {}
+func (r *UDPSimRadio) ClearSrcMatchShortEntries()                        {}
+func (r *UDPSimRadio) ClearSrcMatchExtEntries()                          {}
 
 func (r *UDPSimRadio) SetMacKey(keyIDMode uint8, keyID uint8, prevKey, currKey, nextKey types.KeyMaterial) {
 }

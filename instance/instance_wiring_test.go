@@ -10,14 +10,15 @@ import (
 	"testing"
 	"time"
 
+	borderinfra "github.com/hilli/gothread/border"
 	cnotifier "github.com/hilli/gothread/common/notifier"
 	"github.com/hilli/gothread/encoding"
 	"github.com/hilli/gothread/mac"
+	"github.com/hilli/gothread/mac/filter"
 	macframe "github.com/hilli/gothread/mac/frame"
 	"github.com/hilli/gothread/mac/submac"
-	"github.com/hilli/gothread/mac/filter"
 	"github.com/hilli/gothread/mac/types"
-	borderinfra "github.com/hilli/gothread/border"
+	"github.com/hilli/gothread/meshcop/seeker"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/dns"
 	"github.com/hilli/gothread/net/icmp6"
@@ -26,14 +27,13 @@ import (
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
+	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/key"
 	"github.com/hilli/gothread/thread/link"
 	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
-	"github.com/hilli/gothread/meshcop/seeker"
-	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/supervision"
 	"github.com/hilli/gothread/thread/timesync"
 )
@@ -4755,7 +4755,7 @@ type stubDiscoverTimer struct {
 
 func (t *stubDiscoverTimer) Start(delayMs uint32) { t.running = true }
 func (t *stubDiscoverTimer) Stop()                { t.running = false }
-func (t *stubDiscoverTimer) IsRunning() bool       { return t.running }
+func (t *stubDiscoverTimer) IsRunning() bool      { return t.running }
 
 // ---------------------------------------------------------------------------
 // PAN ID Query Server wiring
@@ -5859,7 +5859,7 @@ func (m *mockInfraIfPlatform) SendIcmp6Nd(_ uint32, dest ip6.Address, buf []byte
 }
 
 func (m *mockInfraIfPlatform) HasAddress(_ uint32, _ ip6.Address) bool { return false }
-func (m *mockInfraIfPlatform) DiscoverNat64Prefix(_ uint32) error     { return nil }
+func (m *mockInfraIfPlatform) DiscoverNat64Prefix(_ uint32) error      { return nil }
 func (m *mockInfraIfPlatform) GetLinkLayerAddress(_ uint32) []byte     { return nil }
 
 func TestNaSender_SendNeighborAdvert_NilInfraIf(t *testing.T) {
