@@ -212,7 +212,7 @@ func TestDecodeDnsNameAtOffset(t *testing.T) {
 	// Place some padding before the name.
 	padding := []byte{0xFF, 0xFF, 0xFF}
 	name := EncodeDnsName("test.local.")
-	data := append(padding, name...)
+	data := append([]byte{0xFF, 0xFF, 0xFF}, name...)
 
 	decoded, end, err := DecodeDnsName(data, len(padding))
 	if err != nil {

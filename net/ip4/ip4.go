@@ -69,7 +69,7 @@ func AddressFromString(s string) (Address, error) {
 		return addr, errors.ErrParse
 	}
 	for i, p := range parts {
-		if len(p) == 0 || len(p) > 3 {
+		if p == "" || len(p) > 3 {
 			return addr, errors.ErrParse
 		}
 		// Reject leading zeros (except "0" itself).
@@ -136,7 +136,7 @@ func CIDRFromString(s string) (CIDR, error) {
 	addrStr := s[:slashIdx]
 	lenStr := s[slashIdx+1:]
 
-	if len(lenStr) == 0 {
+	if lenStr == "" {
 		return CIDR{}, errors.ErrParse
 	}
 

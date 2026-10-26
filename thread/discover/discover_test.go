@@ -27,7 +27,7 @@ type senderCall struct {
 	EnableFiltering bool
 }
 
-func (m *mockSender) SendDiscoveryRequest(channel uint16, panID uint16, enableFiltering bool) error {
+func (m *mockSender) SendDiscoveryRequest(channel, panID uint16, enableFiltering bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

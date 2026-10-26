@@ -5,11 +5,13 @@
 package instance
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	goterrors "github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/mac"
 	"github.com/hilli/gothread/meshcop"
 
@@ -235,6 +237,28 @@ func TestThreadStart(t *testing.T) {
 	m := inst.mleService.Mle()
 	if m.IsDisabled() {
 		t.Error("MLE should not be Disabled after ThreadStart()")
+	}
+}
+
+func TestThreadStartRollsBackFailedAttach(t *testing.T) {
+	inst := New(Config{})
+	if err := inst.IfConfigUp(); err != nil {
+		t.Fatalf("IfConfigUp: %v", err)
+	}
+	m := inst.mleService.Mle()
+	m.SetAttachState(mle.AttachStateStart)
+
+	if err := inst.ThreadStart(); !errors.Is(err, goterrors.ErrBusy) {
+		t.Fatalf("ThreadStart = %v, want ErrBusy", err)
+	}
+	if inst.IsThreadRunning() {
+		t.Error("Thread must remain disabled after attach fails")
+	}
+	if !m.IsDisabled() || m.GetAttachState() != mle.AttachStateIdle {
+		t.Error("failed attach must restore the disabled, idle MLE state")
+	}
+	if err := inst.ThreadStart(); err != nil {
+		t.Fatalf("ThreadStart retry: %v", err)
 	}
 }
 

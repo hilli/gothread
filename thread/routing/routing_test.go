@@ -854,7 +854,7 @@ func TestChildTable_TestVectors(t *testing.T) {
 			{FilterValid, 4},
 			{FilterValidOrRestoring, 6},
 			{FilterChildIDRequest, 1},
-			{FilterValidOrAttaching, 6}, // Valid(4) + ChildIDReq(1) + ChildUpdReq(1) = 6
+			{FilterValidOrAttaching, 6}, // Six children: Valid(4), ChildIDReq(1), and ChildUpdReq(1).
 			{FilterAnyExceptInvalid, 10},
 		}
 		for _, tt := range tests {

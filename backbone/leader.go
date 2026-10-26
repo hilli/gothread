@@ -135,24 +135,26 @@ func (l *Leader) UpdatePrimary(newConfig *Config) {
 		incoming = *newConfig
 	}
 
-	if incoming.Server16 != l.config.Server16 {
-		if incoming.Server16 == InvalidServer16 {
+	switch {
+	case incoming.Server16 != l.config.Server16:
+		switch {
+		case incoming.Server16 == InvalidServer16:
 			state = LeaderStateRemoved
-		} else if l.config.Server16 == InvalidServer16 {
+		case l.config.Server16 == InvalidServer16:
 			state = LeaderStateAdded
-		} else {
+		default:
 			// Server16 changed between two valid values.
 			state = LeaderStateToTriggerRereg
 		}
-	} else if incoming.Server16 == InvalidServer16 {
+	case incoming.Server16 == InvalidServer16:
 		// No primary all along.
 		state = LeaderStateNone
-	} else if incoming.SequenceNumber != l.config.SequenceNumber {
+	case incoming.SequenceNumber != l.config.SequenceNumber:
 		state = LeaderStateToTriggerRereg
-	} else if incoming.ReregistrationDelay != l.config.ReregistrationDelay ||
-		incoming.MlrTimeout != l.config.MlrTimeout {
+	case incoming.ReregistrationDelay != l.config.ReregistrationDelay ||
+		incoming.MlrTimeout != l.config.MlrTimeout:
 		state = LeaderStateRefreshed
-	} else {
+	default:
 		state = LeaderStateUnchanged
 	}
 
@@ -179,7 +181,8 @@ func (l *Leader) UpdatePrimary(newConfig *Config) {
 func (l *Leader) UpdateDomainPrefix(prefix *ip6.Prefix) {
 	var event DomainPrefixEvent
 
-	if prefix == nil {
+	switch {
+	case prefix == nil:
 		if !l.hasDomainPrefix {
 			// No prefix before, no prefix now — nothing to do.
 			return
@@ -187,9 +190,9 @@ func (l *Leader) UpdateDomainPrefix(prefix *ip6.Prefix) {
 		l.domainPrefix = ip6.Prefix{}
 		l.hasDomainPrefix = false
 		event = DomainPrefixRemoved
-	} else if l.hasDomainPrefix && l.domainPrefix.IsEqual(*prefix) {
+	case l.hasDomainPrefix && l.domainPrefix.IsEqual(*prefix):
 		event = DomainPrefixUnchanged
-	} else {
+	default:
 		if l.hasDomainPrefix {
 			event = DomainPrefixRefreshed
 		} else {

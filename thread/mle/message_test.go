@@ -19,7 +19,7 @@ func TestNewMessage(t *testing.T) {
 	if msg.Command() != CommandParentRequest {
 		t.Errorf("Command() = %d, want %d", msg.Command(), CommandParentRequest)
 	}
-	// SecuritySuite(1) + SecurityHeader(10) + Command(1) = 12
+	// The 12-byte message comprises SecuritySuite(1), SecurityHeader(10), and Command(1).
 	if len(msg.Bytes()) != 12 {
 		t.Errorf("initial length = %d, want 12", len(msg.Bytes()))
 	}
@@ -33,7 +33,7 @@ func TestNewUnsecuredMessage(t *testing.T) {
 	if msg.Command() != CommandDiscoveryRequest {
 		t.Errorf("Command() = %d, want %d", msg.Command(), CommandDiscoveryRequest)
 	}
-	// SecuritySuite(1) + Command(1) = 2
+	// The 2-byte message comprises SecuritySuite(1) and Command(1).
 	if len(msg.Bytes()) != 2 {
 		t.Errorf("initial length = %d, want 2", len(msg.Bytes()))
 	}
@@ -359,7 +359,7 @@ func TestAppendRoute64TLV(t *testing.T) {
 	if payload[1] != TLVRoute64 {
 		t.Errorf("TLV type = %d, want %d", payload[1], TLVRoute64)
 	}
-	// 1 (seq) + 8 (mask) + 2 (entries) = 11
+	// The 11-byte value comprises the sequence(1), router mask(8), and entries(2).
 	if payload[2] != 11 {
 		t.Errorf("TLV length = %d, want 11", payload[2])
 	}
@@ -689,8 +689,12 @@ func TestReadRoute64TLV(t *testing.T) {
 	val := make([]byte, 0, 11)
 	val = append(val, 42)         // sequence
 	val = append(val, mask[:]...) // mask
-	val = append(val, 0xE1)       // LQout=3, LQin=2, cost=1
-	val = append(val, 0x55)       // LQout=1, LQin=1, cost=5
+	val = append(val,
+		// LQout=3, LQin=2, cost=1
+		0xE1,
+		// LQout=1, LQin=1, cost=5
+		0x55,
+	)
 
 	seq, parsedMask, entries, err := ReadRoute64TLV(val)
 	if err != nil {
@@ -755,8 +759,12 @@ func TestReadAddressRegistrationTLV(t *testing.T) {
 
 	// Build: compressed(contextID=0, IID) + full(addr)
 	val := []byte{0x80}
-	val = append(val, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08) // IID
-	val = append(val, 0x00)                                           // full
+	val = append(val,
+		// IID
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		// full
+		0x00,
+	)
 	val = append(val, addr[:]...)
 
 	entries, err := ReadAddressRegistrationTLV(val)
@@ -849,8 +857,12 @@ func TestParseMessageSecured(t *testing.T) {
 	data := make([]byte, 0, 16)
 	data = append(data, SecuritySuiteEncMic32)
 	data = append(data, hdr[:]...)
-	data = append(data, byte(CommandParentRequest)) // command (will be "ciphertext" in real use)
-	data = append(data, 0xAA, 0xBB, 0xCC, 0xDD)     // fake MIC
+	data = append(data,
+		// Command (will be "ciphertext" in real use).
+		byte(CommandParentRequest),
+		// fake MIC
+		0xAA, 0xBB, 0xCC, 0xDD,
+	)
 
 	pm, err := ParseMessage(data)
 	if err != nil {

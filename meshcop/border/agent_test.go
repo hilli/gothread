@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	goterrors "github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/net/coap"
 	"github.com/hilli/gothread/net/ip6"
@@ -23,6 +24,7 @@ type mockTransport struct {
 	sentMessages []sentMsg
 	sentRequests []sentReq
 	handlers     map[string]func(*coap.Message, coap.MessageInfo)
+	sendErr      error
 }
 
 type sentMsg struct {
@@ -49,7 +51,7 @@ func (m *mockTransport) SendMessage(msg *coap.Message, info coap.MessageInfo) er
 
 func (m *mockTransport) SendRequest(msg *coap.Message, info coap.MessageInfo, cb func(*coap.Message, coap.MessageInfo, error)) error {
 	m.sentRequests = append(m.sentRequests, sentReq{msg: msg, info: info, cb: cb})
-	return nil
+	return m.sendErr
 }
 
 func (m *mockTransport) RegisterHandler(uriPath string, handler func(*coap.Message, coap.MessageInfo)) {
@@ -249,7 +251,7 @@ func (h *testHarness) simulateDisconnect() {
 
 // buildSecureRequest builds a CoAP POST request with the given URI path and payload,
 // simulating a request from the Commissioner over DTLS.
-func buildSecureRequest(uriPath string, payload []byte, token []byte) *coap.Message {
+func buildSecureRequest(uriPath string, payload, token []byte) *coap.Message {
 	msg := coap.NewMessage(coap.TypeConfirmable, coap.CodePost, 0x1234)
 	if token != nil {
 		_ = msg.SetToken(token)
@@ -555,6 +557,25 @@ func TestPetition_ForwardsToLeader(t *testing.T) {
 	fwdURI := extractURIPath(req.msg)
 	if fwdURI != "c/lp" {
 		t.Errorf("expected forwarded URI 'c/lp', got %q", fwdURI)
+	}
+}
+
+func TestPetition_SendFailureClearsForwardContext(t *testing.T) {
+	h := newTestHarness()
+	h.startAgent()
+	h.simulateConnect()
+	h.transport.sendErr = goterrors.ErrFailed
+
+	msg := buildSecureRequest("c/cp", nil, []byte{0x01})
+	h.session.defaultHandler(msg, coap.MessageInfo{})
+
+	if len(h.transport.sentRequests) != 1 {
+		t.Fatalf("expected one forwarding attempt, got %d", len(h.transport.sentRequests))
+	}
+	h.agent.mu.Lock()
+	defer h.agent.mu.Unlock()
+	if len(h.agent.forwardContexts) != 0 {
+		t.Fatalf("failed send left %d forward contexts", len(h.agent.forwardContexts))
 	}
 }
 
@@ -1366,12 +1387,12 @@ func TestFindTLVInBytes(t *testing.T) {
 	data = append(data, encodeTLV(meshcop.TLVCommissionerSessionID, sidBytes)...)
 
 	val := findTLVInBytes(data, meshcop.TLVState)
-	if val == nil || len(val) != 1 || val[0] != meshcop.StateAccept {
+	if len(val) != 1 || val[0] != meshcop.StateAccept {
 		t.Errorf("expected StateAccept, got %v", val)
 	}
 
 	val = findTLVInBytes(data, meshcop.TLVCommissionerSessionID)
-	if val == nil || len(val) != 2 {
+	if len(val) != 2 {
 		t.Fatalf("expected 2-byte session ID, got %v", val)
 	}
 	if binary.BigEndian.Uint16(val) != 42 {
@@ -1395,14 +1416,14 @@ func TestFindTLVInBytesExtended(t *testing.T) {
 	// Short form.
 	data := encodeTLV(meshcop.TLVUDPEncapsulation, []byte{0x01, 0x02, 0x03, 0x04, 0x05})
 	val := findTLVInBytesExtended(data, meshcop.TLVUDPEncapsulation)
-	if val == nil || len(val) != 5 {
+	if len(val) != 5 {
 		t.Fatalf("expected 5-byte value, got %v", val)
 	}
 
 	// Extended form: type(1) + 0xFF(1) + length16(2) + value.
 	extData := []byte{byte(meshcop.TLVUDPEncapsulation), 0xFF, 0x00, 0x03, 0xAA, 0xBB, 0xCC}
 	val = findTLVInBytesExtended(extData, meshcop.TLVUDPEncapsulation)
-	if val == nil || len(val) != 3 {
+	if len(val) != 3 {
 		t.Fatalf("expected 3-byte extended value, got %v", val)
 	}
 	if val[0] != 0xAA || val[1] != 0xBB || val[2] != 0xCC {

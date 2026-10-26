@@ -71,9 +71,9 @@ const FCSSize = 2
 // to construct the auxiliary security header.
 type SecurityMaterial struct {
 	// KeyIdMode is the key identifier mode (0, 1, or 2).
-	KeyIdMode uint8
+	KeyIdMode uint8 //nolint:revive // Preserve the exported API spelling for existing callers.
 	// KeyId is the key identifier (key index byte).
-	KeyId uint8
+	KeyId uint8 //nolint:revive // Preserve the exported API spelling for existing callers.
 	// Key is the 128-bit AES key.
 	Key [16]byte
 	// FrameCounter is the outgoing frame counter.
@@ -87,9 +87,9 @@ type FrameContext struct {
 	SrcExtAddr      [8]byte
 	DstShortAddr    uint16
 	DstExtAddr      [8]byte
-	UseSrcShort     bool // true: use short source address; false: use extended
-	UseDstShort     bool // true: use short dest address; false: use extended
-	PanId           uint16
+	UseSrcShort     bool   // true: use short source address; false: use extended
+	UseDstShort     bool   // true: use short dest address; false: use extended
+	PanId           uint16 //nolint:revive // Preserve the exported API spelling for existing callers.
 	SecurityEnabled bool
 	Security        SecurityMaterial
 	AckRequest      bool
@@ -109,7 +109,7 @@ func NewFramer() *Framer {
 // buildFrameControl constructs the 16-bit Frame Control Field from
 // individual flag and mode values. The result is stored in the frame
 // in little-endian byte order.
-func buildFrameControl(frameType uint8, securityEnabled, framePending, ackRequest, panIdCompression, iePresent bool, dstAddrMode, srcAddrMode, frameVersion uint8) uint16 {
+func buildFrameControl(frameType uint8, securityEnabled, framePending, ackRequest, panIDCompression, iePresent bool, dstAddrMode, srcAddrMode, frameVersion uint8) uint16 {
 	var fc uint16
 
 	fc |= uint16(frameType & 0x07)
@@ -123,7 +123,7 @@ func buildFrameControl(frameType uint8, securityEnabled, framePending, ackReques
 	if ackRequest {
 		fc |= 0x0020
 	}
-	if panIdCompression {
+	if panIDCompression {
 		fc |= 0x0040
 	}
 	if iePresent {
@@ -137,18 +137,24 @@ func buildFrameControl(frameType uint8, securityEnabled, framePending, ackReques
 	return fc
 }
 
+type frameControlFields struct {
+	frameType, dstAddrMode, srcAddrMode, frameVersion                      uint8
+	securityEnabled, framePending, ackRequest, panIDCompression, iePresent bool
+}
+
 // parseFrameControl decomposes a 16-bit FCF into its constituent fields.
-func parseFrameControl(fc uint16) (frameType, dstAddrMode, srcAddrMode, frameVersion uint8, securityEnabled, framePending, ackRequest, panIdCompression, iePresent bool) {
-	frameType = uint8(fc & 0x0007)
-	securityEnabled = (fc & 0x0008) != 0
-	framePending = (fc & 0x0010) != 0
-	ackRequest = (fc & 0x0020) != 0
-	panIdCompression = (fc & 0x0040) != 0
-	iePresent = (fc & 0x0200) != 0
-	dstAddrMode = uint8((fc >> 10) & 0x03)
-	frameVersion = uint8((fc >> 12) & 0x03)
-	srcAddrMode = uint8((fc >> 14) & 0x03)
-	return
+func parseFrameControl(fc uint16) frameControlFields {
+	return frameControlFields{
+		frameType:        uint8(fc & 0x0007),
+		securityEnabled:  (fc & 0x0008) != 0,
+		framePending:     (fc & 0x0010) != 0,
+		ackRequest:       (fc & 0x0020) != 0,
+		panIDCompression: (fc & 0x0040) != 0,
+		iePresent:        (fc & 0x0200) != 0,
+		dstAddrMode:      uint8((fc >> 10) & 0x03),
+		frameVersion:     uint8((fc >> 12) & 0x03),
+		srcAddrMode:      uint8((fc >> 14) & 0x03),
+	}
 }
 
 // addrModeSize returns the on-wire byte size for the given address mode.
@@ -163,9 +169,9 @@ func addrModeSize(mode uint8) int {
 	}
 }
 
-// keyIdFieldSize returns the size of the key identifier field for the
+// keyIDFieldSize returns the size of the key identifier field for the
 // given key ID mode.
-func keyIdFieldSize(mode uint8) int {
+func keyIDFieldSize(mode uint8) int {
 	switch mode {
 	case 0:
 		return 0 // implicit
@@ -183,8 +189,8 @@ func keyIdFieldSize(mode uint8) int {
 // securityHeaderSize returns the total auxiliary security header size
 // for the given key ID mode: security control (1) + frame counter (4) +
 // key identifier (variable).
-func securityHeaderSize(keyIdMode uint8) int {
-	return 1 + 4 + keyIdFieldSize(keyIdMode)
+func securityHeaderSize(keyIDMode uint8) int {
+	return 1 + 4 + keyIDFieldSize(keyIDMode)
 }
 
 // micTagSize returns the MIC (Message Integrity Code) size in bytes
@@ -218,10 +224,10 @@ func ctxSrcAddrMode(ctx *FrameContext) uint8 {
 	return AddrModeExtended
 }
 
-// shouldCompressPanId returns true if PAN ID compression should be used.
+// shouldCompressPanID returns true if PAN ID compression should be used.
 // For 802.15.4-2006 frames with both source and destination present and
 // same PAN ID, the source PAN ID is omitted.
-func shouldCompressPanId(ctx *FrameContext) bool {
+func shouldCompressPanID(ctx *FrameContext) bool {
 	// Both addresses are present and they share the same PAN.
 	return true // src PAN == dst PAN (same PanId field), always compress when both present
 }
@@ -241,8 +247,8 @@ func (f *Framer) GetHeaderSize(ctx *FrameContext) int {
 	size += addrModeSize(dstMode)
 
 	// Source PAN ID: present only if not compressed
-	panIdCompressed := shouldCompressPanId(ctx)
-	if !panIdCompressed {
+	panIDCompressed := shouldCompressPanID(ctx)
+	if !panIDCompressed {
 		size += 2
 	}
 
@@ -292,7 +298,7 @@ func (f *Framer) BuildDataFrame(ctx *FrameContext, payload []byte) ([]byte, erro
 
 	dstMode := ctxDstAddrMode(ctx)
 	srcMode := ctxSrcAddrMode(ctx)
-	panIdCompressed := shouldCompressPanId(ctx)
+	panIDCompressed := shouldCompressPanID(ctx)
 
 	// Frame version: use 2006 by default (supports security + PAN ID compression).
 	frameVersion := uint8(FrameVersion2006)
@@ -302,7 +308,7 @@ func (f *Framer) BuildDataFrame(ctx *FrameContext, payload []byte) ([]byte, erro
 		ctx.SecurityEnabled,
 		ctx.FramePending,
 		ctx.AckRequest,
-		panIdCompressed,
+		panIDCompressed,
 		ctx.IEPresent,
 		dstMode,
 		srcMode,
@@ -338,7 +344,7 @@ func (f *Framer) BuildDataFrame(ctx *FrameContext, payload []byte) ([]byte, erro
 	}
 
 	// Source PAN ID (2 bytes, little-endian) — only if not compressed
-	if !panIdCompressed {
+	if !panIDCompressed {
 		buf = append(buf, panBytes[:]...) // same PAN ID
 	}
 
@@ -420,8 +426,7 @@ func (f *Framer) ParseFrameHeader(frame []byte) (*FrameContext, int, error) {
 	}
 
 	fc := binary.LittleEndian.Uint16(frame[0:2])
-	frameType, dstAddrMode, srcAddrMode, _, secEnabled, framePending, ackReq, panIdComp, iePresent := parseFrameControl(fc)
-	_ = frameType
+	control := parseFrameControl(fc)
 
 	offset := 2
 
@@ -434,14 +439,14 @@ func (f *Framer) ParseFrameHeader(frame []byte) (*FrameContext, int, error) {
 
 	ctx := &FrameContext{
 		SequenceNumber:  seqNum,
-		SecurityEnabled: secEnabled,
-		FramePending:    framePending,
-		AckRequest:      ackReq,
-		IEPresent:       iePresent,
+		SecurityEnabled: control.securityEnabled,
+		FramePending:    control.framePending,
+		AckRequest:      control.ackRequest,
+		IEPresent:       control.iePresent,
 	}
 
 	// Destination PAN ID
-	if dstAddrMode != AddrModeNone {
+	if control.dstAddrMode != AddrModeNone {
 		if offset+2 > len(frame) {
 			return nil, 0, errors.ErrParse
 		}
@@ -450,7 +455,7 @@ func (f *Framer) ParseFrameHeader(frame []byte) (*FrameContext, int, error) {
 	}
 
 	// Destination Address
-	switch dstAddrMode {
+	switch control.dstAddrMode {
 	case AddrModeShort:
 		if offset+2 > len(frame) {
 			return nil, 0, errors.ErrParse
@@ -471,7 +476,7 @@ func (f *Framer) ParseFrameHeader(frame []byte) (*FrameContext, int, error) {
 	}
 
 	// Source PAN ID
-	if !panIdComp && srcAddrMode != AddrModeNone {
+	if !control.panIDCompression && control.srcAddrMode != AddrModeNone {
 		if offset+2 > len(frame) {
 			return nil, 0, errors.ErrParse
 		}
@@ -482,7 +487,7 @@ func (f *Framer) ParseFrameHeader(frame []byte) (*FrameContext, int, error) {
 	}
 
 	// Source Address
-	switch srcAddrMode {
+	switch control.srcAddrMode {
 	case AddrModeShort:
 		if offset+2 > len(frame) {
 			return nil, 0, errors.ErrParse
@@ -502,15 +507,15 @@ func (f *Framer) ParseFrameHeader(frame []byte) (*FrameContext, int, error) {
 	}
 
 	// Auxiliary Security Header
-	if secEnabled {
+	if control.securityEnabled {
 		if offset >= len(frame) {
 			return nil, 0, errors.ErrParse
 		}
 		secCtl := frame[offset]
 		offset++
 
-		keyIdMode := (secCtl >> 3) & 0x03
-		ctx.Security.KeyIdMode = keyIdMode
+		keyIDMode := (secCtl >> 3) & 0x03
+		ctx.Security.KeyIdMode = keyIDMode
 
 		// Frame counter
 		if offset+4 > len(frame) {
@@ -520,7 +525,7 @@ func (f *Framer) ParseFrameHeader(frame []byte) (*FrameContext, int, error) {
 		offset += 4
 
 		// Key identifier
-		kidSize := keyIdFieldSize(keyIdMode)
+		kidSize := keyIDFieldSize(keyIDMode)
 		if offset+kidSize > len(frame) {
 			return nil, 0, errors.ErrParse
 		}

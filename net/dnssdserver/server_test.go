@@ -120,19 +120,26 @@ func buildQuery(id uint16, questions []DnsQuestion) []byte {
 	return buf
 }
 
+type responseHeader struct {
+	id                                 uint16
+	rcode                              uint8
+	qdCount, anCount, nsCount, arCount uint16
+}
+
 // parseResponseHeader extracts key fields from a DNS response.
-func parseResponseHeader(data []byte) (id uint16, rcode uint8, qdCount, anCount, nsCount, arCount uint16, err error) {
+func parseResponseHeader(data []byte) (responseHeader, error) {
 	if len(data) < headerSize {
-		return 0, 0, 0, 0, 0, 0, fmt.Errorf("response too short")
+		return responseHeader{}, fmt.Errorf("response too short")
 	}
-	id = binary.BigEndian.Uint16(data[0:2])
 	flags := binary.BigEndian.Uint16(data[2:4])
-	rcode = uint8(flags & flagRCode)
-	qdCount = binary.BigEndian.Uint16(data[4:6])
-	anCount = binary.BigEndian.Uint16(data[6:8])
-	nsCount = binary.BigEndian.Uint16(data[8:10])
-	arCount = binary.BigEndian.Uint16(data[10:12])
-	return
+	return responseHeader{
+		id:      binary.BigEndian.Uint16(data[0:2]),
+		rcode:   uint8(flags & flagRCode),
+		qdCount: binary.BigEndian.Uint16(data[4:6]),
+		anCount: binary.BigEndian.Uint16(data[6:8]),
+		nsCount: binary.BigEndian.Uint16(data[8:10]),
+		arCount: binary.BigEndian.Uint16(data[10:12]),
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -212,21 +219,21 @@ func TestBuildDnsResponsePTR(t *testing.T) {
 		t.Fatalf("BuildDnsResponse failed: %v", err)
 	}
 
-	id, rcode, qdCount, anCount, _, _, err := parseResponseHeader(resp)
+	parsedHeader, err := parseResponseHeader(resp)
 	if err != nil {
 		t.Fatalf("parseResponseHeader: %v", err)
 	}
-	if id != 0xABCD {
-		t.Errorf("id = 0x%04X, want 0xABCD", id)
+	if parsedHeader.id != 0xABCD {
+		t.Errorf("id = 0x%04X, want 0xABCD", parsedHeader.id)
 	}
-	if rcode != RCodeSuccess {
-		t.Errorf("rcode = %d, want %d", rcode, RCodeSuccess)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
 	}
-	if qdCount != 1 {
-		t.Errorf("qdCount = %d, want 1", qdCount)
+	if parsedHeader.qdCount != 1 {
+		t.Errorf("qdCount = %d, want 1", parsedHeader.qdCount)
 	}
-	if anCount != 1 {
-		t.Errorf("anCount = %d, want 1", anCount)
+	if parsedHeader.anCount != 1 {
+		t.Errorf("anCount = %d, want 1", parsedHeader.anCount)
 	}
 
 	// Verify QR bit is set (response).
@@ -276,18 +283,18 @@ func TestBuildDnsResponseSRV_TXT_AAAA(t *testing.T) {
 		t.Fatalf("BuildDnsResponse failed: %v", err)
 	}
 
-	_, rcode, _, anCount, _, arCount, err := parseResponseHeader(resp)
+	parsedHeader, err := parseResponseHeader(resp)
 	if err != nil {
 		t.Fatalf("parseResponseHeader: %v", err)
 	}
-	if rcode != RCodeSuccess {
-		t.Errorf("rcode = %d, want %d", rcode, RCodeSuccess)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
 	}
-	if anCount != 2 {
-		t.Errorf("anCount = %d, want 2", anCount)
+	if parsedHeader.anCount != 2 {
+		t.Errorf("anCount = %d, want 2", parsedHeader.anCount)
 	}
-	if arCount != 1 {
-		t.Errorf("arCount = %d, want 1", arCount)
+	if parsedHeader.arCount != 1 {
+		t.Errorf("arCount = %d, want 1", parsedHeader.arCount)
 	}
 }
 
@@ -311,15 +318,15 @@ func TestServiceTypeEnumeration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, rcode, _, anCount, _, _, err := parseResponseHeader(resp)
+	parsedHeader, err := parseResponseHeader(resp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rcode != RCodeSuccess {
-		t.Errorf("rcode = %d, want %d", rcode, RCodeSuccess)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
 	}
-	if anCount != 2 {
-		t.Errorf("anCount = %d, want 2 (one PTR per service type)", anCount)
+	if parsedHeader.anCount != 2 {
+		t.Errorf("anCount = %d, want 2 (one PTR per service type)", parsedHeader.anCount)
 	}
 }
 
@@ -344,15 +351,15 @@ func TestHostResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, rcode, _, anCount, _, _, err := parseResponseHeader(resp)
+	parsedHeader, err := parseResponseHeader(resp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rcode != RCodeSuccess {
-		t.Errorf("rcode = %d, want %d", rcode, RCodeSuccess)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
 	}
-	if anCount != 1 {
-		t.Errorf("anCount = %d, want 1", anCount)
+	if parsedHeader.anCount != 1 {
+		t.Errorf("anCount = %d, want 1", parsedHeader.anCount)
 	}
 }
 
@@ -370,12 +377,12 @@ func TestNameErrorForUnknownService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, rcode, _, _, _, _, err := parseResponseHeader(resp)
+	parsedHeader, err := parseResponseHeader(resp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rcode != RCodeNameError {
-		t.Errorf("rcode = %d, want %d (NXDOMAIN)", rcode, RCodeNameError)
+	if parsedHeader.rcode != RCodeNameError {
+		t.Errorf("rcode = %d, want %d (NXDOMAIN)", parsedHeader.rcode, RCodeNameError)
 	}
 }
 
@@ -556,16 +563,19 @@ func TestMockResolverIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rcode, _, anCount, _, arCount, _ := parseResponseHeader(resp)
-	if rcode != RCodeSuccess {
-		t.Errorf("browse rcode = %d, want %d", rcode, RCodeSuccess)
+	parsedHeader, err := parseResponseHeader(resp)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if anCount < 1 {
-		t.Errorf("browse anCount = %d, want >= 1", anCount)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("browse rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
+	}
+	if parsedHeader.anCount < 1 {
+		t.Errorf("browse anCount = %d, want >= 1", parsedHeader.anCount)
 	}
 	// Additional section should have SRV + TXT + AAAA for the single instance.
-	if arCount < 1 {
-		t.Errorf("browse arCount = %d, want >= 1 (additional records)", arCount)
+	if parsedHeader.arCount < 1 {
+		t.Errorf("browse arCount = %d, want >= 1 (additional records)", parsedHeader.arCount)
 	}
 
 	// Resolve (SRV).
@@ -576,15 +586,18 @@ func TestMockResolverIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rcode, _, anCount, _, arCount, _ = parseResponseHeader(resp2)
-	if rcode != RCodeSuccess {
-		t.Errorf("resolve rcode = %d, want %d", rcode, RCodeSuccess)
+	parsedHeader, err = parseResponseHeader(resp2)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if anCount != 1 {
-		t.Errorf("resolve anCount = %d, want 1 (SRV)", anCount)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("resolve rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
 	}
-	if arCount != 2 {
-		t.Errorf("resolve arCount = %d, want 2 (AAAA records)", arCount)
+	if parsedHeader.anCount != 1 {
+		t.Errorf("resolve anCount = %d, want 1 (SRV)", parsedHeader.anCount)
+	}
+	if parsedHeader.arCount != 2 {
+		t.Errorf("resolve arCount = %d, want 2 (AAAA records)", parsedHeader.arCount)
 	}
 
 	// Resolve (TXT).
@@ -595,12 +608,15 @@ func TestMockResolverIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rcode, _, anCount, _, _, _ = parseResponseHeader(resp3)
-	if rcode != RCodeSuccess {
-		t.Errorf("txt rcode = %d, want %d", rcode, RCodeSuccess)
+	parsedHeader, err = parseResponseHeader(resp3)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if anCount != 1 {
-		t.Errorf("txt anCount = %d, want 1", anCount)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("txt rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
+	}
+	if parsedHeader.anCount != 1 {
+		t.Errorf("txt anCount = %d, want 1", parsedHeader.anCount)
 	}
 
 	// Host resolve.
@@ -611,12 +627,15 @@ func TestMockResolverIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rcode, _, anCount, _, _, _ = parseResponseHeader(resp4)
-	if rcode != RCodeSuccess {
-		t.Errorf("host rcode = %d, want %d", rcode, RCodeSuccess)
+	parsedHeader, err = parseResponseHeader(resp4)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if anCount != 2 {
-		t.Errorf("host anCount = %d, want 2", anCount)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("host rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
+	}
+	if parsedHeader.anCount != 2 {
+		t.Errorf("host anCount = %d, want 2", parsedHeader.anCount)
 	}
 }
 
@@ -644,17 +663,20 @@ func TestANYQueryServiceInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, rcode, _, anCount, _, arCount, _ := parseResponseHeader(resp)
-	if rcode != RCodeSuccess {
-		t.Errorf("rcode = %d, want %d", rcode, RCodeSuccess)
+	parsedHeader, err := parseResponseHeader(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
 	}
 	// ANY for a service instance should return SRV + TXT in answer.
-	if anCount < 2 {
-		t.Errorf("anCount = %d, want >= 2 (SRV + TXT)", anCount)
+	if parsedHeader.anCount < 2 {
+		t.Errorf("anCount = %d, want >= 2 (SRV + TXT)", parsedHeader.anCount)
 	}
 	// AAAA in additional.
-	if arCount < 1 {
-		t.Errorf("arCount = %d, want >= 1", arCount)
+	if parsedHeader.arCount < 1 {
+		t.Errorf("arCount = %d, want >= 1", parsedHeader.arCount)
 	}
 }
 
@@ -668,12 +690,12 @@ func TestFormatErrorMalformedQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, rcode, _, _, _, _, err := parseResponseHeader(resp)
+	parsedHeader, err := parseResponseHeader(resp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rcode != RCodeFormatError {
-		t.Errorf("rcode = %d, want %d (FormatError)", rcode, RCodeFormatError)
+	if parsedHeader.rcode != RCodeFormatError {
+		t.Errorf("rcode = %d, want %d (FormatError)", parsedHeader.rcode, RCodeFormatError)
 	}
 }
 
@@ -689,12 +711,12 @@ func TestEmptyQueryNoQuestions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, rcode, _, _, _, _, err := parseResponseHeader(resp)
+	parsedHeader, err := parseResponseHeader(resp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rcode != RCodeFormatError {
-		t.Errorf("rcode = %d, want %d (FormatError for empty query)", rcode, RCodeFormatError)
+	if parsedHeader.rcode != RCodeFormatError {
+		t.Errorf("rcode = %d, want %d (FormatError for empty query)", parsedHeader.rcode, RCodeFormatError)
 	}
 }
 
@@ -721,12 +743,15 @@ func TestHandleDnsQueryOverCoap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, rcode, _, anCount, _, _, _ := parseResponseHeader(resp)
-	if rcode != RCodeSuccess {
-		t.Errorf("rcode = %d, want %d", rcode, RCodeSuccess)
+	parsedHeader, err := parseResponseHeader(resp)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if anCount < 1 {
-		t.Errorf("anCount = %d, want >= 1", anCount)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
+	}
+	if parsedHeader.anCount < 1 {
+		t.Errorf("anCount = %d, want >= 1", parsedHeader.anCount)
 	}
 }
 
@@ -913,16 +938,19 @@ func TestBrowseQueryWithAdditionalRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, rcode, _, anCount, _, arCount, _ := parseResponseHeader(resp)
-	if rcode != RCodeSuccess {
-		t.Errorf("rcode = %d, want %d", rcode, RCodeSuccess)
+	parsedHeader, err := parseResponseHeader(resp)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if anCount != 1 {
-		t.Errorf("anCount = %d, want 1", anCount)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
+	}
+	if parsedHeader.anCount != 1 {
+		t.Errorf("anCount = %d, want 1", parsedHeader.anCount)
 	}
 	// Single instance → additional records (SRV + TXT + AAAA).
-	if arCount != 3 {
-		t.Errorf("arCount = %d, want 3 (SRV+TXT+AAAA)", arCount)
+	if parsedHeader.arCount != 3 {
+		t.Errorf("arCount = %d, want 3 (SRV+TXT+AAAA)", parsedHeader.arCount)
 	}
 }
 
@@ -982,11 +1010,14 @@ func TestANYQueryHost(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, rcode, _, anCount, _, _, _ := parseResponseHeader(resp)
-	if rcode != RCodeSuccess {
-		t.Errorf("rcode = %d, want %d", rcode, RCodeSuccess)
+	parsedHeader, err := parseResponseHeader(resp)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if anCount < 1 {
-		t.Errorf("anCount = %d, want >= 1", anCount)
+	if parsedHeader.rcode != RCodeSuccess {
+		t.Errorf("rcode = %d, want %d", parsedHeader.rcode, RCodeSuccess)
+	}
+	if parsedHeader.anCount < 1 {
+		t.Errorf("anCount = %d, want >= 1", parsedHeader.anCount)
 	}
 }

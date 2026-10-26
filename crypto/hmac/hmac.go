@@ -31,10 +31,10 @@ func (h *Sha256) Update(data []byte) {
 	h.h.Write(data)
 }
 
-// Finish completes the HMAC computation and writes the result to hash.
-func (h *Sha256) Finish(hash *Hash) {
+// Finish completes the HMAC computation and writes the result to out.
+func (h *Sha256) Finish(out *Hash) {
 	sum := h.h.Sum(nil)
-	copy(hash[:], sum)
+	copy(out[:], sum)
 }
 
 // Sum is a convenience function that computes HMAC-SHA-256 in one call.

@@ -201,7 +201,7 @@ func (td *TxtData) SetExtPanID(id [8]byte) {
 func (td *TxtData) GetExtPanID() [8]byte {
 	var id [8]byte
 	v := td.Get(TxtKeyExtPanID)
-	if v == nil || len(v) != 16 {
+	if len(v) != 16 {
 		return id
 	}
 	decoded, err := hex.DecodeString(string(v))
@@ -292,7 +292,7 @@ func (td *TxtData) SetSequenceNumber(seq uint8) {
 // GetSequenceNumber returns the sequence number, or 0 if not set.
 func (td *TxtData) GetSequenceNumber() uint8 {
 	v := td.Get(TxtKeySequenceNumber)
-	if v == nil || len(v) != 2 {
+	if len(v) != 2 {
 		return 0
 	}
 	decoded, err := hex.DecodeString(string(v))

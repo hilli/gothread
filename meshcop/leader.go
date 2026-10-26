@@ -38,10 +38,8 @@ type LeaderCommissioner struct {
 // (may be nil).
 func NewLeaderCommissioner(onResign func()) *LeaderCommissioner {
 	return &LeaderCommissioner{
-		onResign: onResign,
-		afterFunc: func(d time.Duration, f func()) *time.Timer {
-			return time.AfterFunc(d, f)
-		},
+		onResign:  onResign,
+		afterFunc: time.AfterFunc,
 	}
 }
 

@@ -122,7 +122,7 @@ func ScaleLinkMarginToRaw(linkMargin uint8) uint8 {
 	if v > maxLinkMargin {
 		v = maxLinkMargin
 	}
-	v = v * 255
+	v *= 255
 	// Divide and round to closest.
 	v = (v + maxLinkMargin/2) / maxLinkMargin
 	return uint8(v)
@@ -131,7 +131,7 @@ func ScaleLinkMarginToRaw(linkMargin uint8) uint8 {
 // ScaleRawToLinkMargin scales a raw value from [0, 255] back to Link Margin [0, 130].
 func ScaleRawToLinkMargin(raw uint8) uint8 {
 	v := uint16(raw)
-	v = v * maxLinkMargin
+	v *= maxLinkMargin
 	v = (v + 255/2) / 255
 	return uint8(v)
 }
@@ -145,8 +145,8 @@ func ScaleRssiToRaw(rssi int8) uint8 {
 	if v > maxRssi {
 		v = maxRssi
 	}
-	v = v - minRssi // shift to [0, 130]
-	v = v * 255
+	v -= minRssi // shift to [0, 130]
+	v *= 255
 	// Divide and round to closest: (minRssi - maxRssi) is 130 but we want
 	// (maxRssi - minRssi) = 130.
 	v = (v + (maxRssi-minRssi)/2) / (maxRssi - minRssi)
@@ -156,7 +156,7 @@ func ScaleRssiToRaw(rssi int8) uint8 {
 // ScaleRawToRssi scales a raw value from [0, 255] back to RSSI [-130, 0].
 func ScaleRawToRssi(raw uint8) int8 {
 	v := int32(raw)
-	v = v * (maxRssi - minRssi)
+	v *= (maxRssi - minRssi)
 	v = (v + 255/2) / 255
 	v += minRssi
 	// Clamp to int8 range.
@@ -221,7 +221,7 @@ func (s *SeriesInfo) GetAverageRssi() int8 {
 }
 
 // Aggregate adds a sample to the series if the frame type matches.
-func (s *SeriesInfo) Aggregate(lqi uint8, linkMargin uint8, rssi int8) {
+func (s *SeriesInfo) Aggregate(lqi, linkMargin uint8, rssi int8) {
 	s.PduCount++
 	if s.Metrics&MetricLqi != 0 {
 		s.LqiSum += uint32(lqi)

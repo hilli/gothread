@@ -162,14 +162,6 @@ func waitForConnect(ch <-chan dtls.ConnectEvent, timeout time.Duration) (dtls.Co
 	}
 }
 
-// makeCONRequest creates a simple CON GET request message for testing.
-func makeCONRequest(uriPath string) *coap.Message {
-	msg := coap.NewMessage(coap.TypeConfirmable, coap.CodeGet, 0)
-	msg.SetToken([]byte{0x01})
-	msg.AppendOption(coap.OptionURIPath, []byte(uriPath))
-	return msg
-}
-
 // makeNONRequest creates a simple NON GET request message for testing.
 func makeNONRequest(uriPath string) *coap.Message {
 	msg := coap.NewMessage(coap.TypeNonConfirmable, coap.CodeGet, 0)

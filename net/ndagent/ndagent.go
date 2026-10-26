@@ -98,7 +98,7 @@ func (a *Agent) IsEnabled() bool {
 //   - Target = the solicited address
 //   - Destination = source of the NS, or all-nodes multicast (ff02::1)
 //     if the NS source was the unspecified address (DAD case)
-func (a *Agent) HandleNeighborSolicitation(target ip6.Address, source ip6.Address) error {
+func (a *Agent) HandleNeighborSolicitation(target, source ip6.Address) error {
 	if !a.enabled {
 		return errors.ErrInvalidState
 	}
@@ -123,6 +123,6 @@ func (a *Agent) HandleNeighborSolicitation(target ip6.Address, source ip6.Addres
 // the infrastructure link. This can be used for DAD conflict detection or
 // tracking purposes. The current implementation is a no-op placeholder for
 // future extension.
-func (a *Agent) HandleNeighborAdvertisement(_ ip6.Address, _ ip6.Address) {
+func (a *Agent) HandleNeighborAdvertisement(_, _ ip6.Address) {
 	// Reserved for future DAD conflict detection.
 }

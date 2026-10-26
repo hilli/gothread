@@ -992,10 +992,10 @@ func TestOptRecordMarshalUnmarshal(t *testing.T) {
 	r.SetVersion(0)
 	r.SetDnsSecOK(true)
 
-	buf := r.ResourceRecord.MarshalBinary()
+	buf := r.MarshalBinary()
 
 	var r2 OptRecord
-	if err := r2.ResourceRecord.UnmarshalBinary(buf[:]); err != nil {
+	if err := r2.UnmarshalBinary(buf[:]); err != nil {
 		t.Fatal(err)
 	}
 	if r2.Type != RRTypeOpt {
@@ -1596,7 +1596,7 @@ func TestTxtIteratorRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e4.Key != "empty" || string(e4.Value) != "" {
+	if e4.Key != "empty" || len(e4.Value) != 0 {
 		t.Errorf("entry 4: key=%q value=%q", e4.Key, string(e4.Value))
 	}
 

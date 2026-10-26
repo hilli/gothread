@@ -240,7 +240,7 @@ type FrameSender interface {
 
 // IndirectMessage represents a message queued for indirect transmission to
 // a sleepy end device.
-type IndirectMessage struct {
+type IndirectMessage struct { //nolint:revive // Preserve the exported type name for existing callers.
 	// ChildAddr is the destination child's short address.
 	ChildAddr uint16
 	// Payload is the message payload.
@@ -451,10 +451,7 @@ func (s *Sender) HandleSentFailure(childAddr uint16) bool {
 	defer s.mu.Unlock()
 
 	s.txAttempts[childAddr]++
-	if s.txAttempts[childAddr] >= s.maxTxAttempts {
-		return true
-	}
-	return false
+	return s.txAttempts[childAddr] >= s.maxTxAttempts
 }
 
 // GetMessageCount returns the number of messages queued for the given child.

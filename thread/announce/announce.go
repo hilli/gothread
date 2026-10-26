@@ -66,7 +66,7 @@ type RandFunc func(n uint32) uint32
 
 // AnnounceSender manages periodic MLE Announcement transmission across a set
 // of channels. It mirrors the AnnounceSenderBase from OpenThread.
-type AnnounceSender struct {
+type AnnounceSender struct { //nolint:revive // Preserve the exported type name for existing callers.
 	mu sync.Mutex
 
 	channelMask     uint32 // bitmask of channels to announce on
@@ -298,7 +298,7 @@ func (a *AnnounceSender) randN(n uint32) uint32 {
 // AnnounceBeginServer handles TMF Announce Begin requests from the
 // Commissioner to trigger announcement floods. It mirrors OpenThread's
 // AnnounceBeginServer.
-type AnnounceBeginServer struct {
+type AnnounceBeginServer struct { //nolint:revive // Preserve the exported type name for existing callers.
 	sender *AnnounceSender
 }
 
@@ -317,7 +317,7 @@ func NewAnnounceBeginServer(sender *AnnounceSender) *AnnounceBeginServer {
 
 // HandleRequest processes an Announce Begin TMF request. It configures the
 // sender with the provided parameters and starts the announcement.
-func (s *AnnounceBeginServer) HandleRequest(channelMask uint32, period uint32, count uint8) error {
+func (s *AnnounceBeginServer) HandleRequest(channelMask, period uint32, count uint8) error {
 	if channelMaskIsEmpty(channelMask) {
 		return errors.ErrInvalidArgs
 	}

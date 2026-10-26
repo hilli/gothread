@@ -536,7 +536,7 @@ func (c *Client) Stop() {
 
 // findQuery searches pending queries for one whose transmit timestamp
 // matches the given originate timestamp from a response.
-func (c *Client) findQuery(originateTimestamp uint32) (*Query, int) {
+func (c *Client) findQuery(originateTimestamp uint32) (query *Query, index int) {
 	for i, q := range c.queries {
 		if q.transmitTimestamp == originateTimestamp {
 			return q, i

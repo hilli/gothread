@@ -864,8 +864,7 @@ func (m *mockDiscoverySender) SendDiscoveryRequest(channel, panID uint16, enable
 
 // mockDiscoverTimer implements discover.Timer for test scanners.
 type mockDiscoverTimer struct {
-	running  bool
-	callback func()
+	running bool
 }
 
 func (t *mockDiscoverTimer) Start(delayMs uint32) {

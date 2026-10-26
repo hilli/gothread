@@ -149,7 +149,7 @@ func extractTransactionID(payload []byte) TransactionID {
 }
 
 // buildReplyMsg builds a minimal DHCPv6 Advertise or Reply message.
-func buildReplyMsg(msgType MsgType, tid TransactionID, clientExtAddr [8]byte, serverDuid []byte, opts []byte) []byte {
+func buildReplyMsg(msgType MsgType, tid TransactionID, clientExtAddr [8]byte, serverDuid, opts []byte) []byte {
 	hdr := Header{Type: msgType, TransactionID: tid}
 	hdrBytes, _ := hdr.MarshalBinary()
 	buf := append([]byte(nil), hdrBytes...)

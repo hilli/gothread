@@ -50,7 +50,7 @@ const (
 	KeySrpClientInfo     uint16 = 0x000c
 	KeyBrUlaPrefix       uint16 = 0x000f
 	KeyBrOnLinkPrefixes  uint16 = 0x0010
-	KeyBorderAgentId     uint16 = 0x0011
+	KeyBorderAgentId     uint16 = 0x0011 //nolint:revive // Retain the established public API spelling for source compatibility.
 )
 
 // Sentinel errors.
@@ -322,7 +322,7 @@ func (s *Settings) DeleteBrOnLinkPrefix(index int) error {
 func (s *Settings) DeleteAllBrOnLinkPrefixes() error { return s.Delete(KeyBrOnLinkPrefixes) }
 
 // ReadBorderAgentId reads the Border Agent ID.
-func (s *Settings) ReadBorderAgentId() ([]byte, error) { return s.Read(KeyBorderAgentId) }
+func (s *Settings) ReadBorderAgentId() ([]byte, error) { return s.Read(KeyBorderAgentId) } //nolint:revive // Retain the established public API spelling for source compatibility.
 
 // WriteBorderAgentId writes the Border Agent ID.
-func (s *Settings) WriteBorderAgentId(data []byte) error { return s.Write(KeyBorderAgentId, data) }
+func (s *Settings) WriteBorderAgentId(data []byte) error { return s.Write(KeyBorderAgentId, data) } //nolint:revive // Retain the established public API spelling for source compatibility.

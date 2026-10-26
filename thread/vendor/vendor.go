@@ -36,7 +36,7 @@ func Default() Info {
 
 // Validate checks that all fields in the Info struct are within their
 // maximum allowed lengths. Returns an error if any field is too long.
-func Validate(info Info) error {
+func Validate(info Info) error { //nolint:gocritic // Preserve the public validation API's by-value argument.
 	if len(info.VendorName) > MaxNameLength {
 		return errors.ErrInvalidArgs
 	}

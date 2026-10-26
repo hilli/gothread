@@ -94,9 +94,10 @@ const (
 	// RetryJitterDivisor divides the retry wait interval for jitter range.
 	RetryJitterDivisor uint32 = 5
 
-	// EarlyLeaseRenewFraction is the fraction of lease interval at
-	// which early renewal is triggered (1/2).
-	EarlyLeaseRenewNumerator   uint32 = 1
+	// EarlyLeaseRenewNumerator is the numerator of the lease fraction
+	// at which early renewal is triggered (1/2).
+	EarlyLeaseRenewNumerator uint32 = 1
+	// EarlyLeaseRenewDenominator is the denominator of the early-renewal fraction.
 	EarlyLeaseRenewDenominator uint32 = 2
 
 	// UnspecifiedInterval indicates the user has not set a value.
@@ -293,8 +294,6 @@ type Service struct {
 	// State is the current registration state of this service.
 	State ItemState
 
-	// leaseRenewTime is when the lease should be renewed.
-	leaseRenewTime time.Time
 	// appendedInMessage tracks whether this service was included in
 	// the current DNS Update message being built.
 	appendedInMessage bool
@@ -384,7 +383,6 @@ type Client struct {
 	curMessageID         uint16
 	txFailureRetryCount  uint8
 	shouldRemoveKeyLease bool
-	singleServiceMode    bool
 
 	retryWaitInterval uint32
 	leaseRenewTime    time.Time
@@ -725,7 +723,7 @@ func (c *Client) ClearService(svc *Service) error {
 // RemoveHostAndServices marks the host and all services for removal.
 // If sendUnregToServer is true, an unregister update is sent to the
 // server. If removeKeyLease is true, the key lease is also removed.
-func (c *Client) RemoveHostAndServices(removeKeyLease bool, sendUnregToServer bool) error {
+func (c *Client) RemoveHostAndServices(removeKeyLease, sendUnregToServer bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -786,7 +784,7 @@ func (c *Client) SetKeyLeaseInterval(interval uint32) {
 
 // SetTtl sets the TTL for all records. Use 0 for automatic TTL
 // (derived from the lease interval).
-func (c *Client) SetTtl(ttl uint32) {
+func (c *Client) SetTtl(ttl uint32) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ttl = ttl
@@ -1253,7 +1251,7 @@ func (c *Client) appendServiceInstruction(svc *Service, info *msgInfo) error {
 		// PTR record: service name -> instance name
 		var rr dns.ResourceRecord
 		rr.Init(dns.RRTypePtr, dns.ClassInternet)
-		rr.TTL = c.determineTtl()
+		rr.TTL = c.determineTTL()
 		rrOffset := len(info.buf)
 
 		// Owner name: compress to serviceNameOffset
@@ -1272,10 +1270,8 @@ func (c *Client) appendServiceInstruction(svc *Service, info *msgInfo) error {
 		}
 
 		// Update RDLength.
-		rdataLen := uint16(len(info.buf) - rrOffset - len(rrBytes) - 2) // -2 for the owner name pointer
-		// Actually, we need to compute from after the RR header.
 		rdataStart := rrOffset + 2 + int(dns.ResourceRecordSize) // 2 for owner pointer
-		rdataLen = uint16(len(info.buf) - rdataStart)
+		rdataLen := uint16(len(info.buf) - rdataStart)
 		binary.BigEndian.PutUint16(info.buf[rdataStart-2:], rdataLen) // RDLength is at rrOffset+2+8
 		info.recordCount++
 	}
@@ -1283,8 +1279,7 @@ func (c *Client) appendServiceInstruction(svc *Service, info *msgInfo) error {
 	if !isRemove {
 		// --- Sub-type PTR records ---
 		for _, subType := range svc.SubTypeLabels {
-			// Owner: "_sub._subtype.ServiceName.DomainName"
-			// Actually: "SubType._sub.ServiceName.DomainName"
+			// Owner name: SubType._sub.ServiceName.DomainName.
 			info.buf, err = dns.AppendLabel(info.buf, subType)
 			if err != nil {
 				return err
@@ -1300,7 +1295,7 @@ func (c *Client) appendServiceInstruction(svc *Service, info *msgInfo) error {
 
 			var rr dns.ResourceRecord
 			rr.Init(dns.RRTypePtr, dns.ClassInternet)
-			rr.TTL = c.determineTtl()
+			rr.TTL = c.determineTTL()
 			rrOffset := len(info.buf)
 			rrBytes := rr.MarshalBinary()
 			info.buf = append(info.buf, rrBytes[:]...)
@@ -1318,44 +1313,42 @@ func (c *Client) appendServiceInstruction(svc *Service, info *msgInfo) error {
 	}
 
 	// --- SRV record ---
-	{
-		// Owner name: instance name (compressed).
-		info.buf, err = dns.AppendPointerLabel(info.buf, instanceNameOffset)
+	// Owner name: instance name (compressed).
+	info.buf, err = dns.AppendPointerLabel(info.buf, instanceNameOffset)
+	if err != nil {
+		return err
+	}
+
+	if isRemove {
+		// Delete all RRsets for this name: Type=ANY, Class=ANY.
+		var rr dns.ResourceRecord
+		rr.Init(dns.RRTypeAny, dns.ClassAny)
+		rr.TTL = 0
+		rr.RDLength = 0
+		rrBytes := rr.MarshalBinary()
+		info.buf = append(info.buf, rrBytes[:]...)
+		info.recordCount++
+	} else {
+		var srv dns.SrvRecord
+		srv.Init(dns.ClassInternet)
+		srv.TTL = c.determineTTL()
+		srv.Priority = svc.Priority
+		srv.Weight = svc.Weight
+		srv.Port = svc.Port
+
+		rrOffset := len(info.buf)
+		srvBytes := srv.MarshalBinary()
+		info.buf = append(info.buf, srvBytes...)
+
+		// Target: host name (compressed or full).
+		err = c.appendHostName(info, false)
 		if err != nil {
 			return err
 		}
 
-		if isRemove {
-			// Delete all RRsets for this name: Type=ANY, Class=ANY.
-			var rr dns.ResourceRecord
-			rr.Init(dns.RRTypeAny, dns.ClassAny)
-			rr.TTL = 0
-			rr.RDLength = 0
-			rrBytes := rr.MarshalBinary()
-			info.buf = append(info.buf, rrBytes[:]...)
-			info.recordCount++
-		} else {
-			var srv dns.SrvRecord
-			srv.Init(dns.ClassInternet)
-			srv.TTL = c.determineTtl()
-			srv.Priority = svc.Priority
-			srv.Weight = svc.Weight
-			srv.Port = svc.Port
-
-			rrOffset := len(info.buf)
-			srvBytes := srv.MarshalBinary()
-			info.buf = append(info.buf, srvBytes...)
-
-			// Target: host name (compressed or full).
-			err = c.appendHostName(info, false)
-			if err != nil {
-				return err
-			}
-
-			rdataLen := uint16(len(info.buf) - rrOffset - int(dns.ResourceRecordSize))
-			binary.BigEndian.PutUint16(info.buf[rrOffset+8:], rdataLen)
-			info.recordCount++
-		}
+		rdataLen := uint16(len(info.buf) - rrOffset - int(dns.ResourceRecordSize))
+		binary.BigEndian.PutUint16(info.buf[rrOffset+8:], rdataLen)
+		info.recordCount++
 	}
 
 	// --- TXT record (only for add/refresh) ---
@@ -1368,7 +1361,7 @@ func (c *Client) appendServiceInstruction(svc *Service, info *msgInfo) error {
 
 		var rr dns.ResourceRecord
 		rr.Init(dns.RRTypeTxt, dns.ClassInternet)
-		rr.TTL = c.determineTtl()
+		rr.TTL = c.determineTTL()
 
 		rrOffset := len(info.buf)
 		rrBytes := rr.MarshalBinary()
@@ -1428,10 +1421,7 @@ func (c *Client) appendHostDescriptionInstruction(info *msgInfo) error {
 // for the host name. This tells the server to remove all existing
 // records for this host before applying the update.
 func (c *Client) appendDeleteAllRrsets(info *msgInfo) error {
-	var err error
-
-	// Owner name: host name.
-	err = c.appendHostName(info, false)
+	var err = c.appendHostName(info, false)
 	if err != nil {
 		return err
 	}
@@ -1449,17 +1439,14 @@ func (c *Client) appendDeleteAllRrsets(info *msgInfo) error {
 
 // appendAaaaRecord appends a single AAAA record for the given address.
 func (c *Client) appendAaaaRecord(addr ip6.Address, info *msgInfo) error {
-	var err error
-
-	// Owner name: host name (compressed).
-	err = c.appendHostName(info, false)
+	var err = c.appendHostName(info, false)
 	if err != nil {
 		return err
 	}
 
 	var rr dns.ResourceRecord
 	rr.Init(dns.RRTypeAaaa, dns.ClassInternet)
-	rr.TTL = c.determineTtl()
+	rr.TTL = c.determineTTL()
 	rr.RDLength = 16
 
 	rrBytes := rr.MarshalBinary()
@@ -1474,17 +1461,14 @@ func (c *Client) appendAaaaRecord(addr ip6.Address, info *msgInfo) error {
 
 // appendKeyRecord appends the KEY record with the client's public key.
 func (c *Client) appendKeyRecord(info *msgInfo) error {
-	var err error
-
-	// Owner name: host name (compressed).
-	err = c.appendHostName(info, false)
+	var err = c.appendHostName(info, false)
 	if err != nil {
 		return err
 	}
 
 	var key dns.KeyRecord
 	key.Init(dns.ClassInternet)
-	key.TTL = c.determineTtl()
+	key.TTL = c.determineTTL()
 	key.SetFlags(dns.KeyUseAuthConfidPermitted, dns.KeyOwnerNonZone, 0)
 	key.Protocol = dns.KeyProtocolDnsSec
 	key.Algorithm = dns.KeyAlgorithmEcdsaP256Sha256
@@ -1955,23 +1939,12 @@ func (c *Client) determineLeaseInterval(interval, defaultInterval uint32) uint32
 	return DefaultLease
 }
 
-// determineTtl returns the TTL to use for records.
-func (c *Client) determineTtl() uint32 {
+// determineTTL returns the TTL to use for records.
+func (c *Client) determineTTL() uint32 {
 	if c.ttl != 0 {
 		return c.ttl
 	}
 	// Default: use the lease interval.
 	lease := c.determineLeaseInterval(c.lease, c.defaultLease)
 	return lease
-}
-
-// shouldRenewEarly returns true if the given service's lease should
-// be renewed early (before the main lease renewal time).
-func (c *Client) shouldRenewEarly(svc *Service) bool {
-	if svc.Lease == 0 {
-		return false
-	}
-
-	now := c.now()
-	return !svc.leaseRenewTime.IsZero() && now.After(svc.leaseRenewTime)
 }

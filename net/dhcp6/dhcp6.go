@@ -44,6 +44,7 @@ var AllDHCPRelayAgentsAndServers = ip6.Address{
 // MsgType identifies a DHCPv6 message type.
 type MsgType uint8
 
+// DHCPv6 message types defined by RFC 8415.
 const (
 	MsgTypeSolicit            MsgType = 1
 	MsgTypeAdvertise          MsgType = 2
@@ -117,6 +118,7 @@ func (h *Header) UnmarshalBinary(data []byte) error {
 // OptionCode identifies a DHCPv6 option.
 type OptionCode uint16
 
+// DHCPv6 option codes defined by RFC 8415 and extensions.
 const (
 	OptionCodeClientID      OptionCode = 1
 	OptionCodeServerID      OptionCode = 2
@@ -251,6 +253,7 @@ func FindOptionInBytes(data []byte, code OptionCode) *Option {
 // DUIDType identifies a DUID type (RFC 8415 Section 11).
 type DUIDType uint16
 
+// DUID types defined by RFC 8415 Section 11.
 const (
 	DUIDTypeLinkLayerPlusTime DUIDType = 1
 	DUIDTypeEnterprise        DUIDType = 2
@@ -260,6 +263,7 @@ const (
 // HardwareType identifies a hardware type (IANA).
 type HardwareType uint16
 
+// Hardware types used in link-layer DUIDs.
 const (
 	HardwareTypeEUI64 HardwareType = 27
 )
@@ -410,6 +414,7 @@ func (ia *IaAddress) UnmarshalBinary(data []byte) error {
 // StatusCodeValue represents a DHCPv6 status code.
 type StatusCodeValue uint16
 
+// DHCPv6 status codes defined by RFC 8415.
 const (
 	StatusSuccess          StatusCodeValue = 0
 	StatusUnspecFail       StatusCodeValue = 1
@@ -759,7 +764,7 @@ func (s *SolMaxRt) IsValid() bool {
 
 // AppendServerIDOptionRaw appends a Server Identifier option with arbitrary
 // DUID bytes (not just EUI-64).
-func AppendServerIDOptionRaw(buf []byte, duid []byte) []byte {
+func AppendServerIDOptionRaw(buf, duid []byte) []byte {
 	return AppendOption(buf, OptionCodeServerID, duid)
 }
 

@@ -18,9 +18,9 @@ const (
 	// ServiceNumberBackboneRouter is the service number for the Backbone Router service.
 	ServiceNumberBackboneRouter uint8 = 0x01
 	// ServiceNumberDnsSrpAnycast is the service number for DNS/SRP anycast.
-	ServiceNumberDnsSrpAnycast uint8 = 0x5c
+	ServiceNumberDnsSrpAnycast uint8 = 0x5c //nolint:revive // Preserve the exported API spelling for existing callers.
 	// ServiceNumberDnsSrpUnicast is the service number for DNS/SRP unicast.
-	ServiceNumberDnsSrpUnicast uint8 = 0x5d
+	ServiceNumberDnsSrpUnicast uint8 = 0x5d //nolint:revive // Preserve the exported API spelling for existing callers.
 )
 
 // ---------------------------------------------------------------------------
@@ -28,13 +28,13 @@ const (
 // ---------------------------------------------------------------------------
 
 // DnsSrpUnicastType indicates where the DNS/SRP unicast address is encoded.
-type DnsSrpUnicastType uint8
+type DnsSrpUnicastType uint8 //nolint:revive // Preserve the exported API spelling for existing callers.
 
 const (
 	// DnsSrpUnicastAddrInServiceData indicates the address is in the service data.
-	DnsSrpUnicastAddrInServiceData DnsSrpUnicastType = iota
+	DnsSrpUnicastAddrInServiceData DnsSrpUnicastType = iota //nolint:revive // Preserve the exported API spelling for existing callers.
 	// DnsSrpUnicastAddrInServerData indicates the address is in the server data.
-	DnsSrpUnicastAddrInServerData
+	DnsSrpUnicastAddrInServerData //nolint:revive // Preserve the exported API spelling for existing callers.
 )
 
 // ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ const (
 // ---------------------------------------------------------------------------
 
 // DnsSrpAnycastInfo represents a parsed DNS/SRP anycast service entry.
-type DnsSrpAnycastInfo struct {
+type DnsSrpAnycastInfo struct { //nolint:revive // Preserve the exported API spelling for existing callers.
 	// AnycastAddress is the anycast address for the DNS/SRP service.
 	AnycastAddress ip6.Address
 	// SequenceNumber is the anycast sequence number.
@@ -59,7 +59,7 @@ type DnsSrpAnycastInfo struct {
 // ---------------------------------------------------------------------------
 
 // DnsSrpUnicastInfo represents a parsed DNS/SRP unicast service entry.
-type DnsSrpUnicastInfo struct {
+type DnsSrpUnicastInfo struct { //nolint:revive // Preserve the exported API spelling for existing callers.
 	// SockAddr is the unicast socket address (IPv6 address + port).
 	SockAddr ip6.SockAddr
 	// Version is the service version number.
@@ -125,7 +125,7 @@ func (it *ServiceIterator) Reset() {
 //
 // DNS/SRP anycast service data is 1 byte: the sequence number.
 // Each Server sub-TLV's server data is 1 byte: the version number.
-func (it *ServiceIterator) GetNextDnsSrpAnycastInfo() (DnsSrpAnycastInfo, error) {
+func (it *ServiceIterator) GetNextDnsSrpAnycastInfo() (DnsSrpAnycastInfo, error) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	for it.outerOff+TLVHeaderSize <= len(it.data) {
 		typ, stable, length, err := ParseTLVHeader(it.data[it.outerOff:])
 		if err != nil {
@@ -224,7 +224,7 @@ func (it *ServiceIterator) GetNextDnsSrpAnycastInfo() (DnsSrpAnycastInfo, error)
 //
 // For DnsSrpUnicastAddrInServerData: the address and port are in the server
 // data of each Server sub-TLV (server data = [addr(16), port(2)] = 18 bytes).
-func (it *ServiceIterator) GetNextDnsSrpUnicastInfo(unicastType DnsSrpUnicastType) (DnsSrpUnicastInfo, error) {
+func (it *ServiceIterator) GetNextDnsSrpUnicastInfo(unicastType DnsSrpUnicastType) (DnsSrpUnicastInfo, error) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	for it.outerOff+TLVHeaderSize <= len(it.data) {
 		typ, stable, length, err := ParseTLVHeader(it.data[it.outerOff:])
 		if err != nil {
@@ -378,7 +378,7 @@ func (it *ServiceIterator) GetNextDnsSrpUnicastInfo(unicastType DnsSrpUnicastTyp
 //     the minimum version number.
 //
 // Returns errors.ErrNotFound if no DNS/SRP anycast entries exist.
-func FindPreferredDnsSrpAnycastInfo(data []byte) (DnsSrpAnycastInfo, error) {
+func FindPreferredDnsSrpAnycastInfo(data []byte) (DnsSrpAnycastInfo, error) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	// Pass 1: find the numerically largest sequence number.
 	it := NewServiceIterator(data)
 	numericallyLargest := uint8(0)
@@ -571,14 +571,14 @@ func GetServiceAloc(meshLocalPrefix ip6.Prefix, serviceID uint8) ip6.Address {
 
 // EncodeDnsSrpAnycastServiceData encodes the service data for a DNS/SRP
 // anycast service entry. The format is [serviceNumber(1), seqNum(1)].
-func EncodeDnsSrpAnycastServiceData(seqNum uint8) []byte {
+func EncodeDnsSrpAnycastServiceData(seqNum uint8) []byte { //nolint:revive // Preserve the exported API spelling for existing callers.
 	return []byte{ServiceNumberDnsSrpAnycast, seqNum}
 }
 
 // EncodeDnsSrpUnicastServiceData encodes the service data for a DNS/SRP
 // unicast service entry with the address in the service data. The format is
 // [serviceNumber(1), addr(16), port(2)] = 19 bytes.
-func EncodeDnsSrpUnicastServiceData(addr ip6.Address, port uint16) []byte {
+func EncodeDnsSrpUnicastServiceData(addr ip6.Address, port uint16) []byte { //nolint:revive // Preserve the exported API spelling for existing callers.
 	buf := make([]byte, 19)
 	buf[0] = ServiceNumberDnsSrpUnicast
 	copy(buf[1:17], addr[:])

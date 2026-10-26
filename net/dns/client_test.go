@@ -5,6 +5,7 @@
 package dns
 
 import (
+	"bytes"
 	"encoding/binary"
 	"sync"
 	"testing"
@@ -31,9 +32,8 @@ func (t *mockTimer) Stop() bool {
 
 // mockTimerControl captures AfterFunc calls for manual triggering.
 type mockTimerControl struct {
-	mu       sync.Mutex
-	timers   []mockTimerEntry
-	autoFire bool
+	mu     sync.Mutex
+	timers []mockTimerEntry
 }
 
 type mockTimerEntry struct {
@@ -68,13 +68,6 @@ func (m *mockTimerControl) fire() {
 	}
 }
 
-// count returns the number of timers scheduled.
-func (m *mockTimerControl) count() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.timers)
-}
-
 // appendEncodedName encodes a DNS name and appends it to buf.
 func appendEncodedName(buf []byte, name string) []byte {
 	b, err := AppendName(buf, name)
@@ -103,7 +96,7 @@ func appendAaaaRecord(buf []byte, name string, addr ip6.Address, ttl uint32) []b
 }
 
 // appendPtrRecord appends an encoded PTR resource record.
-func appendPtrRecord(buf []byte, name string, targetName string, ttl uint32) []byte {
+func appendPtrRecord(buf []byte, name, targetName string, ttl uint32) []byte {
 	buf = appendEncodedName(buf, name)
 	// Encode the target name to determine RDATA length.
 	rdata, err := AppendName(nil, targetName)
@@ -116,7 +109,7 @@ func appendPtrRecord(buf []byte, name string, targetName string, ttl uint32) []b
 }
 
 // appendSrvRecord appends an encoded SRV resource record.
-func appendSrvRecord(buf []byte, name string, targetHost string, port, priority, weight uint16, ttl uint32) []byte {
+func appendSrvRecord(buf []byte, name, targetHost string, port, priority, weight uint16, ttl uint32) []byte {
 	buf = appendEncodedName(buf, name)
 	// RDATA: 6 bytes fixed + encoded target name.
 	targetNameBytes, err := AppendName(nil, targetHost)
@@ -143,7 +136,7 @@ func appendTxtRecord(buf []byte, name string, txtData []byte, ttl uint32) []byte
 }
 
 // appendCnameRecord appends an encoded CNAME resource record.
-func appendCnameRecord(buf []byte, name string, canonical string, ttl uint32) []byte {
+func appendCnameRecord(buf []byte, name, canonical string, ttl uint32) []byte {
 	buf = appendEncodedName(buf, name)
 	rdata, err := AppendName(nil, canonical)
 	if err != nil {
@@ -539,7 +532,7 @@ func TestBrowseResponseGetServiceInfo(t *testing.T) {
 	if info.HostAddrTTL != 120 {
 		t.Errorf("HostAddrTTL = %d, want 120", info.HostAddrTTL)
 	}
-	if string(info.TxtData) != string(txtData) {
+	if !bytes.Equal(info.TxtData, txtData) {
 		t.Errorf("TxtData = %v, want %v", info.TxtData, txtData)
 	}
 	if info.TxtDataTTL != 120 {
@@ -595,7 +588,7 @@ func TestServiceResponseGetServiceInfo(t *testing.T) {
 	if info.HostAddress != hostAddr {
 		t.Errorf("HostAddress = %v, want %v", info.HostAddress, hostAddr)
 	}
-	if string(info.TxtData) != string(txtData) {
+	if !bytes.Equal(info.TxtData, txtData) {
 		t.Errorf("TxtData = %v, want %v", info.TxtData, txtData)
 	}
 }
@@ -1040,7 +1033,7 @@ func TestResolveServiceRoundTrip(t *testing.T) {
 	if info.HostAddress != hostAddr {
 		t.Errorf("HostAddress = %v, want %v", info.HostAddress, hostAddr)
 	}
-	if string(info.TxtData) != string(txtData) {
+	if !bytes.Equal(info.TxtData, txtData) {
 		t.Errorf("TxtData = %v, want %v", info.TxtData, txtData)
 	}
 }

@@ -22,8 +22,8 @@ type localCBRecorder struct {
 	domainRemoved  []ip6.Prefix
 }
 
-func (r *localCBRecorder) OnLocalStateChanged(old, new_ LocalState) {
-	r.stateChanges = append(r.stateChanges, [2]LocalState{old, new_})
+func (r *localCBRecorder) OnLocalStateChanged(old, next LocalState) {
+	r.stateChanges = append(r.stateChanges, [2]LocalState{old, next})
 }
 
 func (r *localCBRecorder) OnServiceAdded(config Config) {

@@ -16,10 +16,7 @@ import (
 
 // newChildUpdateRouterTestSetup creates a ChildUpdateRouter with a fully
 // initialized Mle (router state) and Dispatcher mocks.
-func newChildUpdateRouterTestSetup(role DeviceRole, routerID uint8) (
-	*ChildUpdateRouter, *Mle, *Dispatcher, *mockTransport,
-	*mockKeyProvider, *ChildTable,
-) {
+func newChildUpdateRouterTestSetup(role DeviceRole, routerID uint8) (handler *ChildUpdateRouter, mleInstance *Mle, dispatcher *Dispatcher, sender *mockTransport, table *ChildTable) {
 	m := NewMle()
 	_ = m.Enable()
 
@@ -52,7 +49,7 @@ func newChildUpdateRouterTestSetup(role DeviceRole, routerID uint8) (
 	childTable := NewChildTable()
 
 	h := NewChildUpdateRouter(m, d, keyMgr, childTable)
-	return h, m, d, transport, keyMgr, childTable
+	return h, m, d, transport, childTable
 }
 
 // buildChildUpdateRequestRxInfo creates an RxInfo simulating a received Child
@@ -98,7 +95,7 @@ func buildChildUpdateRequestRxInfo(
 func TestNewChildUpdateRouter_DoesNotRegister(t *testing.T) {
 	t.Parallel()
 
-	h, _, d, _, _, _ := newChildUpdateRouterTestSetup(RoleRouter, 2)
+	h, _, d, _, _ := newChildUpdateRouterTestSetup(RoleRouter, 2)
 
 	if h == nil {
 		t.Fatal("NewChildUpdateRouter returned nil")
@@ -363,7 +360,7 @@ func TestHandleChildUpdateRequest_Router(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h, m, _, transport, _, ct := newChildUpdateRouterTestSetup(tt.role, tt.routerID)
+			h, m, _, transport, ct := newChildUpdateRouterTestSetup(tt.role, tt.routerID)
 
 			if tt.setup != nil {
 				tt.setup(h, m, ct)

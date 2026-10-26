@@ -141,7 +141,7 @@ type TxMetadata struct {
 	UseDstShort bool
 
 	// PanId is the IEEE 802.15.4 PAN ID.
-	PanId uint16
+	PanId uint16 //nolint:revive // Preserve the exported API spelling for existing callers.
 
 	// SecurityEnabled indicates whether MAC-layer security is used.
 	SecurityEnabled bool
@@ -430,7 +430,7 @@ func (f *Forwarder) PrepareMeshFrame(msg *TxMessage) ([]byte, *FrameMeta, error)
 // HandleReceivedFrame processes a received frame, dispatching to the
 // appropriate handler based on the frame type (mesh or direct).
 // Returns the payload data and whether it was a mesh frame.
-func (f *Forwarder) HandleReceivedFrame(data []byte, info *ReceivedFrameInfo) ([]byte, bool, error) {
+func (f *Forwarder) HandleReceivedFrame(data []byte, info *ReceivedFrameInfo) (payload []byte, isMesh bool, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -592,7 +592,7 @@ func (f *Forwarder) EvictMessage(priority uint8) bool {
 
 // FragmentMessage splits a datagram into 6LoWPAN fragments.
 // Each fragment will be at most fragmentSize bytes of payload.
-func (f *Forwarder) FragmentMessage(data []byte, fragmentSize int) ([][]byte, uint16, error) {
+func (f *Forwarder) FragmentMessage(data []byte, fragmentSize int) (frames [][]byte, datagramTag uint16, err error) {
 	if len(data) > FragMaxSize {
 		return nil, 0, ErrFragmentTooLarge
 	}

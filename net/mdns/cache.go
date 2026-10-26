@@ -84,7 +84,7 @@ func (c *Cache) Add(entry CacheEntry) {
 
 	// Find existing entry with same name+type+rdata to update.
 	for i := range c.entries {
-		if strings.ToLower(c.entries[i].Name) == nameLower &&
+		if strings.EqualFold(c.entries[i].Name, nameLower) &&
 			c.entries[i].Type == entry.Type &&
 			rdataEqual(c.entries[i].RData, entry.RData) {
 			if entry.TTL == 0 {
@@ -114,7 +114,7 @@ func (c *Cache) Lookup(name string, rtype uint16, now time.Time) []CacheEntry {
 	nameLower := strings.ToLower(name)
 	var results []CacheEntry
 	for _, e := range c.entries {
-		if strings.ToLower(e.Name) == nameLower &&
+		if strings.EqualFold(e.Name, nameLower) &&
 			(rtype == TypeANY || e.Type == rtype) &&
 			!e.IsExpired(now) {
 			results = append(results, e)
@@ -171,7 +171,7 @@ func (c *Cache) HasEntry(name string, rtype uint16, rdata []byte, now time.Time)
 
 	nameLower := strings.ToLower(name)
 	for _, e := range c.entries {
-		if strings.ToLower(e.Name) == nameLower &&
+		if strings.EqualFold(e.Name, nameLower) &&
 			e.Type == rtype &&
 			rdataEqual(e.RData, rdata) &&
 			!e.IsExpired(now) {

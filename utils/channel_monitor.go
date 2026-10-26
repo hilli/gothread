@@ -232,9 +232,9 @@ func (m *ChannelMonitor) GetSampleCount() uint32 {
 // FindBestChannel returns the channel with the lowest occupancy from the
 // given channel mask (bitmask where bit N represents channel N). It also
 // returns the occupancy of the best channel.
-func (m *ChannelMonitor) FindBestChannel(mask uint32) (uint16, uint16) {
+func (m *ChannelMonitor) FindBestChannel(mask uint32) (channel, occupancy uint16) {
 	var bestChannel uint16
-	var bestOccupancy uint16 = MaxOccupancy
+	var bestOccupancy = MaxOccupancy
 	found := false
 
 	for ch := uint16(ChannelMin); ch <= ChannelMax; ch++ {

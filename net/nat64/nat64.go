@@ -62,6 +62,7 @@ func (s State) String() string {
 // DropReason indicates why a packet was dropped.
 type DropReason uint8
 
+// NAT64 packet drop reasons used to index error counters.
 const (
 	DropReasonUnknown          DropReason = iota
 	DropReasonIllegalPacket               // Malformed packet
@@ -678,7 +679,7 @@ func (t *Translator) TranslateIPv6ToIPv4(pkt []byte) ([]byte, error) {
 		return nil, errors.ErrInvalidState
 	}
 
-	dropReason := DropReasonUnknown
+	var dropReason DropReason
 
 	// Parse IPv6 header.
 	if len(pkt) < ip6.HeaderSize {
@@ -840,7 +841,7 @@ func (t *Translator) TranslateIPv4ToIPv6(pkt []byte) ([]byte, error) {
 		return nil, errors.ErrInvalidState
 	}
 
-	dropReason := DropReasonUnknown
+	var dropReason DropReason
 
 	if len(pkt) < ip4.HeaderMinSize {
 		dropReason = DropReasonIllegalPacket

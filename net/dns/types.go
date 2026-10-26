@@ -18,6 +18,7 @@ import (
 // HeaderType indicates whether a DNS message is a query or response.
 type HeaderType uint8
 
+// DNS message types encoded in the header QR flag.
 const (
 	TypeQuery    HeaderType = 0 // Query message.
 	TypeResponse HeaderType = 1 // Response message.
@@ -30,6 +31,7 @@ const (
 // OpCode represents the DNS message OpCode (bits 6-3 of flags[0]).
 type OpCode uint8
 
+// DNS operation codes encoded in the header.
 const (
 	OpcodeQuery   OpCode = 0 // Standard query.
 	OpcodeInverse OpCode = 1 // Inverse query.
@@ -46,6 +48,7 @@ const (
 // ResponseCode represents a DNS response code (RCODE).
 type ResponseCode uint8
 
+// DNS response codes.
 const (
 	RcodeSuccess         ResponseCode = 0  // No error (NoError).
 	RcodeFormatError     ResponseCode = 1  // Format error (FormErr).
@@ -95,6 +98,7 @@ func ResponseCodeToError(rc ResponseCode) error {
 // RRType represents a DNS resource record type.
 type RRType uint16
 
+// DNS resource record types.
 const (
 	RRTypeZero  RRType = 0   // SIG(0) special indicator.
 	RRTypeA     RRType = 1   // IPv4 address (A).
@@ -174,6 +178,7 @@ func RRTypeToString(t RRType) string {
 // RRClass represents a DNS resource record class.
 type RRClass uint16
 
+// DNS resource record classes.
 const (
 	ClassInternet RRClass = 1   // Internet (IN).
 	ClassNone     RRClass = 254 // None (RFC 2136).
@@ -503,7 +508,7 @@ type ARecord struct {
 	Address [4]byte // IPv4 address.
 }
 
-// InitARecord initializes an A record.
+// Init initializes an A record.
 func (r *ARecord) Init() {
 	r.ResourceRecord.Init(RRTypeA, ClassInternet)
 	r.RDLength = ARecordRDataSize
@@ -593,7 +598,7 @@ func (r *PtrRecord) Init(class RRClass) {
 // ReadPtrName reads the domain name from PTR RDATA in message data.
 // The data parameter is the complete DNS message, and offset must point
 // to the start of the RDATA. Returns the name and the offset past the record.
-func (r *PtrRecord) ReadPtrName(data []byte, offset int) (string, int, error) {
+func (r *PtrRecord) ReadPtrName(data []byte, offset int) (ptrName string, nextOffset int, readErr error) {
 	name, _, err := ReadName(data, offset)
 	if err != nil {
 		return "", offset, err
@@ -618,7 +623,7 @@ func (r *CnameRecord) Init(class RRClass) {
 }
 
 // ReadCanonicalName reads the canonical name from CNAME RDATA.
-func (r *CnameRecord) ReadCanonicalName(data []byte, offset int) (string, int, error) {
+func (r *CnameRecord) ReadCanonicalName(data []byte, offset int) (canonicalName string, nextOffset int, readErr error) {
 	name, _, err := ReadName(data, offset)
 	if err != nil {
 		return "", offset, err
@@ -645,7 +650,7 @@ func (r *TxtRecord) Init(class RRClass) {
 // ReadTxtData reads the raw TXT data from RDATA. The caller provides a
 // buffer; if it is too small, as many bytes as fit are copied and ErrNoBufs
 // is returned. The returned int is the number of bytes copied.
-func (r *TxtRecord) ReadTxtData(data []byte, offset int) ([]byte, int, error) {
+func (r *TxtRecord) ReadTxtData(data []byte, offset int) (outputData []byte, copiedBytes int, readErr error) {
 	rdLen := int(r.RDLength)
 	endOffset := offset + rdLen
 	if endOffset > len(data) {
@@ -740,8 +745,8 @@ func (r *SrvRecord) ReadTargetHostName(data []byte, rdataOffset int) (string, er
 
 // Key record protocol values.
 const (
-	KeyProtocolTls    uint8 = 1 // TLS.
-	KeyProtocolDnsSec uint8 = 3 // DNSSEC.
+	KeyProtocolTls    uint8 = 1 //nolint:revive // TLS; preserve the exported API spelling for existing callers.
+	KeyProtocolDnsSec uint8 = 3 //nolint:revive // DNSSEC; preserve the exported API spelling for existing callers.
 )
 
 // Key record algorithm values.
@@ -755,6 +760,7 @@ const (
 // KeyUseFlags represents the use flags of a KEY record.
 type KeyUseFlags uint8
 
+// KEY record flags controlling authentication and confidentiality use.
 const (
 	KeyUseAuthConfidPermitted KeyUseFlags = 0x00 // Auth and/or confidentiality permitted.
 	KeyUseAuthPermitted       KeyUseFlags = 0x40 // Only authentication permitted.
@@ -765,6 +771,7 @@ const (
 // KeyOwnerFlags represents the owner flags of a KEY record.
 type KeyOwnerFlags uint8
 
+// KEY record flags identifying the key owner.
 const (
 	KeyOwnerUser     KeyOwnerFlags = 0x00 // User/account key.
 	KeyOwnerZone     KeyOwnerFlags = 0x01 // Zone key.
@@ -1000,7 +1007,7 @@ func (r *SigRecord) UnmarshalBinary(data []byte) error {
 // ReadSignerName reads the signer name from SIG RDATA.
 // rdataOffset must point to the start of RDATA. Returns the signer name
 // and the offset of the signature data (immediately after the signer name).
-func (r *SigRecord) ReadSignerName(data []byte, rdataOffset int) (string, int, error) {
+func (r *SigRecord) ReadSignerName(data []byte, rdataOffset int) (signerName string, signatureOffset int, readErr error) {
 	nameOffset := rdataOffset + SigRecordFixedSize
 	name, sigOffset, err := ReadName(data, nameOffset)
 	if err != nil {
@@ -1025,7 +1032,7 @@ const (
 	optExtRCodeByteIndex = 0
 	optVersionByteIndex  = 1
 	optFlagByteIndex     = 2
-	optDnsSecFlagBit     = 0x80
+	optDNSSecFlagBit     = 0x80
 )
 
 // Init initializes an OPT record.
@@ -1061,16 +1068,16 @@ func (r *OptRecord) SetVersion(v uint8) {
 }
 
 // IsDnsSecOK returns the DO (DNSSEC OK) flag.
-func (r *OptRecord) IsDnsSecOK() bool {
-	return (r.TTL>>8)&uint32(optDnsSecFlagBit) != 0
+func (r *OptRecord) IsDnsSecOK() bool { //nolint:revive // Preserve the exported API spelling for existing callers.
+	return (r.TTL>>8)&uint32(optDNSSecFlagBit) != 0
 }
 
 // SetDnsSecOK sets or clears the DO flag.
-func (r *OptRecord) SetDnsSecOK(v bool) {
+func (r *OptRecord) SetDnsSecOK(v bool) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	if v {
-		r.TTL |= uint32(optDnsSecFlagBit) << 8
+		r.TTL |= uint32(optDNSSecFlagBit) << 8
 	} else {
-		r.TTL &^= uint32(optDnsSecFlagBit) << 8
+		r.TTL &^= uint32(optDNSSecFlagBit) << 8
 	}
 }
 
@@ -1266,7 +1273,7 @@ func (tbm *TypeBitMap) GetSize() int {
 // AddType adds an RR type to the bitmap. The type must be in the
 // block indicated by BlockNumber (type >> 8 == BlockNumber).
 func (tbm *TypeBitMap) AddType(rrType RRType) {
-	if uint8(rrType>>8) != tbm.BlockNumber {
+	if uint16(rrType)>>8 != uint16(tbm.BlockNumber) {
 		return
 	}
 	typeByte := uint8(rrType & 0xFF)
@@ -1280,7 +1287,7 @@ func (tbm *TypeBitMap) AddType(rrType RRType) {
 
 // ContainsType reports whether the bitmap contains the given RR type.
 func (tbm *TypeBitMap) ContainsType(rrType RRType) bool {
-	if uint8(rrType>>8) != tbm.BlockNumber {
+	if uint16(rrType)>>8 != uint16(tbm.BlockNumber) {
 		return false
 	}
 	typeByte := uint8(rrType & 0xFF)
@@ -1539,7 +1546,7 @@ func SkipName(data []byte, offset int) (int, error) {
 
 // ParseRecords skips over numRecords resource records in data starting at
 // offset. Returns the updated offset past all skipped records.
-func ParseRecords(data []byte, offset int, numRecords int) (int, error) {
+func ParseRecords(data []byte, offset, numRecords int) (int, error) {
 	for i := 0; i < numRecords; i++ {
 		// Skip the name.
 		var err error

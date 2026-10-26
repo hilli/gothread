@@ -25,10 +25,7 @@ func (m *mockConnectivityProvider) GetConnectivityTLV() ConnectivityTLV {
 
 // --- test setup ---
 
-func newParentRequestHandlerTestSetup(role DeviceRole, routerID uint8) (
-	*ParentRequestHandler, *Mle, *Dispatcher, *mockTransport,
-	*mockKeyProvider, *ChildTable, *mockConnectivityProvider,
-) {
+func newParentRequestHandlerTestSetup(role DeviceRole, routerID uint8) (handler *ParentRequestHandler, mleInstance *Mle, dispatcher *Dispatcher, sender *mockTransport, table *ChildTable) {
 	m := NewMle()
 	_ = m.Enable()
 
@@ -76,7 +73,7 @@ func newParentRequestHandlerTestSetup(role DeviceRole, routerID uint8) (
 	}
 
 	h := NewParentRequestHandler(m, d, keyMgr, childTable, connectivity)
-	return h, m, d, transport, keyMgr, childTable, connectivity
+	return h, m, d, transport, childTable
 }
 
 // buildParentRequestRxInfo creates an RxInfo simulating a received Parent Request.
@@ -117,7 +114,7 @@ func buildParentRequestRxInfo(
 func TestNewParentRequestHandler_RegistersHandler(t *testing.T) {
 	t.Parallel()
 
-	h, _, d, _, _, _, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, d, _, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	if h == nil {
 		t.Fatal("NewParentRequestHandler returned nil")
@@ -287,7 +284,7 @@ func TestHandleParentRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h, m, _, transport, _, ct, _ := newParentRequestHandlerTestSetup(tt.role, tt.routerID)
+			h, m, _, transport, ct := newParentRequestHandlerTestSetup(tt.role, tt.routerID)
 
 			if tt.setup != nil {
 				tt.setup(h, m)
@@ -318,7 +315,7 @@ func TestHandleParentRequest(t *testing.T) {
 func TestHandleParentRequest_DuplicateSuppression(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, _, _, ct, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, _, ct := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	childAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
@@ -357,7 +354,7 @@ func TestHandleParentRequest_DuplicateSuppression(t *testing.T) {
 func TestHandleParentRequest_DuplicateAfterTimeout(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, _, _, ct, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, _, ct := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	childAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
@@ -396,7 +393,7 @@ func TestHandleParentRequest_DuplicateAfterTimeout(t *testing.T) {
 func TestHandleParentRequest_TableFull(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, _, _, ct, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, _, ct := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
 	version := uint16(ThreadVersion)
@@ -423,7 +420,7 @@ func TestHandleParentRequest_TableFull(t *testing.T) {
 func TestSendParentResponse(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, ct, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, ct := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	childAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	rxChallenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
@@ -473,7 +470,7 @@ func TestSendParentResponse(t *testing.T) {
 func TestSendParentResponse_ChildNotFound(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, _, _, _, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, _, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	unknownAddr := types.ExtAddress{0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8}
 	info := ParentResponseInfo{
@@ -493,7 +490,7 @@ func TestSendParentResponse_ChildNotFound(t *testing.T) {
 func TestSendAllPendingResponses(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, ct, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, ct := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
 	version := uint16(ThreadVersion)
@@ -545,7 +542,7 @@ func TestSendAllPendingResponses(t *testing.T) {
 func TestFlushPendingResponses_TimeBased(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, _, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
 	version := uint16(ThreadVersion)
@@ -582,7 +579,7 @@ func TestFlushPendingResponses_TimeBased(t *testing.T) {
 func TestFlushPendingResponses_NotReady(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, _, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
 	version := uint16(ThreadVersion)
@@ -620,7 +617,7 @@ func TestFlushPendingResponses_NotReady(t *testing.T) {
 func TestHandleParentRequest_EndToEnd(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, ct, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, ct := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	challenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
 	version := uint16(ThreadVersion)
@@ -675,7 +672,7 @@ func TestHandleParentRequest_EndToEnd(t *testing.T) {
 func TestHandleParentRequest_MultipleChildren(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, ct, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, ct := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	version := uint16(ThreadVersion)
 	scanMask := uint8(ScanMaskRouterFlag)
@@ -724,7 +721,7 @@ func TestHandleParentRequest_MultipleChildren(t *testing.T) {
 func TestSendParentResponse_NilConnectivity(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, ct, _ := newParentRequestHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, ct := newParentRequestHandlerTestSetup(RoleRouter, 2)
 
 	// Set connectivity to nil.
 	h.connectivity = nil

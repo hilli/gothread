@@ -46,7 +46,6 @@ type NetworkDataUpdater interface {
 type ChannelManager struct {
 	monitor              *ChannelMonitor
 	updater              NetworkDataUpdater
-	enabled              bool
 	autoSelectEnabled    bool
 	favoredChannelMask   uint32
 	supportedChannelMask uint32
@@ -169,7 +168,7 @@ func (m *ChannelManager) RequestChannelSelect(skipQualityCheck bool) error {
 
 // findBestChannel selects the best channel from favored channels,
 // falling back to all supported channels if favored ones are worse.
-func (m *ChannelManager) findBestChannel() (uint16, uint16) {
+func (m *ChannelManager) findBestChannel() (channel, occupancy uint16) {
 	if m.monitor == nil {
 		return 0, MaxOccupancy
 	}
@@ -205,9 +204,8 @@ func (m *ChannelManager) HandleTimer() {
 			if err == nil {
 				m.currentChannel = m.selectedChannel
 				m.state = stateIdle
-			} else {
-				// Retry on next timer tick.
 			}
+			// On failure, keep the request pending for the next timer tick.
 		} else {
 			m.currentChannel = m.selectedChannel
 			m.state = stateIdle

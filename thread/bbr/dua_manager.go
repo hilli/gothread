@@ -47,16 +47,6 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	// duaDadPeriod is the DAD wait time for the DUA to become "Preferred" (seconds).
-	duaDadPeriod uint32 = 100
-	// duaNoBufDelay is the retry delay when message buffers are exhausted (seconds).
-	duaNoBufDelay uint8 = 5
-	// duaResponseTimeoutDelay is the retry delay after a response timeout (seconds).
-	duaResponseTimeoutDelay uint8 = 30
-	// duaNewRouterRegistrationDelay is the delay for new routers to establish links (seconds).
-	duaNewRouterRegistrationDelay uint8 = 3
-	// duaNewDuaRegistrationDelay is the delay for newly added DUA (seconds).
-	duaNewDuaRegistrationDelay uint8 = 1
 	// defaultMaxDadCounter is the default maximum DAD attempts before giving up.
 	defaultMaxDadCounter uint8 = 3
 )
@@ -544,12 +534,12 @@ func (m *DuaManager) HandleTimer() bool {
 
 // randomUint16InRange returns a random uint16 in [min, max]. If min >= max
 // it returns min.
-func randomUint16InRange(min, max uint16) uint16 {
-	if min >= max {
-		return min
+func randomUint16InRange(minimum, maximum uint16) uint16 {
+	if minimum >= maximum {
+		return minimum
 	}
 	var buf [2]byte
 	_, _ = rand.Read(buf[:])
 	v := binary.LittleEndian.Uint16(buf[:])
-	return min + v%(max-min+1)
+	return minimum + v%(maximum-minimum+1)
 }

@@ -233,6 +233,8 @@ func NewModule(platform Platform, opts ...Option) *Module {
 // by instance name + service type) already exists it is updated in place.
 // Returns errors.ErrNoBufs if the maximum number of services is reached,
 // errors.ErrInvalidArgs if required fields are missing.
+//
+//nolint:gocritic // Keep the value-parameter signature required by the public API.
 func (m *Module) RegisterService(info ServiceInfo) error {
 	if info.InstanceName == "" || info.ServiceType == "" {
 		return errors.ErrInvalidArgs
@@ -479,6 +481,8 @@ func (m *Module) HandleBrowseResult(result BrowseResult) {
 }
 
 // HandleResolveResult dispatches a resolve result to the matching callback.
+//
+//nolint:gocritic // Preserve the public value-parameter API used by platform integrations.
 func (m *Module) HandleResolveResult(result ResolveResult) {
 	for _, r := range m.resolveRequests {
 		if r.instanceName == result.InstanceName && r.serviceType == result.ServiceType {
@@ -520,7 +524,8 @@ func (m *Module) GetRegisteredHosts() []HostInfo {
 // IsServiceRegistered reports whether a service with the given instance name
 // and service type is currently registered.
 func (m *Module) IsServiceRegistered(instanceName, serviceType string) bool {
-	for _, s := range m.services {
+	for i := range m.services {
+		s := &m.services[i]
 		if s.InstanceName == instanceName && s.ServiceType == serviceType {
 			return true
 		}

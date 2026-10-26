@@ -54,7 +54,7 @@ func makeResponseTLVValue(response []byte) []byte {
 func buildLinkAcceptRxInfo(
 	srcAddr types.ExtAddress,
 	cmd Command,
-	opts linkAcceptTestTLVs,
+	opts *linkAcceptTestTLVs,
 ) *RxInfo {
 	var tlvs []TLV
 
@@ -432,7 +432,7 @@ func TestHandleLinkAcceptVariant(t *testing.T) {
 			t.Run(testName, func(t *testing.T) {
 				t.Parallel()
 
-				h, _, _, transport, _, rl, _ := newLinkRequestHandlerTestSetup(tt.role, 1)
+				h, _, _, transport, rl := newLinkRequestHandlerTestSetup(tt.role, 1)
 
 				if tt.setup != nil {
 					tt.setup(rl)
@@ -444,7 +444,7 @@ func TestHandleLinkAcceptVariant(t *testing.T) {
 				if variant.cmd == CommandLinkAcceptAndRequest && opts.challenge == nil {
 					opts.challenge = &peerChallenge
 				}
-				rxInfo := buildLinkAcceptRxInfo(peerAddr, variant.cmd, opts)
+				rxInfo := buildLinkAcceptRxInfo(peerAddr, variant.cmd, &opts)
 
 				err := variant.handler(h, rxInfo)
 
@@ -485,7 +485,7 @@ func TestHandleLinkAcceptTimestamps(t *testing.T) {
 	linkFC := uint32(500)
 	pendingChallenge := Challenge{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
 
-	h, _, _, _, _, rl, _ := newLinkRequestHandlerTestSetup(RoleRouter, 1)
+	h, _, _, _, rl := newLinkRequestHandlerTestSetup(RoleRouter, 1)
 
 	r := &Router{
 		Neighbor: Neighbor{
@@ -499,7 +499,7 @@ func TestHandleLinkAcceptTimestamps(t *testing.T) {
 
 	before := time.Now()
 
-	rxInfo := buildLinkAcceptRxInfo(peerAddr, CommandLinkAccept, linkAcceptTestTLVs{
+	rxInfo := buildLinkAcceptRxInfo(peerAddr, CommandLinkAccept, &linkAcceptTestTLVs{
 		sourceRLOC16:     &routerRLOC,
 		response:         pendingChallenge[:],
 		version:          &version,

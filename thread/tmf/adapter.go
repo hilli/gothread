@@ -45,7 +45,7 @@ func (a *RouterTableAdapter) AllocateWithID(routerID uint8) (uint16, error) {
 }
 
 // Allocate picks a random available router ID and returns (routerID, rloc16).
-func (a *RouterTableAdapter) Allocate() (uint8, uint16, error) {
+func (a *RouterTableAdapter) Allocate() (id uint8, rloc16 uint16, allocErr error) {
 	r, routerID, err := a.rt.Allocate()
 	if err != nil {
 		return 0, 0, err
@@ -85,7 +85,7 @@ func (a *RouterTableAdapter) AllocateWithIDForRouter(routerID uint8, extAddr typ
 
 // AllocateForRouter picks a random available router ID, associates it with
 // the given extended address, and returns (routerID, rloc16).
-func (a *RouterTableAdapter) AllocateForRouter(extAddr types.ExtAddress) (uint8, uint16, error) {
+func (a *RouterTableAdapter) AllocateForRouter(extAddr types.ExtAddress) (id uint8, rloc16 uint16, allocErr error) {
 	r, routerID, err := a.rt.Allocate()
 	if err != nil {
 		return 0, 0, err

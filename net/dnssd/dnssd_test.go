@@ -47,6 +47,7 @@ type mockPlatform struct {
 
 func newMockPlatform() *mockPlatform { return &mockPlatform{} }
 
+//nolint:gocritic // Keep the value-parameter signature required by the public API.
 func (p *mockPlatform) RegisterService(info ServiceInfo) error {
 	if p.registerServiceErr != nil {
 		return p.registerServiceErr

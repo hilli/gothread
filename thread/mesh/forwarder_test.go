@@ -402,7 +402,7 @@ func TestHandleReceivedFrame_Dispatching(t *testing.T) {
 		// Build a mesh-header frame.
 		hdr := BuildMeshHeader(0x0400, 0x0800, 5)
 		payload := []byte{0xAA, 0xBB}
-		frame := append(hdr, payload...)
+		frame := append(append([]byte(nil), hdr...), payload...)
 
 		result, isMesh, err := fwd.HandleReceivedFrame(frame, info)
 		if err != nil {

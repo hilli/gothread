@@ -34,6 +34,7 @@ package log
 import (
 	"fmt"
 	"io"
+	stdlog "log"
 	"os"
 	"sync"
 	"time"
@@ -80,17 +81,18 @@ func (l Level) String() string {
 // Region identifies the subsystem that produced a log message.
 type Region string
 
+// OpenThread log regions.
 const (
 	RegionMle      Region = "Mle"
 	RegionArp      Region = "Arp"
 	RegionBbr      Region = "Bbr"
 	RegionBr       Region = "Br"
-	RegionCliApi   Region = "CliApi"
+	RegionCliApi   Region = "CliApi" //nolint:revive // Retain the established public API spelling for source compatibility.
 	RegionCoap     Region = "Coap"
 	RegionCore     Region = "Core"
-	RegionDns      Region = "Dns"
+	RegionDns      Region = "Dns" //nolint:revive // Retain the established public API spelling for source compatibility.
 	RegionIcmp     Region = "Icmp"
-	RegionIp6      Region = "Ip6"
+	RegionIp6      Region = "Ip6" //nolint:revive // Retain the established public API spelling for source compatibility.
 	RegionMac      Region = "Mac"
 	RegionMesh     Region = "Mesh"
 	RegionMeshCoP  Region = "MeshCoP"
@@ -132,7 +134,9 @@ func (d *DefaultLogger) Log(level Level, region Region, format string, args ...i
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	fmt.Fprintf(d.w, "[%s] %s [%-8s] %s\n", ts, level, region, msg)
+	if _, err := fmt.Fprintf(d.w, "[%s] %s [%-8s] %s\n", ts, level, region, msg); err != nil {
+		stdlog.Printf("gothread: write log: %v", err)
+	}
 }
 
 func (d *DefaultLogger) now() time.Time {

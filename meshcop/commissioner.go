@@ -6,6 +6,7 @@ package meshcop
 
 import (
 	"encoding/binary"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -142,10 +143,6 @@ const (
 	// petitionRetryDelay is the delay before retrying a petition.
 	petitionRetryDelay = 1 * time.Second
 
-	// petitionAttemptDelay is the delay before the first petition attempt
-	// after a failed cycle.
-	petitionAttemptDelay = 5 * time.Second
-
 	// keepAliveTimeout is the leader's petition timeout (50 seconds).
 	keepAliveTimeout = 50 * time.Second
 
@@ -262,9 +259,7 @@ func NewCommissioner(
 		joinerCallback: joinerCallback,
 		timerStopCh:    make(chan struct{}),
 		nowFunc:        time.Now,
-		afterFunc: func(d time.Duration, f func()) *time.Timer {
-			return time.AfterFunc(d, f)
-		},
+		afterFunc:      time.AfterFunc,
 	}
 	return c
 }
@@ -311,7 +306,7 @@ func (c *Commissioner) SetID(id string) error {
 	if c.state != CommissionerDisabled {
 		return goterrors.ErrInvalidState
 	}
-	if len(id) == 0 || len(id) > MaxCommissionerIDLength {
+	if id == "" || len(id) > MaxCommissionerIDLength {
 		return goterrors.ErrInvalidArgs
 	}
 	c.commissionerID = id
@@ -486,7 +481,7 @@ func (c *Commissioner) addJoiner(jtype JoinerType, eui64 types.ExtAddress, disc 
 	if c.state != CommissionerActive {
 		return goterrors.ErrInvalidState
 	}
-	if len(pskd) == 0 || len(pskd) > MaxJoinerPSKdLength {
+	if pskd == "" || len(pskd) > MaxJoinerPSKdLength {
 		return goterrors.ErrInvalidArgs
 	}
 
@@ -779,9 +774,11 @@ func (c *Commissioner) sendPetition() {
 	msg := buildCONPost("c/lp", payload)
 	info := c.leaderCoapInfo()
 
-	c.transport.SendRequest(msg, info, func(resp *coap.Message, respInfo coap.MessageInfo, err error) {
+	if err := c.transport.SendRequest(msg, info, func(resp *coap.Message, respInfo coap.MessageInfo, err error) {
 		c.handlePetitionResponse(resp, err)
-	})
+	}); err != nil {
+		c.retryPetitionOrStop()
+	}
 }
 
 // handlePetitionResponse processes the leader's petition response.
@@ -854,13 +851,13 @@ func (c *Commissioner) buildPetitionPayload() []byte {
 // Session ID from the petition response payload.
 func parsePetitionResponse(payload []byte) (state uint8, sessionID uint16, ok bool) {
 	stateTLV := findTLVInBytes(payload, TLVState)
-	if stateTLV == nil || len(stateTLV) != 1 {
+	if len(stateTLV) != 1 {
 		return 0, 0, false
 	}
 	state = stateTLV[0]
 
 	sessionTLV := findTLVInBytes(payload, TLVCommissionerSessionID)
-	if sessionTLV == nil || len(sessionTLV) != 2 {
+	if len(sessionTLV) != 2 {
 		return state, 0, false
 	}
 	sessionID = binary.BigEndian.Uint16(sessionTLV)
@@ -889,9 +886,13 @@ func (c *Commissioner) sendKeepAliveLocked(sessionID uint16, stateVal uint8) {
 	msg := buildCONPost("c/la", payload)
 	info := c.leaderCoapInfo()
 
-	c.transport.SendRequest(msg, info, func(resp *coap.Message, respInfo coap.MessageInfo, err error) {
+	if err := c.transport.SendRequest(msg, info, func(resp *coap.Message, respInfo coap.MessageInfo, err error) {
 		c.handleKeepAliveResponse(resp, err)
-	})
+	}); err != nil {
+		c.stopTimers()
+		c.clearJoinersLocked()
+		c.setState(CommissionerDisabled)
+	}
 }
 
 // handleKeepAliveResponse processes the leader's keep-alive response.
@@ -920,7 +921,7 @@ func (c *Commissioner) handleKeepAliveResponse(resp *coap.Message, err error) {
 	// Parse State TLV from response.
 	payload := resp.GetPayload()
 	stateTLV := findTLVInBytes(payload, TLVState)
-	if stateTLV == nil || len(stateTLV) != 1 || stateTLV[0] != StateAccept {
+	if len(stateTLV) != 1 || stateTLV[0] != StateAccept {
 		c.stopTimers()
 		c.clearJoinersLocked()
 		c.setState(CommissionerDisabled)
@@ -958,9 +959,13 @@ func (c *Commissioner) sendCommissionerSet() {
 	info := c.leaderCoapInfo()
 
 	// Fire-and-forget for steering data updates — the response is informational.
-	c.transport.SendRequest(msg, info, func(resp *coap.Message, _ coap.MessageInfo, err error) {
-		// No action needed on response.
-	})
+	if err := c.transport.SendRequest(msg, info, func(resp *coap.Message, _ coap.MessageInfo, err error) {
+		if err != nil {
+			slog.Warn("Commissioner steering data update failed", "error", err)
+		}
+	}); err != nil {
+		slog.Warn("Failed to send commissioner steering data update", "error", err)
+	}
 }
 
 // buildCommissionerSetPayload builds the MGMT_COMMISSIONER_SET.req payload

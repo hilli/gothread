@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/hilli/gothread/errors"
@@ -155,7 +156,7 @@ func TestMarshalParseNetworkInfoTlv(t *testing.T) {
 		role        uint8
 		mode        uint8
 		rloc16      uint16
-		partitionId uint32
+		partitionID uint32
 	}{
 		{"zeros", 0, 0, 0, 0, 0},
 		{"leader", 5000, 4, 0x0F, 0xFC00, 12345},
@@ -173,7 +174,7 @@ func TestMarshalParseNetworkInfoTlv(t *testing.T) {
 				Role:        tc.role,
 				Mode:        tc.mode,
 				Rloc16:      tc.rloc16,
-				PartitionId: tc.partitionId,
+				PartitionId: tc.partitionID,
 			}
 			data := MarshalNetworkInfoTlv(original)
 
@@ -197,8 +198,8 @@ func TestMarshalParseNetworkInfoTlv(t *testing.T) {
 			if parsed.Rloc16 != tc.rloc16 {
 				t.Errorf("Rloc16 = 0x%04X, want 0x%04X", parsed.Rloc16, tc.rloc16)
 			}
-			if parsed.PartitionId != tc.partitionId {
-				t.Errorf("PartitionId = %d, want %d", parsed.PartitionId, tc.partitionId)
+			if parsed.PartitionId != tc.partitionID {
+				t.Errorf("PartitionId = %d, want %d", parsed.PartitionId, tc.partitionID)
 			}
 		})
 	}
@@ -273,7 +274,7 @@ func TestParseHTTlv(t *testing.T) {
 	// Build a buffer with a QueryID TLV followed by an AnswerTlv.
 	qid := MarshalQueryIDTlv(0x1234)
 	ans := MarshalAnswerTlv(&AnswerTlv{Index: 5, IsLast: true})
-	buf := append(qid, ans...)
+	buf := slices.Concat(qid, ans)
 
 	// Parse first TLV.
 	typ, value, consumed, err := ParseHTTlv(buf)
@@ -358,7 +359,7 @@ func TestAnswerTlvBitLayout(t *testing.T) {
 	data := MarshalAnswerTlv(a)
 	value := data[htTlvHeaderSize:]
 
-	// Expected: 0x8000 | 0x1234 = 0x9234
+	// Wire format: Expected: 0x8000 | 0x1234 = 0x9234
 	expected := uint16(0x9234)
 	got := binary.BigEndian.Uint16(value)
 	if got != expected {

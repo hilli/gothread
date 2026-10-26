@@ -130,10 +130,11 @@ func ParseAsInt32(s string) (int32, error) {
 
 	negative := false
 	str := s
-	if str[0] == '-' {
+	switch str[0] {
+	case '-':
 		negative = true
 		str = str[1:]
-	} else if str[0] == '+' {
+	case '+':
 		str = str[1:]
 	}
 
@@ -186,7 +187,7 @@ func ParseAsIP6Address(s string) ([16]byte, error) {
 // "{address}/{length}".
 //
 // Reference: openthread/src/core/utils/parse_cmdline.cpp
-func ParseAsIP6Prefix(s string) ([16]byte, uint8, error) {
+func ParseAsIP6Prefix(s string) (address [16]byte, length uint8, err error) {
 	if s == "" {
 		return [16]byte{}, 0, errors.ErrInvalidArgs
 	}

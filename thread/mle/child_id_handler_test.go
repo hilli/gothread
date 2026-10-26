@@ -16,10 +16,7 @@ import (
 
 // newChildIDHandlerTestSetup creates a ChildIDHandler with a fully initialized
 // Mle (router state) and Dispatcher mocks.
-func newChildIDHandlerTestSetup(role DeviceRole, routerID uint8) (
-	*ChildIDHandler, *Mle, *Dispatcher, *mockTransport,
-	*mockKeyProvider, *ChildTable,
-) {
+func newChildIDHandlerTestSetup(role DeviceRole, routerID uint8) (handler *ChildIDHandler, mleInstance *Mle, dispatcher *Dispatcher, sender *mockTransport, table *ChildTable) {
 	m := NewMle()
 	_ = m.Enable()
 
@@ -52,7 +49,7 @@ func newChildIDHandlerTestSetup(role DeviceRole, routerID uint8) (
 	childTable := NewChildTable()
 
 	h := NewChildIDHandler(m, d, keyMgr, childTable, nil, nil, nil)
-	return h, m, d, transport, keyMgr, childTable
+	return h, m, d, transport, childTable
 }
 
 // buildChildIDRequestRxInfo creates an RxInfo simulating a received Child ID
@@ -116,7 +113,7 @@ func challengeToResponse(ch Challenge) []byte {
 func TestNewChildIDHandler_RegistersHandler(t *testing.T) {
 	t.Parallel()
 
-	h, _, d, _, _, _ := newChildIDHandlerTestSetup(RoleRouter, 2)
+	h, _, d, _, _ := newChildIDHandlerTestSetup(RoleRouter, 2)
 
 	if h == nil {
 		t.Fatal("NewChildIDHandler returned nil")
@@ -477,7 +474,7 @@ func TestHandleChildIDRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h, m, _, transport, _, ct := newChildIDHandlerTestSetup(tt.role, tt.routerID)
+			h, m, _, transport, ct := newChildIDHandlerTestSetup(tt.role, tt.routerID)
 
 			if tt.setup != nil {
 				tt.setup(h, m, ct)
@@ -516,7 +513,7 @@ func TestHandleChildIDRequest_RLOC16Allocation(t *testing.T) {
 	mode := NewDeviceMode(ModeRxOnWhenIdle | ModeFullThreadDevice)
 	timeout := uint32(240)
 
-	h, _, _, _, _, ct := newChildIDHandlerTestSetup(RoleRouter, routerID)
+	h, _, _, _, ct := newChildIDHandlerTestSetup(RoleRouter, routerID)
 
 	// Attach two children sequentially and verify they get different RLOC16s.
 	child1Addr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x01}
@@ -583,7 +580,7 @@ func TestHandleChildIDRequest_ResponseTLVTooShort(t *testing.T) {
 	mode := NewDeviceMode(ModeRxOnWhenIdle | ModeFullThreadDevice)
 	timeout := uint32(300)
 
-	h, _, _, _, _, ct := newChildIDHandlerTestSetup(RoleRouter, 2)
+	h, _, _, _, ct := newChildIDHandlerTestSetup(RoleRouter, 2)
 
 	c := ct.GetNewChild()
 	c.MacAddr = childAddr
@@ -606,7 +603,7 @@ func TestHandleChildIDRequest_ResponseTLVTooShort(t *testing.T) {
 func TestSendChildIDResponse_AllocatesRLOC16(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, transport, _, ct := newChildIDHandlerTestSetup(RoleRouter, 2)
+	h, _, _, transport, ct := newChildIDHandlerTestSetup(RoleRouter, 2)
 
 	childAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	c := ct.GetNewChild()
@@ -642,7 +639,7 @@ func TestSendChildIDResponse_PreservesExistingMatchingRLOC16(t *testing.T) {
 	t.Parallel()
 
 	routerID := uint8(2)
-	h, _, _, _, _, ct := newChildIDHandlerTestSetup(RoleRouter, routerID)
+	h, _, _, _, ct := newChildIDHandlerTestSetup(RoleRouter, routerID)
 
 	childAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	c := ct.GetNewChild()
@@ -667,7 +664,7 @@ func TestSendChildIDResponse_PreservesExistingMatchingRLOC16(t *testing.T) {
 func TestSendChildIDResponse_ReallocatesWhenRouterIDMismatch(t *testing.T) {
 	t.Parallel()
 
-	h, _, _, _, _, ct := newChildIDHandlerTestSetup(RoleRouter, 2)
+	h, _, _, _, ct := newChildIDHandlerTestSetup(RoleRouter, 2)
 
 	childAddr := types.ExtAddress{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	c := ct.GetNewChild()
@@ -748,7 +745,7 @@ func TestHandleChildIDRequest_RejectsWhenAttaching(t *testing.T) {
 	mode := NewDeviceMode(ModeRxOnWhenIdle | ModeFullThreadDevice)
 	timeout := uint32(300)
 
-	h, m, _, _, _, ct := newChildIDHandlerTestSetup(RoleRouter, 2)
+	h, m, _, _, ct := newChildIDHandlerTestSetup(RoleRouter, 2)
 
 	// Put MLE into attaching state.
 	m.mu.Lock()

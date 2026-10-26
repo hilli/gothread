@@ -23,10 +23,10 @@ import (
 const DefaultDomain = "default.service.arpa."
 
 // ServicesDnssdUdp is the well-known name for DNS-SD service type enumeration.
-const ServicesDnssdUdp = "_services._dns-sd._udp"
+const ServicesDnssdUdp = "_services._dns-sd._udp" //nolint:revive // Preserve the exported API spelling for existing callers.
 
 // ServicesDnssdUdpFull is the fully-qualified service type enumeration name.
-const ServicesDnssdUdpFull = ServicesDnssdUdp + "." + DefaultDomain
+const ServicesDnssdUdpFull = ServicesDnssdUdp + "." + DefaultDomain //nolint:revive // Preserve the exported API spelling for existing callers.
 
 // Port is the default DNS server port.
 const Port uint16 = 53
@@ -235,7 +235,7 @@ func (s *Server) HandleQuery(queryData []byte) ([]byte, error) {
 
 	var answers []DnsRecord
 	var additional []DnsRecord
-	var rcode uint8 = RCodeSuccess
+	var rcode uint8
 
 	switch {
 	case isServiceTypeEnumeration(q.Name):
@@ -275,7 +275,7 @@ func (s *Server) HandleQuery(queryData []byte) ([]byte, error) {
 
 // HandleDnsQueryOverCoap processes a DNS query received via CoAP transport.
 // The payload is treated as a standard DNS query message.
-func (s *Server) HandleDnsQueryOverCoap(message []byte) ([]byte, error) {
+func (s *Server) HandleDnsQueryOverCoap(message []byte) ([]byte, error) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	return s.HandleQuery(message)
 }
 
@@ -349,7 +349,7 @@ func extractHostName(name string) string {
 	return strings.TrimSuffix(name, ".")
 }
 
-func (s *Server) handleServiceTypeEnumeration(q DnsQuestion) ([]DnsRecord, uint8) {
+func (s *Server) handleServiceTypeEnumeration(q DnsQuestion) (records []DnsRecord, responseCode uint8) {
 	types, err := s.resolver.GetAllServiceTypes()
 	if err != nil {
 		return nil, RCodeServerFailure
@@ -369,7 +369,7 @@ func (s *Server) handleServiceTypeEnumeration(q DnsQuestion) ([]DnsRecord, uint8
 	return answers, RCodeSuccess
 }
 
-func (s *Server) handleBrowse(q DnsQuestion) (answers []DnsRecord, additional []DnsRecord, rcode uint8) {
+func (s *Server) handleBrowse(q DnsQuestion) (answers, additional []DnsRecord, rcode uint8) {
 	serviceType := extractServiceType(q.Name)
 
 	instances, err := s.resolver.BrowseServices(serviceType)
@@ -400,7 +400,7 @@ func (s *Server) handleBrowse(q DnsQuestion) (answers []DnsRecord, additional []
 	return answers, additional, RCodeSuccess
 }
 
-func (s *Server) handleResolve(q DnsQuestion) (answers []DnsRecord, additional []DnsRecord, rcode uint8) {
+func (s *Server) handleResolve(q DnsQuestion) (answers, additional []DnsRecord, rcode uint8) {
 	instance, serviceType, ok := extractInstanceAndServiceType(q.Name)
 	if !ok {
 		return nil, nil, RCodeNameError
@@ -445,7 +445,7 @@ func (s *Server) handleResolve(q DnsQuestion) (answers []DnsRecord, additional [
 	return answers, additional, RCodeSuccess
 }
 
-func (s *Server) handleHostResolve(q DnsQuestion) ([]DnsRecord, uint8) {
+func (s *Server) handleHostResolve(q DnsQuestion) (records []DnsRecord, responseCode uint8) {
 	hostName := extractHostName(q.Name)
 
 	host, err := s.resolver.ResolveHost(hostName)
@@ -467,7 +467,7 @@ func (s *Server) handleHostResolve(q DnsQuestion) ([]DnsRecord, uint8) {
 	return answers, RCodeSuccess
 }
 
-func (s *Server) handleAnyQuery(q DnsQuestion) (answers []DnsRecord, additional []DnsRecord, rcode uint8) {
+func (s *Server) handleAnyQuery(q DnsQuestion) (answers, additional []DnsRecord, rcode uint8) {
 	// Try service instance resolve first.
 	instance, serviceType, ok := extractInstanceAndServiceType(q.Name)
 	if ok {
@@ -479,8 +479,7 @@ func (s *Server) handleAnyQuery(q DnsQuestion) (answers []DnsRecord, additional 
 				Class: ClassIN,
 				TTL:   info.TTL,
 				RData: EncodeSrvRData(info.Priority, info.Weight, info.Port, info.HostName),
-			})
-			answers = append(answers, DnsRecord{
+			}, DnsRecord{
 				Name:  q.Name,
 				Type:  TypeTXT,
 				Class: ClassIN,
@@ -530,8 +529,7 @@ func appendServiceRecords(records []DnsRecord, info *ServiceInstanceInfo) []DnsR
 		Class: ClassIN,
 		TTL:   info.TTL,
 		RData: EncodeSrvRData(info.Priority, info.Weight, info.Port, info.HostName),
-	})
-	records = append(records, DnsRecord{
+	}, DnsRecord{
 		Name:  info.FullName,
 		Type:  TypeTXT,
 		Class: ClassIN,

@@ -461,9 +461,11 @@ func (a *Agent) forwardToLeaderLocked(leaderURI string, msg *coap.Message, info 
 
 	// Send to Leader with a response handler that relays back.
 	capturedCtx := ctx
-	a.transport.SendRequest(leaderMsg, leaderInfo, func(resp *coap.Message, respInfo coap.MessageInfo, err error) {
+	if err := a.transport.SendRequest(leaderMsg, leaderInfo, func(resp *coap.Message, respInfo coap.MessageInfo, err error) {
 		a.handleLeaderResponse(resp, respInfo, err, capturedCtx)
-	})
+	}); err != nil {
+		a.removeForwardContext(ctx)
+	}
 }
 
 // handleLeaderResponse relays the Leader's response back to the Commissioner
@@ -484,9 +486,10 @@ func (a *Agent) handleLeaderResponse(resp *coap.Message, respInfo coap.MessageIn
 	}
 
 	// Check if the petition was accepted.
-	if ctx.origURI == "c/cp" {
+	switch ctx.origURI {
+	case "c/cp":
 		a.handlePetitionResponseLocked(resp)
-	} else if ctx.origURI == "c/ca" {
+	case "c/ca":
 		a.handleKeepAliveResponseLocked(resp)
 	}
 
@@ -510,7 +513,7 @@ func (a *Agent) handleLeaderResponse(resp *coap.Message, respInfo coap.MessageIn
 func (a *Agent) handlePetitionResponseLocked(resp *coap.Message) {
 	payload := resp.GetPayload()
 	stateTLV := findTLVInBytes(payload, meshcop.TLVState)
-	if stateTLV == nil || len(stateTLV) != 1 {
+	if len(stateTLV) != 1 {
 		return
 	}
 
@@ -520,7 +523,7 @@ func (a *Agent) handlePetitionResponseLocked(resp *coap.Message) {
 
 	// Extract session ID.
 	sessionTLV := findTLVInBytes(payload, meshcop.TLVCommissionerSessionID)
-	if sessionTLV == nil || len(sessionTLV) != 2 {
+	if len(sessionTLV) != 2 {
 		return
 	}
 
@@ -541,7 +544,7 @@ func (a *Agent) handlePetitionResponseLocked(resp *coap.Message) {
 func (a *Agent) handleKeepAliveResponseLocked(resp *coap.Message) {
 	payload := resp.GetPayload()
 	stateTLV := findTLVInBytes(payload, meshcop.TLVState)
-	if stateTLV == nil || len(stateTLV) != 1 {
+	if len(stateTLV) != 1 {
 		return
 	}
 
@@ -562,7 +565,7 @@ func (a *Agent) handleKeepAliveLocked(msg *coap.Message, info coap.MessageInfo) 
 	// Check for resign (State = Reject).
 	payload := msg.GetPayload()
 	stateTLV := findTLVInBytes(payload, meshcop.TLVState)
-	if stateTLV != nil && len(stateTLV) == 1 && stateTLV[0] == meshcop.StateReject {
+	if len(stateTLV) == 1 && stateTLV[0] == meshcop.StateReject {
 		// Commissioner is resigning — forward to Leader and revoke.
 		a.forwardToLeaderLocked("c/la", msg, info)
 		a.revokeCommissionerLocked()
@@ -593,7 +596,7 @@ func (a *Agent) handleRelayTxLocked(msg *coap.Message, _ coap.MessageInfo) {
 
 	// Parse Joiner Router Locator from the RelayTx payload.
 	rlocBytes := findTLVInBytes(payload, meshcop.TLVJoinerRouterLocator)
-	if rlocBytes == nil || len(rlocBytes) != 2 {
+	if len(rlocBytes) != 2 {
 		return
 	}
 	joinerRouterRLOC := binary.BigEndian.Uint16(rlocBytes)
@@ -668,7 +671,7 @@ func (a *Agent) handleDatasetGetLocked(msg *coap.Message, info coap.MessageInfo,
 
 	var respPayload []byte
 
-	if getTLV != nil && len(getTLV) > 0 {
+	if len(getTLV) > 0 {
 		// Return only the requested TLV types.
 		for _, typ := range getTLV {
 			t := ds.FindTLV(meshcop.TLVType(typ))
@@ -708,13 +711,13 @@ func (a *Agent) handleProxyTxLocked(msg *coap.Message, _ coap.MessageInfo) {
 
 	// Parse UDP Encapsulation TLV (type 48): src_port(2) + dst_port(2) + payload.
 	udpEnc := findTLVInBytesExtended(payload, meshcop.TLVUDPEncapsulation)
-	if udpEnc == nil || len(udpEnc) < 4 {
+	if len(udpEnc) < 4 {
 		return
 	}
 
 	// Parse IPv6 Address TLV (type 49): 16-byte destination address.
 	addrTLV := findTLVInBytes(payload, meshcop.TLVIP6Address)
-	if addrTLV == nil || len(addrTLV) != 16 {
+	if len(addrTLV) != 16 {
 		return
 	}
 

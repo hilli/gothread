@@ -98,15 +98,18 @@ func TestDecompressHeader(t *testing.T) {
 			data: func() []byte {
 				// IPHC = 0x6000: TF=00, NH=inline, HLIM=inline, SAC=0, SAM=00, M=0, DAC=0, DAM=00
 				d := []byte{0x60, 0x00}
-				d = append(d, 0x00, 0x00, 0x00, 0x00) // TF=00: 4 bytes (ECN=0, DSCP=0, Flow=0)
-				d = append(d, 0x11)                   // NH = UDP (17)
-				d = append(d, 0x40)                   // HL = 64
-				// Src: fe80::0200:5eef:1022:1100
-				d = append(d, 0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
-				d = append(d, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00)
-				// Dst: fe80::0200:5eef:10aa:bbcc
-				d = append(d, 0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
-				d = append(d, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc)
+				d = append(d,
+					// TF=00: 4 bytes (ECN=0, DSCP=0, Flow=0)
+					0x00, 0x00, 0x00, 0x00,
+					// NH = UDP (17)
+					0x11,
+					// HL = 64
+					0x40,
+					// Src: fe80::0200:5eef:1022:1100
+					0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00,
+					// Dst: fe80::0200:5eef:10aa:bbcc
+					0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc,
+				)
 				return d
 			}(),
 			macAddrs:     testMacAddrs(),
@@ -135,8 +138,12 @@ func TestDecompressHeader(t *testing.T) {
 			// = 0x7A23
 			data: func() []byte {
 				d := []byte{0x7A, 0x23}
-				d = append(d, 0x11)       // NH=UDP
-				d = append(d, 0x00, 0x00) // 16-bit src short = 0x0000
+				d = append(d,
+					// NH=UDP
+					0x11,
+					// 16-bit src short = 0x0000
+					0x00, 0x00,
+				)
 				return d
 			}(),
 			macAddrs: testMacAddrs(),
@@ -183,9 +190,11 @@ func TestDecompressHeader(t *testing.T) {
 			// 011 11_0_01 0_01_0_0_11 = 0x7913
 			data: func() []byte {
 				d := []byte{0x79, 0x13}
-				d = append(d, 0x11) // NH=UDP
-				// 64-bit IID inline for source
-				d = append(d, 0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44)
+				d = append(d,
+					0x11, // NH=UDP
+					// 64-bit IID inline for source
+					0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
+				)
 				return d
 			}(),
 			macAddrs: testMacAddrs(),
@@ -206,9 +215,11 @@ func TestDecompressHeader(t *testing.T) {
 			// 011 11_0_01 0_11_0_0_01 = 0x7931
 			data: func() []byte {
 				d := []byte{0x79, 0x31}
-				d = append(d, 0x11)
-				// 64-bit dst IID inline
-				d = append(d, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88)
+				d = append(d,
+					0x11, // NH=UDP
+					// 64-bit dst IID inline
+					0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+				)
 				return d
 			}(),
 			macAddrs: testMacAddrs(),
@@ -229,8 +240,12 @@ func TestDecompressHeader(t *testing.T) {
 			// 011 11_0_01 0_11_0_0_10 = 0x7932
 			data: func() []byte {
 				d := []byte{0x79, 0x32}
-				d = append(d, 0x11)       // NH=UDP
-				d = append(d, 0xC0, 0x03) // dst short = 0xC003
+				d = append(d,
+					// NH=UDP
+					0x11,
+					// dst short = 0xC003
+					0xC0, 0x03,
+				)
 				return d
 			}(),
 			macAddrs: testMacAddrs(),
@@ -274,9 +289,14 @@ func TestDecompressHeader(t *testing.T) {
 			// 011 11_0_01 0_11_1_0_10 = 0x793A
 			data: func() []byte {
 				d := []byte{0x79, 0x3A}
-				d = append(d, 0x11)             // NH
-				d = append(d, 0x05)             // scope byte → ff05
-				d = append(d, 0xDB, 0x12, 0x34) // 00DB:1234
+				d = append(d,
+					// NH
+					0x11,
+					// scope byte → ff05
+					0x05,
+					// 00DB:1234
+					0xDB, 0x12, 0x34,
+				)
 				return d
 			}(),
 			macAddrs: testMacAddrs(),
@@ -301,10 +321,15 @@ func TestDecompressHeader(t *testing.T) {
 			// 011 11_0_01 0_11_1_0_01 = 0x7939
 			data: func() []byte {
 				d := []byte{0x79, 0x39}
-				d = append(d, 0x11) // NH
-				d = append(d, 0x15) // scope → ff15
-				d = append(d, 0xDB) // byte at [11]
-				d = append(d, 0x12, 0x34, 0x56, 0x78)
+				d = append(d,
+					// NH
+					0x11,
+					// scope → ff15
+					0x15,
+					// byte at [11]
+					0xDB,
+					0x12, 0x34, 0x56, 0x78,
+				)
 				return d
 			}(),
 			macAddrs: testMacAddrs(),
@@ -331,10 +356,12 @@ func TestDecompressHeader(t *testing.T) {
 			// 011 11_0_01 0_11_1_0_00 = 0x7938
 			data: func() []byte {
 				d := []byte{0x79, 0x38}
-				d = append(d, 0x11) // NH=UDP
-				// Full multicast addr ff05::1
-				d = append(d, 0xFF, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-					0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01)
+				d = append(d,
+					0x11, // NH=UDP
+					// Full multicast addr ff05::1
+					0xFF, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+					0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+				)
 				return d
 			}(),
 			macAddrs: testMacAddrs(),
@@ -358,8 +385,11 @@ func TestDecompressHeader(t *testing.T) {
 				d := []byte{0x61, 0x33}
 				// TF=00: 4 bytes. ECN=2, DSCP=7 → inline[0] = (2<<6)|7 = 0x87
 				// Flow = 0x12345 → inline[1] = 0x01, inline[2] = 0x23, inline[3] = 0x45
-				d = append(d, 0x87, 0x01, 0x23, 0x45)
-				d = append(d, 0x11) // NH=UDP
+				d = append(d,
+					0x87, 0x01, 0x23, 0x45,
+					// NH=UDP
+					0x11,
+				)
 				return d
 			}(),
 			macAddrs:     testMacAddrs(),
@@ -379,8 +409,11 @@ func TestDecompressHeader(t *testing.T) {
 				d := []byte{0x69, 0x33}
 				// TF=01: 3 bytes. ECN=1 → inline[0] high 2 bits = 01
 				// Flow = 0xABCDE → inline[0] low nibble = 0x0A, inline[1] = 0xBC, inline[2] = 0xDE
-				d = append(d, 0x4A, 0xBC, 0xDE)
-				d = append(d, 0x11) // NH=UDP
+				d = append(d,
+					0x4A, 0xBC, 0xDE,
+					// NH=UDP
+					0x11,
+				)
 				return d
 			}(),
 			macAddrs:     testMacAddrs(),
@@ -399,8 +432,11 @@ func TestDecompressHeader(t *testing.T) {
 			data: func() []byte {
 				d := []byte{0x71, 0x33}
 				// TF=10: 1 byte. ECN=3, DSCP=15 → (3<<6)|15 = 0xCF
-				d = append(d, 0xCF)
-				d = append(d, 0x11) // NH=UDP
+				d = append(d,
+					0xCF,
+					// NH=UDP
+					0x11,
+				)
 				return d
 			}(),
 			macAddrs:     testMacAddrs(),
@@ -430,8 +466,12 @@ func TestDecompressHeader(t *testing.T) {
 			// = 0111 1001 1111 0011 = 0x79F3
 			data: func() []byte {
 				d := []byte{0x79, 0xF3}
-				d = append(d, 0x00) // CID byte: SCI=0, DCI=0
-				d = append(d, 0x11) // NH=UDP
+				d = append(d,
+					// CID byte: SCI=0, DCI=0
+					0x00,
+					// NH=UDP
+					0x11,
+				)
 				return d
 			}(),
 			macAddrs: testMacAddrs(),
@@ -465,8 +505,12 @@ func TestDecompressHeader(t *testing.T) {
 			// = 0111 1001 1011 0111 = 0x79B7
 			data: func() []byte {
 				d := []byte{0x79, 0xB7}
-				d = append(d, 0x01) // CID: SCI=0, DCI=1
-				d = append(d, 0x11) // NH=UDP
+				d = append(d,
+					// CID: SCI=0, DCI=1
+					0x01,
+					// NH=UDP
+					0x11,
+				)
 				return d
 			}(),
 			macAddrs: testMacAddrs(),
@@ -491,10 +535,14 @@ func TestDecompressHeader(t *testing.T) {
 			// = 0111 1001 1101 0011 = 0x79D3
 			data: func() []byte {
 				d := []byte{0x79, 0xD3}
-				d = append(d, 0x00) // CID: SCI=0, DCI=0
-				d = append(d, 0x11) // NH=UDP
-				// 64-bit IID inline
-				d = append(d, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11)
+				d = append(d,
+					// CID: SCI=0, DCI=0
+					0x00,
+					// NH=UDP
+					0x11,
+					// 64-bit IID inline
+					0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11,
+				)
 				return d
 			}(),
 			macAddrs: testMacAddrs(),
@@ -906,7 +954,7 @@ func TestCompressDecompressRoundTrip(t *testing.T) {
 				h[0] = 0x60 | (tc >> 4)
 				h[1] = (tc << 4) | 0x01 // flow high nibble = 1
 				h[2] = 0x23
-				h[3] = 0x45 // flow = 0x12345
+				h[3] = 0x45 // Complete the flow label 0x12345.
 				h[6] = 17
 				h[7] = 255
 				copy(h[8:], linkLocalPrefix[:])
@@ -1714,9 +1762,14 @@ func TestDecompressHeaderStatefulEdgeCases(t *testing.T) {
 		// = 0111 1001 1110 0011 = 0x79E3
 		data := func() []byte {
 			d := []byte{0x79, 0xE3}
-			d = append(d, 0x00)       // CID: SCI=0, DCI=0
-			d = append(d, 0x11)       // NH=UDP
-			d = append(d, 0xAB, 0xCD) // 16-bit short
+			d = append(d,
+				// CID: SCI=0, DCI=0
+				0x00,
+				// NH=UDP
+				0x11,
+				// 16-bit short
+				0xAB, 0xCD,
+			)
 			return d
 		}()
 
@@ -1746,9 +1799,13 @@ func TestDecompressHeaderStatefulEdgeCases(t *testing.T) {
 		// = 0111 1001 1011 0101 = 0x79B5
 		data := func() []byte {
 			d := []byte{0x79, 0xB5}
-			d = append(d, 0x01) // CID: SCI=0, DCI=1
-			d = append(d, 0x11) // NH=UDP
-			d = append(d, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88)
+			d = append(d,
+				// CID: SCI=0, DCI=1
+				0x01,
+				// NH=UDP
+				0x11,
+				0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+			)
 			return d
 		}()
 
@@ -1774,9 +1831,14 @@ func TestDecompressHeaderStatefulEdgeCases(t *testing.T) {
 		// = 0111 1001 1011 0110 = 0x79B6
 		data := func() []byte {
 			d := []byte{0x79, 0xB6}
-			d = append(d, 0x01)       // CID: SCI=0, DCI=1
-			d = append(d, 0x11)       // NH=UDP
-			d = append(d, 0xC0, 0x03) // 16-bit short
+			d = append(d,
+				// CID: SCI=0, DCI=1
+				0x01,
+				// NH=UDP
+				0x11,
+				// 16-bit short
+				0xC0, 0x03,
+			)
 			return d
 		}()
 
@@ -1805,8 +1867,12 @@ func TestDecompressHeaderStatefulEdgeCases(t *testing.T) {
 		// = 0111 1001 1011 0100 = 0x79B4
 		data := func() []byte {
 			d := []byte{0x79, 0xB4}
-			d = append(d, 0x01) // CID: SCI=0, DCI=1
-			d = append(d, 0x11) // NH=UDP
+			d = append(d,
+				// CID: SCI=0, DCI=1
+				0x01,
+				// NH=UDP
+				0x11,
+			)
 			return d
 		}()
 
@@ -1821,10 +1887,14 @@ func TestDecompressHeaderStatefulEdgeCases(t *testing.T) {
 		// = 0111 1001 1011 1100 = 0x79BC
 		data := func() []byte {
 			d := []byte{0x79, 0xBC}
-			d = append(d, 0x00) // CID: SCI=0, DCI=0
-			d = append(d, 0x11) // NH=UDP
-			// 6 bytes: scope, flags, 4 bytes suffix
-			d = append(d, 0x35, 0x00, 0xAA, 0xBB, 0xCC, 0xDD)
+			d = append(d,
+				// CID: SCI=0, DCI=0
+				0x00,
+				// NH=UDP
+				0x11,
+				// 6 bytes: scope, flags, 4 bytes suffix
+				0x35, 0x00, 0xAA, 0xBB, 0xCC, 0xDD,
+			)
 			return d
 		}()
 

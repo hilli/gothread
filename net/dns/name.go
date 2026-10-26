@@ -158,7 +158,7 @@ func AppendMultipleLabels(buf []byte, labels string) ([]byte, error) {
 //
 // The first label may contain dot characters (for service instance names).
 // Subsequent labels with dots cause ErrParse.
-func ReadName(data []byte, offset int) (string, int, error) {
+func ReadName(data []byte, offset int) (decodedName string, nextOffset int, readErr error) {
 	if offset < 0 || offset >= len(data) {
 		return "", offset, errors.ErrParse
 	}
@@ -282,7 +282,7 @@ func ReadLabel(data []byte, offset int) (label string, newOffset int, isPointer 
 // CompareName compares a wire-encoded name at offset against a string name,
 // case-insensitively. Always advances offset past the wire name even on
 // mismatch. Returns (match, newOffset, error).
-func CompareName(data []byte, offset int, name string) (bool, int, error) {
+func CompareName(data []byte, offset int, name string) (matched bool, nextOffset int, compareErr error) {
 	if offset < 0 || offset >= len(data) {
 		return false, offset, errors.ErrParse
 	}
@@ -564,7 +564,7 @@ func ExtractLabels(name, suffix string) (string, error) {
 
 // caseInsensitiveEqual returns true if a and b are the same byte or differ
 // only in ASCII letter case.
-func caseInsensitiveEqual(a byte, b byte) bool {
+func caseInsensitiveEqual(a, b byte) bool {
 	if a == b {
 		return true
 	}

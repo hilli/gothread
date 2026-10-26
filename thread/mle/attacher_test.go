@@ -186,10 +186,11 @@ func buildParentResponseTLVs(
 	// Version
 	var verVal [2]byte
 	encoding.BigEndianWriteUint16(version, verVal[:])
-	tlvs = append(tlvs, TLV{Type: TLVVersion, Value: verVal[:]})
-
-	// Response (echo our challenge)
-	tlvs = append(tlvs, TLV{Type: TLVResponse, Value: challenge[:]})
+	tlvs = append(tlvs,
+		TLV{Type: TLVVersion, Value: verVal[:]},
+		// Response (echo our challenge)
+		TLV{Type: TLVResponse, Value: challenge[:]},
+	)
 
 	// LeaderData
 	var ldVal [LeaderDataTLVSize]byte
@@ -198,10 +199,11 @@ func buildParentResponseTLVs(
 	ldVal[5] = leaderData.DataVersion
 	ldVal[6] = leaderData.StableDataVersion
 	ldVal[7] = leaderData.LeaderRouterID
-	tlvs = append(tlvs, TLV{Type: TLVLeaderData, Value: ldVal[:]})
-
-	// LinkMargin
-	tlvs = append(tlvs, TLV{Type: TLVLinkMargin, Value: []byte{linkMargin}})
+	tlvs = append(tlvs,
+		TLV{Type: TLVLeaderData, Value: ldVal[:]},
+		// LinkMargin
+		TLV{Type: TLVLinkMargin, Value: []byte{linkMargin}},
+	)
 
 	// Connectivity
 	connVal := make([]byte, ConnectivityTLVMinSize)
@@ -217,10 +219,11 @@ func buildParentResponseTLVs(
 	// LinkFrameCounter
 	var fcVal [4]byte
 	encoding.BigEndianWriteUint32(linkFrameCounter, fcVal[:])
-	tlvs = append(tlvs, TLV{Type: TLVLinkFrameCounter, Value: fcVal[:]})
-
-	// Challenge (parent's challenge)
-	tlvs = append(tlvs, TLV{Type: TLVChallenge, Value: parentChallenge[:]})
+	tlvs = append(tlvs,
+		TLV{Type: TLVLinkFrameCounter, Value: fcVal[:]},
+		// Challenge (parent's challenge)
+		TLV{Type: TLVChallenge, Value: parentChallenge[:]},
+	)
 
 	return tlvs
 }
@@ -437,10 +440,11 @@ func buildChildIDResponseTLVs(
 	ldVal[5] = leaderData.DataVersion
 	ldVal[6] = leaderData.StableDataVersion
 	ldVal[7] = leaderData.LeaderRouterID
-	tlvs = append(tlvs, TLV{Type: TLVLeaderData, Value: ldVal[:]})
-
-	// NetworkData (present but empty for testing)
-	tlvs = append(tlvs, TLV{Type: TLVNetworkData, Value: []byte{}})
+	tlvs = append(tlvs,
+		TLV{Type: TLVLeaderData, Value: ldVal[:]},
+		// NetworkData (present but empty for testing)
+		TLV{Type: TLVNetworkData, Value: []byte{}},
+	)
 
 	return tlvs
 }

@@ -245,7 +245,7 @@ func (n *NetIf) SubscribeAllNodesMulticast() {
 	if n.subscribedAllNodes {
 		return
 	}
-	for _, addr := range []([16]byte){AllNodesLinkLocal, AllNodesRealmLocal} {
+	for _, addr := range [][16]byte{AllNodesLinkLocal, AllNodesRealmLocal} {
 		if !n.HasMulticastAddress(addr) {
 			n.multicastAddresses = append(n.multicastAddresses,
 				MulticastAddress{Address: addr, Origin: OriginThread})
@@ -261,7 +261,7 @@ func (n *NetIf) SubscribeAllRoutersMulticast() {
 	if n.subscribedAllRouters {
 		return
 	}
-	for _, addr := range []([16]byte){AllRoutersLinkLocal, AllRoutersRealmLocal} {
+	for _, addr := range [][16]byte{AllRoutersLinkLocal, AllRoutersRealmLocal} {
 		if !n.HasMulticastAddress(addr) {
 			n.multicastAddresses = append(n.multicastAddresses,
 				MulticastAddress{Address: addr, Origin: OriginThread})
@@ -277,7 +277,7 @@ func (n *NetIf) UnsubscribeAllRoutersMulticast() {
 	if !n.subscribedAllRouters {
 		return
 	}
-	for _, addr := range []([16]byte){AllRoutersLinkLocal, AllRoutersRealmLocal} {
+	for _, addr := range [][16]byte{AllRoutersLinkLocal, AllRoutersRealmLocal} {
 		for i := range n.multicastAddresses {
 			if n.multicastAddresses[i].Address == addr {
 				n.multicastAddresses = append(n.multicastAddresses[:i], n.multicastAddresses[i+1:]...)

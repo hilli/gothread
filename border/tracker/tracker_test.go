@@ -5,6 +5,7 @@
 package tracker
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -18,14 +19,12 @@ import (
 func buildPrefixTlv(prefix [16]byte, prefixLen uint8, subTlvs []byte) []byte {
 	prefixBytes := int((prefixLen + 7) / 8)
 	value := make([]byte, 0, 2+prefixBytes+len(subTlvs))
-	value = append(value, 0)         // domainID
-	value = append(value, prefixLen) // prefix length in bits
+	value = append(value, 0, prefixLen) // Domain ID, then prefix length in bits.
 	value = append(value, prefix[:prefixBytes]...)
 	value = append(value, subTlvs...)
 
 	tlv := make([]byte, 0, 2+len(value))
-	tlv = append(tlv, tlvTypePrefix)    // type
-	tlv = append(tlv, byte(len(value))) // length
+	tlv = append(tlv, tlvTypePrefix, byte(len(value)))
 	tlv = append(tlv, value...)
 	return tlv
 }
@@ -170,7 +169,7 @@ func TestParseMultiplePrefixes(t *testing.T) {
 	sub2 := buildBorderRouterSubTlv(0x0800, false, prefHigh)
 	tlv2 := buildPrefixTlv(prefix2, 64, sub2)
 
-	data := append(tlv1, tlv2...)
+	data := slices.Concat(tlv1, tlv2)
 	tr.HandleNetworkDataChanged(data)
 
 	if tr.GetBorderRouterCount() != 2 {
@@ -197,7 +196,7 @@ func TestParseDuplicateBorderRouter(t *testing.T) {
 	sub2 := buildBorderRouterSubTlv(0x0400, true, prefMedium) // same RLOC
 	tlv2 := buildPrefixTlv(prefix2, 64, sub2)
 
-	data := append(tlv1, tlv2...)
+	data := slices.Concat(tlv1, tlv2)
 	tr.HandleNetworkDataChanged(data)
 
 	// Should deduplicate border routers by router ID.
@@ -281,7 +280,7 @@ func TestGetFavoredOmrPrefixByPreference(t *testing.T) {
 	sub2 := buildBorderRouterSubTlv(0x0800, false, prefHigh)
 	tlv2 := buildPrefixTlv(prefix2, 64, sub2)
 
-	data := append(tlv1, tlv2...)
+	data := slices.Concat(tlv1, tlv2)
 	tr.HandleNetworkDataChanged(data)
 
 	p, _, pref, found := tr.GetFavoredOmrPrefix()
@@ -307,7 +306,7 @@ func TestGetFavoredOmrPrefixTiebreak(t *testing.T) {
 	sub2 := buildBorderRouterSubTlv(0x0800, false, prefMedium)
 	tlv2 := buildPrefixTlv(prefix2, 64, sub2)
 
-	data := append(tlv1, tlv2...)
+	data := slices.Concat(tlv1, tlv2)
 	tr.HandleNetworkDataChanged(data)
 
 	p, _, _, found := tr.GetFavoredOmrPrefix()

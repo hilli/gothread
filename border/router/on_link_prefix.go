@@ -84,7 +84,7 @@ func (m *OnLinkPrefixManager) Evaluate(hasDiscoveredOnLink bool) bool {
 
 // GetLocalPrefix returns the locally generated on-link prefix bytes, prefix
 // length, and whether a local prefix has been generated.
-func (m *OnLinkPrefixManager) GetLocalPrefix() ([16]byte, uint8, bool) {
+func (m *OnLinkPrefixManager) GetLocalPrefix() (prefix [16]byte, length uint8, found bool) {
 	return m.localPrefix, m.localPrefixLen, m.hasLocalPrefix
 }
 

@@ -20,6 +20,7 @@ package dtls
 import (
 	"crypto/ecdsa"
 	"crypto/x509"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -177,13 +178,14 @@ type PeerInfo struct {
 	Port uint16
 }
 
-// Key returns a string key suitable for use as a map key.
-func (p PeerInfo) Key() peerKey {
-	return peerKey{addr: p.Address, port: p.Port}
+// Key returns the comparable identity of this endpoint for use as a map key.
+func (p PeerInfo) Key() PeerKey {
+	return PeerKey{addr: p.Address, port: p.Port}
 }
 
-// peerKey is an internal comparable type for map lookups.
-type peerKey struct {
+// PeerKey identifies an endpoint by its address and port.
+// Obtain a key from PeerInfo.Key.
+type PeerKey struct {
 	addr [16]byte
 	port uint16
 }
@@ -347,10 +349,10 @@ func (s *Session) SetReceiveHandler(h ReceiveHandler) {
 
 // SetMaxAttempts configures the maximum number of connection attempts.
 // A value of 0 means unlimited attempts.
-func (s *Session) SetMaxAttempts(max uint16) {
+func (s *Session) SetMaxAttempts(maxAttempts uint16) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.maxAttempts = max
+	s.maxAttempts = maxAttempts
 }
 
 // Connect initiates a client-side DTLS connection to the given peer using
@@ -444,7 +446,9 @@ func (s *Session) handleHandshakeFailure(event ConnectEvent) {
 	s.mu.Lock()
 	s.state = StateDisconnected
 	if s.conn != nil {
-		s.conn.Close()
+		if err := s.conn.Close(); err != nil {
+			slog.Warn("Failed to close DTLS connection after handshake failure", "error", err)
+		}
 		s.conn = nil
 	}
 	s.mu.Unlock()
@@ -532,7 +536,9 @@ func (s *Session) disconnectWithEvent(event ConnectEvent) {
 
 	// Close the underlying connection (sends close_notify).
 	if s.conn != nil {
-		s.conn.Close()
+		if err := s.conn.Close(); err != nil {
+			slog.Warn("Failed to close DTLS connection during disconnect", "error", err)
+		}
 		s.conn = nil
 	}
 
@@ -580,7 +586,9 @@ func (s *Session) KEK() ([32]byte, bool) {
 func (s *Session) Reset() {
 	s.mu.Lock()
 	if s.conn != nil {
-		s.conn.Close()
+		if err := s.conn.Close(); err != nil {
+			slog.Warn("Failed to close DTLS connection during reset", "error", err)
+		}
 		s.conn = nil
 	}
 	if s.guardTimer != nil {
@@ -642,7 +650,7 @@ type ConnFactory interface {
 type Transport struct {
 	mu sync.Mutex
 
-	sessions map[peerKey]*Session
+	sessions map[PeerKey]*Session
 	cred     *Credential
 	factory  ConnFactory
 
@@ -670,7 +678,7 @@ func NewTransport(factory ConnFactory, cred *Credential) (*Transport, error) {
 	}
 
 	return &Transport{
-		sessions: make(map[peerKey]*Session),
+		sessions: make(map[PeerKey]*Session),
 		cred:     cred,
 		factory:  factory,
 		port:     DefaultPort,
@@ -869,11 +877,11 @@ func (t *Transport) RemoveSession(peer PeerInfo) {
 func (t *Transport) Close() {
 	t.mu.Lock()
 	t.closed = true
-	sessions := make(map[peerKey]*Session)
+	sessions := make(map[PeerKey]*Session)
 	for k, v := range t.sessions {
 		sessions[k] = v
 	}
-	t.sessions = make(map[peerKey]*Session)
+	t.sessions = make(map[PeerKey]*Session)
 	t.mu.Unlock()
 
 	for _, s := range sessions {

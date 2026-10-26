@@ -594,7 +594,7 @@ type staticIIDGenerator struct {
 	iid [8]byte
 }
 
-func (g *staticIIDGenerator) GenerateIID(_ [16]byte, _ uint8, _ uint8) ([8]byte, error) {
+func (g *staticIIDGenerator) GenerateIID(_ [16]byte, _, _ uint8) ([8]byte, error) {
 	return g.iid, nil
 }
 
@@ -622,7 +622,7 @@ func TestManager_WithIIDGenerator(t *testing.T) {
 
 type failingIIDGenerator struct{}
 
-func (g *failingIIDGenerator) GenerateIID(_ [16]byte, _ uint8, _ uint8) ([8]byte, error) {
+func (g *failingIIDGenerator) GenerateIID(_ [16]byte, _, _ uint8) ([8]byte, error) {
 	return [8]byte{}, errors.ErrFailed
 }
 

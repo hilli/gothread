@@ -883,11 +883,12 @@ func TestMeshDiag_HandleDiagnosticResponse(t *testing.T) {
 
 	var data []byte
 	// ExtAddress TLV: type=0, len=8
-	data = append(data, DiagTLVExtAddress, 8)
-	data = append(data, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11)
-	// Version TLV: type=24, len=2
-	data = append(data, DiagTLVVersion, 2)
-	data = append(data, 0x00, 0x04) // version 4
+	data = append(data,
+		DiagTLVExtAddress, 8, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,
+		// Version TLV: type=24, len=2
+		// version 4
+		DiagTLVVersion, 2, 0x00, 0x04,
+	)
 
 	md.HandleDiagnosticResponse(source, data)
 
@@ -1006,8 +1007,7 @@ func TestMeshDiag_ParseAddress16TLV(t *testing.T) {
 
 	// Address16 TLV overrides the RLOC from source.
 	var data []byte
-	data = append(data, DiagTLVAddress16, 2)
-	data = append(data, 0x0C, 0x00)
+	data = append(data, DiagTLVAddress16, 2, 0x0C, 0x00)
 
 	md.HandleDiagnosticResponse(source, data)
 

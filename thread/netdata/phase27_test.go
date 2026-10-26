@@ -136,9 +136,9 @@ func TestGetServiceAloc(t *testing.T) {
 	}
 }
 
-// buildDnsSrpAnycastNetData builds raw network data containing DNS/SRP anycast
+// buildDNSSrpAnycastNetData builds raw network data containing DNS/SRP anycast
 // service entries for testing the iterator and preferred-finding functions.
-func buildDnsSrpAnycastNetData(entries []struct {
+func buildDNSSrpAnycastNetData(entries []struct {
 	seqNum  uint8
 	version uint8
 	rloc16  uint16
@@ -169,7 +169,7 @@ func buildDnsSrpAnycastNetData(entries []struct {
 }
 
 func TestServiceIteratorAnycast(t *testing.T) {
-	data := buildDnsSrpAnycastNetData([]struct {
+	data := buildDNSSrpAnycastNetData([]struct {
 		seqNum  uint8
 		version uint8
 		rloc16  uint16
@@ -214,7 +214,7 @@ func TestServiceIteratorAnycast(t *testing.T) {
 func TestFindPreferredDnsSrpAnycastInfo(t *testing.T) {
 	// Two entries: seq 10 (version 3) and seq 20 (version 1).
 	// seq 20 > seq 10, so seq 20 wins. Version = 1.
-	data := buildDnsSrpAnycastNetData([]struct {
+	data := buildDNSSrpAnycastNetData([]struct {
 		seqNum  uint8
 		version uint8
 		rloc16  uint16
@@ -237,7 +237,7 @@ func TestFindPreferredDnsSrpAnycastInfo(t *testing.T) {
 
 func TestFindPreferredDnsSrpAnycastInfoMinVersion(t *testing.T) {
 	// Two entries with same seq 20: versions 3 and 1. Min version = 1.
-	data := buildDnsSrpAnycastNetData([]struct {
+	data := buildDNSSrpAnycastNetData([]struct {
 		seqNum  uint8
 		version uint8
 		rloc16  uint16
@@ -896,7 +896,7 @@ func TestNotifierRetryOnFailure(t *testing.T) {
 	// Retry — should succeed.
 	delay = n.SynchronizeServerData()
 	if delay != 0 {
-		// nextDelay was 0 from HandleServerDataUpdated
+		t.Errorf("retry delay = %d, want 0 after HandleServerDataUpdated", delay)
 	}
 	if !n.IsWaitingForResponse() {
 		t.Error("expected IsWaitingForResponse=true after successful retry")

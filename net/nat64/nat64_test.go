@@ -5,6 +5,7 @@
 package nat64
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -903,7 +904,7 @@ func TestUDPRoundTrip(t *testing.T) {
 	// Verify IPv4 UDP payload data is preserved.
 	udp4 := pkt4[ip4.HeaderMinSize:]
 	udpData := udp4[8:]
-	if string(udpData) != string(queryData) {
+	if !bytes.Equal(udpData, queryData) {
 		t.Fatalf("outbound data = %q, want %q", string(udpData), string(queryData))
 	}
 
@@ -936,7 +937,7 @@ func TestUDPRoundTrip(t *testing.T) {
 	// Verify payload data.
 	udp6 := pkt6[ip6.HeaderSize:]
 	udp6Data := udp6[8:]
-	if string(udp6Data) != string(respData) {
+	if !bytes.Equal(udp6Data, respData) {
 		t.Fatalf("inbound data = %q, want %q", string(udp6Data), string(respData))
 	}
 }

@@ -197,7 +197,7 @@ func (c *AesCcm) cbcMACBlock(x, block []byte) {
 // cbcMACAdditionalData processes the additional data with its length prefix
 // into the CBC-MAC state. For adLen < 0xFF00, the length is encoded as 2
 // bytes.
-func (c *AesCcm) cbcMACAdditionalData(x []byte, ad []byte) {
+func (c *AesCcm) cbcMACAdditionalData(x, ad []byte) {
 	// RFC 3610: if 0 < adLen < 0xFF00, encode as 2-byte big-endian.
 	var buf [blockSize]byte
 	binary.BigEndian.PutUint16(buf[:2], uint16(len(ad)))
@@ -221,7 +221,7 @@ func (c *AesCcm) cbcMACAdditionalData(x []byte, ad []byte) {
 }
 
 // cbcMACPayload processes the plaintext payload into the CBC-MAC state.
-func (c *AesCcm) cbcMACPayload(x []byte, payload []byte) {
+func (c *AesCcm) cbcMACPayload(x, payload []byte) {
 	var buf [blockSize]byte
 	remaining := payload
 	for len(remaining) > 0 {
@@ -234,7 +234,7 @@ func (c *AesCcm) cbcMACPayload(x []byte, payload []byte) {
 
 // ctr encrypts src into dst using CTR mode starting at counter 1 (A_1).
 // a is modified in place (counter incremented).
-func (c *AesCcm) ctr(a []byte, src, dst []byte) {
+func (c *AesCcm) ctr(a, src, dst []byte) {
 	var keystreamBlock [blockSize]byte
 	offset := 0
 

@@ -32,7 +32,7 @@ func NewDetector() *Detector {
 // HandleRouterIdUpdated updates the infra link ID associated with a
 // router ID. If the router ID is new, it is added; if it already
 // exists, its link ID is updated.
-func (d *Detector) HandleRouterIdUpdated(routerID uint8, infraLinkID uint32) {
+func (d *Detector) HandleRouterIdUpdated(routerID uint8, infraLinkID uint32) { //nolint:revive // Retain the established public API spelling for source compatibility.
 	d.routerLinks[routerID] = infraLinkID
 }
 
@@ -70,7 +70,7 @@ func (d *Detector) GetRouterCount() int {
 
 // GetLinkIdForRouter returns the infra link ID for a given router ID
 // and whether the router is being tracked.
-func (d *Detector) GetLinkIdForRouter(routerID uint8) (uint32, bool) {
+func (d *Detector) GetLinkIdForRouter(routerID uint8) (uint32, bool) { //nolint:revive // Retain the established public API spelling for source compatibility.
 	id, ok := d.routerLinks[routerID]
 	return id, ok
 }

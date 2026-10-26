@@ -122,7 +122,7 @@ func VerhoeffCalculate(s string) (byte, error) {
 // Returns true if and only if the string is non-empty, contains only ASCII
 // digits, and the check digit is correct.
 func VerhoeffValidate(s string) bool {
-	if len(s) == 0 {
+	if s == "" {
 		return false
 	}
 	code, err := verhoeffCompute(s, true)

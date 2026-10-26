@@ -36,7 +36,7 @@ type Callbacks interface {
 	ReceiveDone(frame *radio.Frame, err error)
 	// TransmitDone is called when a frame transmission completes.
 	// ackFrame may be nil if no ACK was received.
-	TransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error)
+	TransmitDone(frame, ackFrame *radio.Frame, err error)
 	// EnergyScanDone is called when an energy scan completes.
 	EnergyScanDone(maxRSSI int8)
 }
@@ -221,7 +221,7 @@ func (l *LinkRaw) Transmit() error {
 // InvokeTransmitDone should be called by the radio driver when a
 // transmission completes. It clears the transmitting flag and invokes the
 // registered callback.
-func (l *LinkRaw) InvokeTransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error) {
+func (l *LinkRaw) InvokeTransmitDone(frame, ackFrame *radio.Frame, err error) {
 	l.transmitting = false
 	if l.callbacks != nil {
 		l.callbacks.TransmitDone(frame, ackFrame, err)

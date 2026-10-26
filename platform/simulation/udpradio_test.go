@@ -7,6 +7,7 @@
 package simulation
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -17,10 +18,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hilli/gothread/common/log"
 	"github.com/hilli/gothread/crc"
 	"github.com/hilli/gothread/radio"
 	"golang.org/x/sys/unix"
 )
+
+func TestUDPSimRadioStopReportsSocketCloseErrors(t *testing.T) {
+	var diagnostics bytes.Buffer
+	original := log.GetLogger()
+	log.SetLogger(log.NewDefaultLogger(&diagnostics, log.LevelWarn))
+	t.Cleanup(func() { log.SetLogger(original) })
+
+	r := &UDPSimRadio{}
+	for _, conn := range []**net.UDPConn{&r.rxConn, &r.txConn} {
+		var err error
+		*conn, err = net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatalf("ListenUDP: %v", err)
+		}
+		if err := (*conn).Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+
+	r.Stop()
+	if r.rxConn != nil || r.txConn != nil {
+		t.Error("Stop must clear both socket references even when closing fails")
+	}
+	if strings.Count(diagnostics.String(), net.ErrClosed.Error()) != 2 {
+		t.Fatalf("expected both socket close errors to be logged: %q", diagnostics.String())
+	}
+}
 
 func TestUDPSimRadio_SharedSocketOptions(t *testing.T) {
 	const portBase = 19300

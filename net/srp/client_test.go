@@ -24,11 +24,6 @@ import (
 // Test helpers
 // -------------------------------------------------------
 
-// noopTimer is a timer that does nothing.
-type noopTimer struct{}
-
-func (noopTimer) Stop() bool { return false }
-
 // fakeTimer captures the callback and delay for manual firing.
 type fakeTimer struct {
 	mu      sync.Mutex
@@ -517,7 +512,7 @@ func TestSetLeaseIntervals(t *testing.T) {
 	env.client.SetKeyLeaseInterval(86400)
 	env.client.SetTtl(120)
 
-	// These are internal; verify by checking determineTtl via a build.
+	// These are internal; verify by checking determineTTL via a build.
 	env.client.mu.Lock()
 	defer env.client.mu.Unlock()
 
@@ -1331,13 +1326,13 @@ func TestDetermineTtl(t *testing.T) {
 	c.ttl = 0
 	c.lease = 0
 	c.defaultLease = 3600
-	if got := c.determineTtl(); got != 3600 {
+	if got := c.determineTTL(); got != 3600 {
 		t.Errorf("expected TTL 3600, got %d", got)
 	}
 
 	// Explicit TTL.
 	c.ttl = 120
-	if got := c.determineTtl(); got != 120 {
+	if got := c.determineTTL(); got != 120 {
 		t.Errorf("expected TTL 120, got %d", got)
 	}
 }

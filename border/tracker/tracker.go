@@ -119,7 +119,7 @@ func (t *Tracker) HasOnLinkPrefix(prefix [16]byte, length uint8) bool {
 // is first by route preference (High > Medium > Low), then by
 // lexicographically smallest prefix bytes. Returns found=false if no
 // OMR prefixes are present.
-func (t *Tracker) GetFavoredOmrPrefix() (prefix [16]byte, length uint8, preference uint8, found bool) {
+func (t *Tracker) GetFavoredOmrPrefix() (prefix [16]byte, length, preference uint8, found bool) {
 	first := true
 	for i := range t.prefixes {
 		if t.prefixes[i].IsOnLink {
@@ -201,7 +201,7 @@ func (t *Tracker) parsePrefixTlv(data []byte) {
 		return
 	}
 
-	// domainID := data[0] // not used currently
+	// Wire format: domainID := data[0] // not used currently
 	prefixLenBits := data[1]
 	prefixBytes := int((prefixLenBits + 7) / 8)
 

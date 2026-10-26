@@ -46,7 +46,7 @@ const (
 	EventMeshLocalAddr             Events = 1 << 4
 	EventRlocAdded                 Events = 1 << 5
 	EventRlocRemoved               Events = 1 << 6
-	EventPartitionId               Events = 1 << 7
+	EventPartitionId               Events = 1 << 7 //nolint:revive // Retain the established public API spelling for source compatibility.
 	EventThreadKeySeqCounter       Events = 1 << 8
 	EventThreadNetdata             Events = 1 << 9
 	EventChildAdded                Events = 1 << 10
@@ -54,9 +54,9 @@ const (
 	EventIPv6MulticastSubscribed   Events = 1 << 12
 	EventIPv6MulticastUnsubscribed Events = 1 << 13
 	EventChannel                   Events = 1 << 14
-	EventPanId                     Events = 1 << 15
+	EventPanId                     Events = 1 << 15 //nolint:revive // Retain the established public API spelling for source compatibility.
 	EventNetworkName               Events = 1 << 16
-	EventExtPanId                  Events = 1 << 17
+	EventExtPanId                  Events = 1 << 17 //nolint:revive // Retain the established public API spelling for source compatibility.
 	EventNetworkKey                Events = 1 << 18
 	EventPSKc                      Events = 1 << 19
 	EventSecurityPolicy            Events = 1 << 20

@@ -181,7 +181,7 @@ var pathToURI map[string]URI
 
 func init() {
 	pathToURI = make(map[string]URI, len(uriPaths))
-	for u, p := range uriPaths {
+	for u, p := range &uriPaths {
 		pathToURI[p] = URI(u)
 	}
 }

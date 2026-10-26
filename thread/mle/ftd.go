@@ -21,7 +21,7 @@ import (
 const (
 	// AdvIntervalMin is the Trickle timer minimum interval for
 	// MLE Advertisements (milliseconds).
-	AdvIntervalMin = 1000 * time.Millisecond
+	AdvIntervalMin = 1000 * time.Millisecond //nolint:revive // Min means minimum interval, not minutes.
 
 	// AdvIntervalNeighborMultiplier is multiplied by (neighbor_count + 1)
 	// to compute the Trickle I_MAX (milliseconds).
@@ -40,7 +40,7 @@ const (
 const (
 	// ReedAdvIntervalMin is the minimum interval for REED advertisements
 	// (milliseconds).
-	ReedAdvIntervalMin = 570000 * time.Millisecond
+	ReedAdvIntervalMin = 570000 * time.Millisecond //nolint:revive // Min means minimum interval, not minutes.
 
 	// ReedAdvIntervalMax is the maximum interval for REED advertisements
 	// (milliseconds).

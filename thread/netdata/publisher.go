@@ -35,7 +35,7 @@ const (
 type PublisherPrefixCallback func(event PublisherEvent, prefix ip6.Prefix)
 
 // PublisherDnsSrpCallback is called when a DNS/SRP service entry changes.
-type PublisherDnsSrpCallback func(event PublisherEvent)
+type PublisherDnsSrpCallback func(event PublisherEvent) //nolint:revive // Preserve the exported API spelling for existing callers.
 
 // ---------------------------------------------------------------------------
 // Publisher requester
@@ -94,11 +94,11 @@ const (
 
 	// DesiredNumDnsSrpAnycast is the desired number of DNS/SRP anycast service
 	// entries.
-	DesiredNumDnsSrpAnycast = 8
+	DesiredNumDnsSrpAnycast = 8 //nolint:revive // Preserve the exported API spelling for existing callers.
 
 	// DesiredNumDnsSrpUnicast is the desired number of DNS/SRP unicast service
 	// entries.
-	DesiredNumDnsSrpUnicast = 2
+	DesiredNumDnsSrpUnicast = 2 //nolint:revive // Preserve the exported API spelling for existing callers.
 )
 
 // ---------------------------------------------------------------------------
@@ -220,7 +220,7 @@ type Publisher struct {
 
 	// randFunc provides random numbers for delay calculations.
 	// If nil, crypto/rand is used.
-	randFunc func(max uint32) uint32
+	randFunc func(limit uint32) uint32
 }
 
 // PublisherOption is a functional option for Publisher.
@@ -228,7 +228,7 @@ type PublisherOption func(*Publisher)
 
 // WithPublisherRand sets the random function used for delay calculations.
 // This is primarily useful for deterministic testing.
-func WithPublisherRand(fn func(max uint32) uint32) PublisherOption {
+func WithPublisherRand(fn func(limit uint32) uint32) PublisherOption {
 	return func(p *Publisher) {
 		p.randFunc = fn
 	}
@@ -253,7 +253,7 @@ func (p *Publisher) SetPrefixCallback(cb PublisherPrefixCallback) {
 }
 
 // SetDnsSrpCallback registers a callback for DNS/SRP service events.
-func (p *Publisher) SetDnsSrpCallback(cb PublisherDnsSrpCallback) {
+func (p *Publisher) SetDnsSrpCallback(cb PublisherDnsSrpCallback) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	p.dnsSrpCallback = cb
 }
 
@@ -391,7 +391,7 @@ func (p *Publisher) IsPrefixAdded(prefix ip6.Prefix) bool {
 
 // PublishDnsSrpServiceAnycast publishes a DNS/SRP anycast service with the
 // given sequence number and version.
-func (p *Publisher) PublishDnsSrpServiceAnycast(seqNum uint8, version uint8) {
+func (p *Publisher) PublishDnsSrpServiceAnycast(seqNum, version uint8) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	p.dnsSrpType = dnsSrpTypeAnycast
 	p.dnsSrpSeqNum = seqNum
 	p.dnsSrpVersion = version
@@ -406,7 +406,7 @@ func (p *Publisher) PublishDnsSrpServiceAnycast(seqNum uint8, version uint8) {
 
 // PublishDnsSrpServiceUnicast publishes a DNS/SRP unicast service with the
 // given address and port encoded in the service data.
-func (p *Publisher) PublishDnsSrpServiceUnicast(addr ip6.Address, port uint16, version uint8) {
+func (p *Publisher) PublishDnsSrpServiceUnicast(addr ip6.Address, port uint16, version uint8) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	p.dnsSrpType = dnsSrpTypeUnicastServiceData
 	p.dnsSrpAddr = addr
 	p.dnsSrpPort = port
@@ -420,7 +420,7 @@ func (p *Publisher) PublishDnsSrpServiceUnicast(addr ip6.Address, port uint16, v
 }
 
 // UnpublishDnsSrpService unpublishes the DNS/SRP service entry.
-func (p *Publisher) UnpublishDnsSrpService() {
+func (p *Publisher) UnpublishDnsSrpService() { //nolint:revive // Preserve the exported API spelling for existing callers.
 	oldState := p.dnsSrpState
 	p.dnsSrpState = publisherStateNoEntry
 	if oldState == publisherStateAdded && p.dnsSrpCallback != nil {
@@ -429,7 +429,7 @@ func (p *Publisher) UnpublishDnsSrpService() {
 }
 
 // IsDnsSrpServiceAdded checks if the DNS/SRP service is in the Added state.
-func (p *Publisher) IsDnsSrpServiceAdded() bool {
+func (p *Publisher) IsDnsSrpServiceAdded() bool { //nolint:revive // Preserve the exported API spelling for existing callers.
 	return p.dnsSrpState == publisherStateAdded
 }
 
@@ -477,14 +477,14 @@ func (p *Publisher) Process(leaderData []byte) []PublisherAction {
 
 		switch p.dnsSrpType {
 		case dnsSrpTypeAnycast:
-			currentCount = p.countDnsSrpAnycast(leaderData)
+			currentCount = p.countDNSSrpAnycast(leaderData)
 			desiredCount = DesiredNumDnsSrpAnycast
 		default:
-			currentCount = p.countDnsSrpUnicast(leaderData)
+			currentCount = p.countDNSSrpUnicast(leaderData)
 			desiredCount = DesiredNumDnsSrpUnicast
 		}
 
-		action := p.updateDnsSrpState(currentCount, desiredCount)
+		action := p.updateDNSSrpState(currentCount, desiredCount)
 		if action != nil {
 			actions = append(actions, *action)
 		}
@@ -565,9 +565,9 @@ func (p *Publisher) updatePrefixState(e *PrefixEntry, currentCount, desiredCount
 	return nil
 }
 
-// updateDnsSrpState applies the state machine logic for the DNS/SRP service
+// updateDNSSrpState applies the state machine logic for the DNS/SRP service
 // entry and returns an action if one is needed.
-func (p *Publisher) updateDnsSrpState(currentCount, desiredCount int) *PublisherAction {
+func (p *Publisher) updateDNSSrpState(currentCount, desiredCount int) *PublisherAction {
 	switch p.dnsSrpState {
 	case publisherStateToAdd:
 		if currentCount < desiredCount {
@@ -594,7 +594,7 @@ func (p *Publisher) updateDnsSrpState(currentCount, desiredCount int) *Publisher
 		if p.dnsSrpCallback != nil {
 			p.dnsSrpCallback(PublisherEventEntryAdded)
 		}
-		return p.buildDnsSrpAddAction()
+		return p.buildDNSSrpAddAction()
 
 	case publisherStateAdded:
 		if currentCount > desiredCount {
@@ -615,7 +615,7 @@ func (p *Publisher) updateDnsSrpState(currentCount, desiredCount int) *Publisher
 		if p.dnsSrpCallback != nil {
 			p.dnsSrpCallback(PublisherEventEntryRemoved)
 		}
-		return p.buildDnsSrpRemoveAction()
+		return p.buildDNSSrpRemoveAction()
 	}
 
 	return nil
@@ -681,7 +681,7 @@ func (p *Publisher) buildPrefixRemoveAction(e *PrefixEntry) *PublisherAction {
 	}
 }
 
-func (p *Publisher) buildDnsSrpAddAction() *PublisherAction {
+func (p *Publisher) buildDNSSrpAddAction() *PublisherAction {
 	a := &PublisherAction{
 		Type:         PublisherActionAdd,
 		ServiceNum:   p.dnsSrpVersion,
@@ -712,7 +712,7 @@ func (p *Publisher) buildDnsSrpAddAction() *PublisherAction {
 	return a
 }
 
-func (p *Publisher) buildDnsSrpRemoveAction() *PublisherAction {
+func (p *Publisher) buildDNSSrpRemoveAction() *PublisherAction {
 	a := &PublisherAction{
 		Type:       PublisherActionRemove,
 		ServiceNum: p.dnsSrpVersion,
@@ -772,8 +772,8 @@ func (p *Publisher) countExternalRoute(leaderData []byte, prefix ip6.Prefix) int
 	return count
 }
 
-// countDnsSrpAnycast counts DNS/SRP anycast service entries in the leader data.
-func (p *Publisher) countDnsSrpAnycast(leaderData []byte) int {
+// countDNSSrpAnycast counts DNS/SRP anycast service entries in the leader data.
+func (p *Publisher) countDNSSrpAnycast(leaderData []byte) int {
 	count := 0
 	tlvs := ParseTLVs(leaderData)
 	for _, tlv := range tlvs {
@@ -795,8 +795,8 @@ func (p *Publisher) countDnsSrpAnycast(leaderData []byte) int {
 	return count
 }
 
-// countDnsSrpUnicast counts DNS/SRP unicast service entries in the leader data.
-func (p *Publisher) countDnsSrpUnicast(leaderData []byte) int {
+// countDNSSrpUnicast counts DNS/SRP unicast service entries in the leader data.
+func (p *Publisher) countDNSSrpUnicast(leaderData []byte) int {
 	count := 0
 	tlvs := ParseTLVs(leaderData)
 	for _, tlv := range tlvs {
@@ -859,7 +859,7 @@ func (p *Publisher) allocPrefixEntry(requester PublisherRequester) *PrefixEntry 
 }
 
 // requesterSlots returns the [start, end) index range for the given requester.
-func (p *Publisher) requesterSlots(requester PublisherRequester) (int, int) {
+func (p *Publisher) requesterSlots(requester PublisherRequester) (startIndex, endIndex int) {
 	start := int(requester) * MaxPublisherPrefixEntries
 	return start, start + MaxPublisherPrefixEntries
 }
@@ -914,18 +914,18 @@ func packOnMeshFlags(c OnMeshPrefixConfig) uint16 {
 // ---------------------------------------------------------------------------
 
 // randomDelay returns a random delay in milliseconds in the range [0, max).
-func (p *Publisher) randomDelay(max uint32) uint32 {
-	if max == 0 {
+func (p *Publisher) randomDelay(limit uint32) uint32 {
+	if limit == 0 {
 		return 0
 	}
 	if p.randFunc != nil {
-		return p.randFunc(max)
+		return p.randFunc(limit)
 	}
-	return cryptoRandUint32(max)
+	return cryptoRandUint32(limit)
 }
 
-// cryptoRandUint32 returns a random uint32 in [0, max) using crypto/rand.
-func cryptoRandUint32(max uint32) uint32 {
+// cryptoRandUint32 returns a random uint32 in [0, limit) using crypto/rand.
+func cryptoRandUint32(limit uint32) uint32 {
 	var buf [4]byte
 	_, err := rand.Read(buf[:])
 	if err != nil {
@@ -933,7 +933,7 @@ func cryptoRandUint32(max uint32) uint32 {
 		return 0
 	}
 	v := binary.LittleEndian.Uint32(buf[:])
-	return v % max
+	return v % limit
 }
 
 // ---------------------------------------------------------------------------
@@ -984,7 +984,6 @@ func (p *Publisher) NextTimerMs() uint32 {
 	if p.dnsSrpState == publisherStateAdding || p.dnsSrpState == publisherStateRemoving {
 		if !found || p.dnsSrpTimer < minTimer {
 			minTimer = p.dnsSrpTimer
-			found = true
 		}
 	}
 

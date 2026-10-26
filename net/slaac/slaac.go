@@ -90,7 +90,7 @@ func prefixesMatch(a, b Prefix) bool {
 // ---------------------------------------------------------------------------
 
 // SlaacAddress represents a SLAAC-generated IPv6 address.
-type SlaacAddress struct {
+type SlaacAddress struct { //nolint:revive // Preserve the exported type name for existing callers.
 	// Address is the full 128-bit IPv6 address.
 	Address ip6.Address
 	// Prefix is the on-mesh prefix this address was generated from.
@@ -141,7 +141,7 @@ func NewDefaultIIDGenerator(secretKey [32]byte, extAddr [8]byte) *DefaultIIDGene
 // The first 8 bytes of the hash are taken as the IID, with bit 6
 // (the universal/local bit) of the first byte cleared to indicate a
 // locally-administered identifier.
-func (g *DefaultIIDGenerator) GenerateIID(prefix [16]byte, prefixLen uint8, dadCounter uint8) ([8]byte, error) {
+func (g *DefaultIIDGenerator) GenerateIID(prefix [16]byte, prefixLen, dadCounter uint8) ([8]byte, error) {
 	var hasher sha256.Sha256
 	hasher.Start()
 	hasher.Update(prefix[:])
@@ -412,7 +412,7 @@ func (m *Manager) generateAddress(p Prefix, dadCounter uint8) (ip6.Address, erro
 	remainBits := p.Length % 8
 	if remainBits > 0 && fullBytes < 16 {
 		mask := byte(0xff << (8 - remainBits))
-		addr[fullBytes] = (p.Prefix[fullBytes] & mask) | (iid[fullBytes-fullBytes] & ^mask)
+		addr[fullBytes] = (p.Prefix[fullBytes] & mask) | (iid[0] & ^mask)
 	}
 
 	// Copy IID into the last 8 bytes. For a /64 prefix (the common case)

@@ -41,6 +41,7 @@ import (
 // Priority represents the message transmission priority.
 type Priority uint8
 
+// Message priorities in increasing order of urgency.
 const (
 	PriorityLow    Priority = 0
 	PriorityNormal Priority = 1
@@ -52,8 +53,8 @@ const (
 type Type uint8
 
 const (
-	TypeIp6   Type = 0
-	TypeIp4   Type = 1
+	TypeIp6   Type = 0 //nolint:revive // Retain the established public API spelling for source compatibility.
+	TypeIp4   Type = 1 //nolint:revive // Retain the established public API spelling for source compatibility.
 	TypeData  Type = 2
 	TypeOther Type = 3
 )

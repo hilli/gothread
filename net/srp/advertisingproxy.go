@@ -23,7 +23,7 @@ import (
 // on the infrastructure network via a DNS-SD platform (e.g., mDNS, a DNS-SD
 // API). The platform calls AdvertisingProxy.HandleRegistered when each
 // operation completes.
-type DnsSdPlatform interface {
+type DnsSdPlatform interface { //nolint:revive // Preserve the exported API spelling for existing callers.
 	RegisterHost(requestID uint32, name string, addresses []ip6.Address, ttl uint32)
 	UnregisterHost(requestID uint32, name string)
 	RegisterService(requestID uint32, hostName string, instanceName string, serviceType string, port uint16, priority uint16, weight uint16, txtData []byte, subTypes []string, ttl uint32)
@@ -54,6 +54,7 @@ type AdvCounters struct {
 // AdvProxyState represents the current state of the advertising proxy.
 type AdvProxyState uint8
 
+// Advertising proxy lifecycle states.
 const (
 	AdvProxyStopped AdvProxyState = iota
 	AdvProxyRunning
@@ -587,11 +588,12 @@ func (p *AdvertisingProxy) compareAndUpdateEntry(newE, existE *advEntry, matchFn
 		return false
 	}
 
-	if existE.isRegistered {
+	switch {
+	case existE.isRegistered:
 		newE.isRegistered = true
-	} else if existE.advID != invalidRequestID {
+	case existE.advID != invalidRequestID:
 		newE.advID = existE.advID
-	} else {
+	default:
 		// Previously failed — retry.
 		newE.advID = p.allocateNextRequestID()
 		existE.isReplaced = true
@@ -656,10 +658,7 @@ func servicesMatch(a, b *RegService) bool {
 			return false
 		}
 	}
-	if !bytes.Equal(a.TxtData, b.TxtData) {
-		return false
-	}
-	return true
+	return bytes.Equal(a.TxtData, b.TxtData)
 }
 
 // -------------------------------------------------------
@@ -790,7 +789,7 @@ func (p *AdvertisingProxy) advertiseHost(host *RegHost) {
 
 // decideToAdvertiseHost determines if a host needs registration and key
 // registration. Returns (needsRegister, needsKeyRegister).
-func (p *AdvertisingProxy) decideToAdvertiseHost(he *advEntry, host *RegHost) (bool, bool) {
+func (p *AdvertisingProxy) decideToAdvertiseHost(he *advEntry, host *RegHost) (register, registerKey bool) {
 	needsKeyRegister := false
 	if !he.isKeyRegistered && he.keyAdvID == invalidRequestID && host.KeyLease != 0 {
 		he.keyAdvID = p.allocateNextRequestID()
@@ -798,12 +797,13 @@ func (p *AdvertisingProxy) decideToAdvertiseHost(he *advEntry, host *RegHost) (b
 	}
 
 	needsRegister := false
-	if host.IsDeleted() {
+	switch {
+	case host.IsDeleted():
 		needsRegister = he.isRegistered
-	} else if !he.isRegistered && he.advID == invalidRequestID {
+	case !he.isRegistered && he.advID == invalidRequestID:
 		he.advID = p.allocateNextRequestID()
 		needsRegister = true
-	} else if !he.isRegistered && he.advID != invalidRequestID {
+	case !he.isRegistered && he.advID != invalidRequestID:
 		// advID was already allocated by compareAndUpdateEntry (update case).
 		needsRegister = true
 	}
@@ -814,7 +814,7 @@ func (p *AdvertisingProxy) decideToAdvertiseHost(he *advEntry, host *RegHost) (b
 // decideToAdvertiseService determines if a service needs registration and key
 // registration. Returns (needsRegister, needsKeyRegister).
 func (p *AdvertisingProxy) decideToAdvertiseService(se *advEntry, svc *RegService,
-	shouldUnregisterHost, shouldUnregisterKeys bool) (bool, bool) {
+	shouldUnregisterHost, shouldUnregisterKeys bool) (register, registerKey bool) {
 
 	needsKeyRegister := false
 	if !shouldUnregisterKeys && !se.isKeyRegistered && se.keyAdvID == invalidRequestID && svc.KeyLease != 0 {
@@ -823,12 +823,13 @@ func (p *AdvertisingProxy) decideToAdvertiseService(se *advEntry, svc *RegServic
 	}
 
 	needsRegister := false
-	if shouldUnregisterHost || svc.IsDeleted {
+	switch {
+	case shouldUnregisterHost || svc.IsDeleted:
 		needsRegister = se.isRegistered
-	} else if !se.isRegistered && se.advID == invalidRequestID {
+	case !se.isRegistered && se.advID == invalidRequestID:
 		se.advID = p.allocateNextRequestID()
 		needsRegister = true
-	} else if !se.isRegistered && se.advID != invalidRequestID {
+	case !se.isRegistered && se.advID != invalidRequestID:
 		// advID was already allocated by compareAndUpdateEntry (update case).
 		needsRegister = true
 	}
@@ -902,10 +903,10 @@ func (p *AdvertisingProxy) handleCompletedAdvs() {
 			}
 
 			// Update counters.
-			switch {
-			case adv.err == nil:
+			switch adv.err {
+			case nil:
 				p.counters.AdvSuccessful++
-			case adv.err == errAdvTimeout:
+			case errAdvTimeout:
 				p.counters.AdvTimeout++
 			default:
 				p.counters.AdvRejected++

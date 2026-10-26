@@ -130,7 +130,7 @@ type NetworkInfoTlv struct {
 	Role        uint8
 	Mode        uint8
 	Rloc16      uint16
-	PartitionId uint32
+	PartitionId uint32 //nolint:revive // Retain the public field spelling for source compatibility.
 }
 
 const networkInfoValueSize = 4 + 1 + 1 + 2 + 4 // 12 bytes

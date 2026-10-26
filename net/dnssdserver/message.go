@@ -42,21 +42,21 @@ const (
 )
 
 // DnsQuery represents a parsed DNS query message.
-type DnsQuery struct {
+type DnsQuery struct { //nolint:revive // Preserve the exported API spelling for existing callers.
 	ID                 uint16
 	Questions          []DnsQuestion
 	IsRecursionDesired bool
 }
 
 // DnsQuestion represents a single DNS question.
-type DnsQuestion struct {
+type DnsQuestion struct { //nolint:revive // Preserve the exported API spelling for existing callers.
 	Name  string
 	Type  uint16
 	Class uint16
 }
 
 // DnsRecord represents a DNS resource record.
-type DnsRecord struct {
+type DnsRecord struct { //nolint:revive // Preserve the exported API spelling for existing callers.
 	Name  string
 	Type  uint16
 	Class uint16
@@ -65,7 +65,7 @@ type DnsRecord struct {
 }
 
 // ParseDnsQuery parses an incoming DNS query message from wire format.
-func ParseDnsQuery(data []byte) (*DnsQuery, error) {
+func ParseDnsQuery(data []byte) (*DnsQuery, error) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	if len(data) < headerSize {
 		return nil, fmt.Errorf("message too short: %d bytes", len(data))
 	}
@@ -111,7 +111,7 @@ func ParseDnsQuery(data []byte) (*DnsQuery, error) {
 }
 
 // BuildDnsResponse builds a DNS response message in wire format.
-func BuildDnsResponse(query *DnsQuery, answers []DnsRecord, authorities []DnsRecord, additional []DnsRecord, rcode uint8) ([]byte, error) {
+func BuildDnsResponse(query *DnsQuery, answers, authorities, additional []DnsRecord, rcode uint8) ([]byte, error) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	buf := make([]byte, 0, 512)
 
 	// Header
@@ -169,7 +169,7 @@ func BuildDnsResponse(query *DnsQuery, answers []DnsRecord, authorities []DnsRec
 
 // EncodeDnsName encodes a DNS name with length-prefixed labels.
 // The name should be a dot-separated FQDN (e.g., "example.com." or "example.com").
-func EncodeDnsName(name string) []byte {
+func EncodeDnsName(name string) []byte { //nolint:revive // Preserve the exported API spelling for existing callers.
 	// Remove trailing dot if present.
 	name = strings.TrimSuffix(name, ".")
 
@@ -190,7 +190,7 @@ func EncodeDnsName(name string) []byte {
 // DecodeDnsName decodes a DNS name from wire format starting at offset,
 // supporting pointer compression (RFC 1035 Section 4.1.4).
 // Returns the decoded name, the new offset after the name, and any error.
-func DecodeDnsName(data []byte, offset int) (string, int, error) {
+func DecodeDnsName(data []byte, offset int) (decodedName string, nextOffset int, decodeErr error) { //nolint:revive // Preserve the exported API spelling for existing callers.
 	if offset >= len(data) {
 		return "", 0, fmt.Errorf("offset %d out of bounds (len=%d)", offset, len(data))
 	}

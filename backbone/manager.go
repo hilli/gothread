@@ -58,6 +58,8 @@ const (
 // ---------------------------------------------------------------------------
 
 // BackboneAnswer carries the response to a Backbone Query.
+//
+//nolint:revive // Retain the exported type name for source compatibility.
 type BackboneAnswer struct {
 	TargetIid       [8]byte
 	MeshLocalIid    [8]byte

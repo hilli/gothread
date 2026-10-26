@@ -34,7 +34,7 @@ func NewNetworkName(s string) (NetworkName, error) {
 // Set sets the network name. Returns an error if the name exceeds
 // MaxNetworkNameLength bytes or is not valid UTF-8.
 func (nn *NetworkName) Set(s string) error {
-	if len(s) == 0 || len(s) > MaxNetworkNameLength {
+	if s == "" || len(s) > MaxNetworkNameLength {
 		return fmt.Errorf("meshcop: network name length %d out of range [1, %d]", len(s), MaxNetworkNameLength)
 	}
 	if !utf8.ValidString(s) {
@@ -56,7 +56,7 @@ func (nn NetworkName) GetAsData() []byte {
 
 // IsEmpty reports whether the network name is empty.
 func (nn NetworkName) IsEmpty() bool {
-	return len(nn.name) == 0
+	return nn.name == ""
 }
 
 // Equal reports whether two network names are equal.

@@ -25,7 +25,7 @@ func newMockEnergyScanner() *mockEnergyScanner {
 	return &mockEnergyScanner{rssi: make(map[uint16]int8)}
 }
 
-func (s *mockEnergyScanner) EnergyScan(channel uint16, _ uint16) (int8, error) {
+func (s *mockEnergyScanner) EnergyScan(channel, _ uint16) (int8, error) {
 	s.scanCount++
 	if s.scanErr != nil {
 		return 0, s.scanErr

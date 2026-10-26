@@ -40,10 +40,10 @@ func TestKeyIndexFromSequence(t *testing.T) {
 		{1, 2},
 		{126, 127},
 		{127, 128},
-		{128, 1},   // wraps: (128 & 0x7F) + 1 = 1
-		{129, 2},   // (129 & 0x7F) + 1 = 2
-		{255, 128}, // (255 & 0x7F) + 1 = 128
-		{256, 1},   // (256 & 0x7F) + 1 = 1
+		{128, 1},   // Mask to 7 bits, then add 1: wraps to index 1.
+		{129, 2},   // Mask to 7 bits, then add 1: index 2.
+		{255, 128}, // Mask to 7 bits, then add 1: index 128.
+		{256, 1},   // Mask to 7 bits, then add 1: wraps to index 1.
 	}
 	for _, tt := range tests {
 		got := KeyIndexFromSequence(tt.seq)
