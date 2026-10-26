@@ -15,69 +15,69 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hilli/gothread/common/message"
-	cnotifier "github.com/hilli/gothread/common/notifier"
-	csettings "github.com/hilli/gothread/common/settings"
-	"github.com/hilli/gothread/mac"
-	"github.com/hilli/gothread/mac/submac"
-	"github.com/hilli/gothread/mac/csl"
-	"github.com/hilli/gothread/mac/filter"
-	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/backbone"
-	"github.com/hilli/gothread/meshcop"
-	"github.com/hilli/gothread/meshcop/border"
-	"github.com/hilli/gothread/meshcop/seeker"
-	"github.com/hilli/gothread/meshcop/tcat"
-	"github.com/hilli/gothread/mac/datapoll"
-	"github.com/hilli/gothread/mac/links"
-	"github.com/hilli/gothread/mac/raw"
-	"github.com/hilli/gothread/mac/wakeup"
-	"github.com/hilli/gothread/meshcop/dtls"
-	"github.com/hilli/gothread/net/coaps"
-	"github.com/hilli/gothread/diags"
 	borderinfra "github.com/hilli/gothread/border"
 	"github.com/hilli/gothread/border/dhcp6pd"
 	"github.com/hilli/gothread/border/multiail"
-	"github.com/hilli/gothread/border/tracker"
 	"github.com/hilli/gothread/border/router"
+	"github.com/hilli/gothread/border/tracker"
+	"github.com/hilli/gothread/common/message"
+	cnotifier "github.com/hilli/gothread/common/notifier"
+	csettings "github.com/hilli/gothread/common/settings"
+	"github.com/hilli/gothread/diags"
+	"github.com/hilli/gothread/mac"
+	"github.com/hilli/gothread/mac/csl"
+	"github.com/hilli/gothread/mac/datapoll"
+	"github.com/hilli/gothread/mac/filter"
+	"github.com/hilli/gothread/mac/links"
+	"github.com/hilli/gothread/mac/raw"
+	"github.com/hilli/gothread/mac/submac"
+	"github.com/hilli/gothread/mac/types"
+	"github.com/hilli/gothread/mac/wakeup"
+	"github.com/hilli/gothread/meshcop"
+	"github.com/hilli/gothread/meshcop/border"
+	"github.com/hilli/gothread/meshcop/dtls"
+	"github.com/hilli/gothread/meshcop/seeker"
+	"github.com/hilli/gothread/meshcop/tcat"
 	"github.com/hilli/gothread/net/coap"
+	"github.com/hilli/gothread/net/coaps"
 	"github.com/hilli/gothread/net/dhcp6"
-	"github.com/hilli/gothread/net/icmp6"
-	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/dns"
 	"github.com/hilli/gothread/net/dnssd"
 	"github.com/hilli/gothread/net/dnssdserver"
+	"github.com/hilli/gothread/net/icmp6"
+	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/mdns"
-	"github.com/hilli/gothread/net/nat64"
 	"github.com/hilli/gothread/net/mpl"
+	"github.com/hilli/gothread/net/nat64"
 	"github.com/hilli/gothread/net/ndagent"
 	"github.com/hilli/gothread/net/slaac"
 	"github.com/hilli/gothread/net/sntp"
-	"github.com/hilli/gothread/net/tcp"
 	"github.com/hilli/gothread/net/srp"
 	"github.com/hilli/gothread/net/srpadv"
+	"github.com/hilli/gothread/net/tcp"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/radio/ble"
 	"github.com/hilli/gothread/radio/trel"
-	"github.com/hilli/gothread/thread/bbr"
 	"github.com/hilli/gothread/thread/addrresolver"
 	"github.com/hilli/gothread/thread/announce"
-	"github.com/hilli/gothread/thread/key"
-	"github.com/hilli/gothread/thread/indirect"
-	"github.com/hilli/gothread/thread/link"
+	"github.com/hilli/gothread/thread/bbr"
 	"github.com/hilli/gothread/thread/diag"
 	"github.com/hilli/gothread/thread/discover"
+	"github.com/hilli/gothread/thread/indirect"
+	"github.com/hilli/gothread/thread/key"
+	"github.com/hilli/gothread/thread/link"
 	"github.com/hilli/gothread/thread/linkmetrics"
-	"github.com/hilli/gothread/thread/mgmt"
 	"github.com/hilli/gothread/thread/mesh"
+	"github.com/hilli/gothread/thread/mgmt"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/netdata"
 	"github.com/hilli/gothread/thread/peer"
+	"github.com/hilli/gothread/thread/radioselector"
 	"github.com/hilli/gothread/thread/routing"
 	"github.com/hilli/gothread/thread/supervision"
-	"github.com/hilli/gothread/thread/radioselector"
 	"github.com/hilli/gothread/thread/timesync"
 	"github.com/hilli/gothread/thread/tmf"
 	"github.com/hilli/gothread/utils"
@@ -557,7 +557,6 @@ type Instance struct {
 	// tcpStack provides TCP socket support.
 	tcpStack *tcp.TCP
 
-
 	// meshcopSeeker discovers MeshCoP-compatible networks.
 	meshcopSeeker *seeker.Seeker
 
@@ -593,7 +592,6 @@ type Instance struct {
 
 	// dnssdServer provides DNS-SD query server.
 	dnssdServer *dnssdserver.Server
-
 
 	// srpAdvProxy provides SRP Advertising Proxy.
 	srpAdvProxy *srpadv.AdvProxy
@@ -1809,7 +1807,9 @@ func (inst *Instance) MplForwarder() *mpl.Forwarder { return inst.mplForwarder }
 func (inst *Instance) AnnounceSender() *announce.AnnounceSender { return inst.announceSender }
 
 // AnnounceBeginServer returns the Announce Begin TMF server.
-func (inst *Instance) AnnounceBeginServer() *announce.AnnounceBeginServer { return inst.announceBeginServer }
+func (inst *Instance) AnnounceBeginServer() *announce.AnnounceBeginServer {
+	return inst.announceBeginServer
+}
 
 // DiscoveryScanner returns the Thread network discovery scanner.
 func (inst *Instance) DiscoveryScanner() *discover.Scanner { return inst.discoveryScanner }
@@ -1878,7 +1878,9 @@ func (inst *Instance) OnLinkPrefixManager() *router.OnLinkPrefixManager { return
 func (inst *Instance) RoutePublisher() *router.RoutePublisher { return inst.routePublisher }
 
 // MulticastListenersTable returns the BBR multicast listeners table.
-func (inst *Instance) MulticastListenersTable() *backbone.MulticastListenersTable { return inst.multicastListeners }
+func (inst *Instance) MulticastListenersTable() *backbone.MulticastListenersTable {
+	return inst.multicastListeners
+}
 
 // NdProxyTable returns the BBR ND proxy table.
 func (inst *Instance) NdProxyTable() *backbone.NdProxyTable { return inst.ndProxyTable }
@@ -1983,7 +1985,9 @@ func (inst *Instance) JoinerClient() *meshcop.JoinerClient { return inst.joinerC
 func (inst *Instance) JoinerRouter() *meshcop.JoinerRouter { return inst.joinerRouter }
 
 // LeaderCommissioner returns the leader-side commissioner manager.
-func (inst *Instance) LeaderCommissioner() *meshcop.LeaderCommissioner { return inst.leaderCommissioner }
+func (inst *Instance) LeaderCommissioner() *meshcop.LeaderCommissioner {
+	return inst.leaderCommissioner
+}
 
 // DatasetUpdater returns the dataset update coordinator.
 func (inst *Instance) DatasetUpdater() *meshcop.DatasetUpdater { return inst.datasetUpdater }
@@ -1992,7 +1996,9 @@ func (inst *Instance) DatasetUpdater() *meshcop.DatasetUpdater { return inst.dat
 func (inst *Instance) EnergyScanClient() *meshcop.EnergyScanClient { return inst.energyScanClient }
 
 // AnnounceBeginClient returns the commissioner announce begin client.
-func (inst *Instance) AnnounceBeginClient() *meshcop.AnnounceBeginClient { return inst.announceBeginClient }
+func (inst *Instance) AnnounceBeginClient() *meshcop.AnnounceBeginClient {
+	return inst.announceBeginClient
+}
 
 // PanIdQueryClient returns the commissioner PAN ID query client.
 func (inst *Instance) PanIdQueryClient() *meshcop.PanIdQueryClient { return inst.panIdQueryClient }
@@ -2320,7 +2326,6 @@ func (inst *Instance) handlePeriodicTick() {
 		}
 		inst.netdataPublisher.AdvanceTime(1000) // 1 second in ms
 	}
-
 
 	// MPL Forwarder — process Trickle retransmission and seed expiry.
 	if inst.mplForwarder != nil {

@@ -212,7 +212,7 @@ func TestDataPollSender_HandlePollSent_SuccessAllFastPollsClearUsers(t *testing.
 	d.Start()
 	defer d.Stop()
 
-	d.SendFastPolls(1) // 1 remaining fast poll
+	d.SendFastPolls(1)    // 1 remaining fast poll
 	d.HandlePollSent(nil) // decrements to 0, should clear users
 
 	d.mu.Lock()

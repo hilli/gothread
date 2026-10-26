@@ -10,51 +10,51 @@ package instance
 // packages that cannot import each other.
 
 import (
+	"math/bits"
 	"net"
 	"time"
-	"math/bits"
 
+	"github.com/hilli/gothread/backbone"
+	borderinfra "github.com/hilli/gothread/border"
+	"github.com/hilli/gothread/border/dhcp6pd"
+	"github.com/hilli/gothread/diags"
 	"github.com/hilli/gothread/encoding"
+	"github.com/hilli/gothread/mac/datapoll"
 	macframe "github.com/hilli/gothread/mac/frame"
 	"github.com/hilli/gothread/mac/submac"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/meshcop"
 	"github.com/hilli/gothread/meshcop/border"
-	"github.com/hilli/gothread/net/coap"
-	"github.com/hilli/gothread/backbone"
-	"github.com/hilli/gothread/diags"
+	"github.com/hilli/gothread/meshcop/dtls"
 	"github.com/hilli/gothread/meshcop/seeker"
-	"github.com/hilli/gothread/mac/datapoll"
+	"github.com/hilli/gothread/net/coap"
+	"github.com/hilli/gothread/net/dhcp6"
 	"github.com/hilli/gothread/net/dnssd"
+	"github.com/hilli/gothread/net/dnssdserver"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/net/mdns"
+	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/nd6"
 	"github.com/hilli/gothread/net/ndagent"
-	"github.com/hilli/gothread/thread/mgmt"
-	"github.com/hilli/gothread/utils"
-	"github.com/hilli/gothread/radio/ble"
-	"github.com/hilli/gothread/radio/trel"
-	borderinfra "github.com/hilli/gothread/border"
-	"github.com/hilli/gothread/border/dhcp6pd"
 	"github.com/hilli/gothread/net/srp"
 	"github.com/hilli/gothread/net/srpadv"
-	"github.com/hilli/gothread/net/dnssdserver"
-	"github.com/hilli/gothread/net/mdns"
-	"github.com/hilli/gothread/net/dhcp6"
-	"github.com/hilli/gothread/net/mpl"
 	"github.com/hilli/gothread/net/udp"
 	"github.com/hilli/gothread/platform"
 	"github.com/hilli/gothread/radio"
+	"github.com/hilli/gothread/radio/ble"
+	"github.com/hilli/gothread/radio/trel"
+	"github.com/hilli/gothread/thread/announce"
+	"github.com/hilli/gothread/thread/diag"
+	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/indirect"
 	"github.com/hilli/gothread/thread/key"
-	"github.com/hilli/gothread/thread/diag"
-	"github.com/hilli/gothread/thread/announce"
-	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/lowpan"
 	"github.com/hilli/gothread/thread/mesh"
+	"github.com/hilli/gothread/thread/mgmt"
 	"github.com/hilli/gothread/thread/mle"
 	"github.com/hilli/gothread/thread/routing"
 	"github.com/hilli/gothread/thread/supervision"
-	"github.com/hilli/gothread/meshcop/dtls"
+	"github.com/hilli/gothread/utils"
 )
 
 // --------------------------------------------------------------------------
@@ -1646,11 +1646,11 @@ func (m *mplSenderAdapter) SendMulticast(payload []byte) error {
 	dstAddr := [16]byte(ip6.MulticastRealmLocalAllMPLForwarders)
 
 	meta := &mesh.TxMetadata{
-		SrcAddr:    srcAddr,
-		DstAddr:    dstAddr,
-		NextHeader: ip6.ProtoHopOpts,
-		HopLimit:   64,
-		SrcExtAddr: m.inst.GetExtAddress(),
+		SrcAddr:     srcAddr,
+		DstAddr:     dstAddr,
+		NextHeader:  ip6.ProtoHopOpts,
+		HopLimit:    64,
+		SrcExtAddr:  m.inst.GetExtAddress(),
 		UseSrcShort: true,
 		UseDstShort: false,
 	}
@@ -1980,18 +1980,18 @@ type dnssdPlatformAdapter struct {
 	inst *Instance
 }
 
-func (a *dnssdPlatformAdapter) RegisterService(info dnssd.ServiceInfo) error { return nil }
+func (a *dnssdPlatformAdapter) RegisterService(info dnssd.ServiceInfo) error             { return nil }
 func (a *dnssdPlatformAdapter) UnregisterService(instanceName, serviceType string) error { return nil }
-func (a *dnssdPlatformAdapter) RegisterHost(info dnssd.HostInfo) error { return nil }
-func (a *dnssdPlatformAdapter) UnregisterHost(hostName string) error { return nil }
-func (a *dnssdPlatformAdapter) RegisterKey(record dnssd.KeyRecord) error { return nil }
-func (a *dnssdPlatformAdapter) UnregisterKey(name string) error { return nil }
-func (a *dnssdPlatformAdapter) StartBrowse(serviceType string) error { return nil }
-func (a *dnssdPlatformAdapter) StopBrowse(serviceType string) error { return nil }
-func (a *dnssdPlatformAdapter) StartResolve(instanceName, serviceType string) error { return nil }
-func (a *dnssdPlatformAdapter) StopResolve(instanceName, serviceType string) error { return nil }
-func (a *dnssdPlatformAdapter) StartResolveHost(hostName string) error { return nil }
-func (a *dnssdPlatformAdapter) StopResolveHost(hostName string) error { return nil }
+func (a *dnssdPlatformAdapter) RegisterHost(info dnssd.HostInfo) error                   { return nil }
+func (a *dnssdPlatformAdapter) UnregisterHost(hostName string) error                     { return nil }
+func (a *dnssdPlatformAdapter) RegisterKey(record dnssd.KeyRecord) error                 { return nil }
+func (a *dnssdPlatformAdapter) UnregisterKey(name string) error                          { return nil }
+func (a *dnssdPlatformAdapter) StartBrowse(serviceType string) error                     { return nil }
+func (a *dnssdPlatformAdapter) StopBrowse(serviceType string) error                      { return nil }
+func (a *dnssdPlatformAdapter) StartResolve(instanceName, serviceType string) error      { return nil }
+func (a *dnssdPlatformAdapter) StopResolve(instanceName, serviceType string) error       { return nil }
+func (a *dnssdPlatformAdapter) StartResolveHost(hostName string) error                   { return nil }
+func (a *dnssdPlatformAdapter) StopResolveHost(hostName string) error                    { return nil }
 
 // ---------------------------------------------------------------------------
 // Border Agent adapters
@@ -2164,7 +2164,7 @@ func (a *borderAgentNetworkInfoAdapter) AddUnicastAddress(addr [16]byte) {
 		return
 	}
 	ua := &ip6.UnicastAddress{
-		Address:  ip6.Address(addr),
+		Address:   ip6.Address(addr),
 		Preferred: true,
 		Valid:     true,
 	}
@@ -2341,7 +2341,6 @@ func (a *meshcopScannerAdapter) StopScan() {
 	a.inst.discoveryScanner.Stop()
 }
 
-
 // ---------------------------------------------------------------------------
 // blePlatformAdapter satisfies ble.Platform.
 // ---------------------------------------------------------------------------
@@ -2352,11 +2351,11 @@ type blePlatformAdapter struct {
 	inst *Instance
 }
 
-func (a *blePlatformAdapter) BleEnable() error            { return nil }
-func (a *blePlatformAdapter) BleDisable() error           { return nil }
+func (a *blePlatformAdapter) BleEnable() error             { return nil }
+func (a *blePlatformAdapter) BleDisable() error            { return nil }
 func (a *blePlatformAdapter) GapConnect(addr []byte) error { return nil }
-func (a *blePlatformAdapter) GapDisconnect() error        { return nil }
-func (a *blePlatformAdapter) BleSend(data []byte) error   { return nil }
+func (a *blePlatformAdapter) GapDisconnect() error         { return nil }
+func (a *blePlatformAdapter) BleSend(data []byte) error    { return nil }
 
 // ---------------------------------------------------------------------------
 // trelPlatformAdapter satisfies trel.Platform.
@@ -2368,10 +2367,10 @@ type trelPlatformAdapter struct {
 	inst *Instance
 }
 
-func (a *trelPlatformAdapter) Enable() (uint16, error)                        { return 0, nil }
-func (a *trelPlatformAdapter) Disable() error                                 { return nil }
-func (a *trelPlatformAdapter) Send(data []byte, dst ip6.SockAddr) error       { return nil }
-func (a *trelPlatformAdapter) RegisterService(port uint16, txt []byte) error  { return nil }
+func (a *trelPlatformAdapter) Enable() (uint16, error)                       { return 0, nil }
+func (a *trelPlatformAdapter) Disable() error                                { return nil }
+func (a *trelPlatformAdapter) Send(data []byte, dst ip6.SockAddr) error      { return nil }
+func (a *trelPlatformAdapter) RegisterService(port uint16, txt []byte) error { return nil }
 
 // ---------------------------------------------------------------------------
 // trelCallbacksAdapter satisfies radio.Callbacks for TREL link.
@@ -2383,10 +2382,11 @@ type trelCallbacksAdapter struct {
 	inst *Instance
 }
 
-func (a *trelCallbacksAdapter) HandleReceiveDone(frame *radio.Frame, err error)                    {}
-func (a *trelCallbacksAdapter) HandleTransmitStarted(frame *radio.Frame)                           {}
-func (a *trelCallbacksAdapter) HandleTransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error) {}
-func (a *trelCallbacksAdapter) HandleEnergyScanDone(maxRSSI int8)                                  {}
+func (a *trelCallbacksAdapter) HandleReceiveDone(frame *radio.Frame, err error) {}
+func (a *trelCallbacksAdapter) HandleTransmitStarted(frame *radio.Frame)        {}
+func (a *trelCallbacksAdapter) HandleTransmitDone(frame *radio.Frame, ackFrame *radio.Frame, err error) {
+}
+func (a *trelCallbacksAdapter) HandleEnergyScanDone(maxRSSI int8) {}
 
 // ---------------------------------------------------------------------------
 // dataPollHandlerCallbacksAdapter satisfies datapoll.HandlerCallbacks.
@@ -2399,7 +2399,8 @@ type dataPollHandlerCallbacksAdapter struct {
 }
 
 func (a *dataPollHandlerCallbacksAdapter) HandleDataPoll(childShortAddr uint16) bool { return false }
-func (a *dataPollHandlerCallbacksAdapter) HandleFrameChange(childShortAddr uint16, change datapoll.FrameChange) {}
+func (a *dataPollHandlerCallbacksAdapter) HandleFrameChange(childShortAddr uint16, change datapoll.FrameChange) {
+}
 
 // ---------------------------------------------------------------------------
 // dataPollSenderCallbacksAdapter satisfies datapoll.SenderCallbacks.
@@ -2424,7 +2425,7 @@ type dhcp6pdPlatformAdapter struct {
 }
 
 func (a *dhcp6pdPlatformAdapter) SendDhcp6(payload []byte, dst [16]byte) error { return nil }
-func (a *dhcp6pdPlatformAdapter) SetDhcp6ListeningEnabled(enabled bool)         {}
+func (a *dhcp6pdPlatformAdapter) SetDhcp6ListeningEnabled(enabled bool)        {}
 
 // ---------------------------------------------------------------------------
 // mdnsPlatformAdapter satisfies mdns.Platform.
@@ -2436,8 +2437,8 @@ type mdnsPlatformAdapter struct {
 	inst *Instance
 }
 
-func (a *mdnsPlatformAdapter) SendMulticast(data []byte) error                              { return nil }
-func (a *mdnsPlatformAdapter) SendUnicast(data []byte, dst net.IP, port uint16) error       { return nil }
+func (a *mdnsPlatformAdapter) SendMulticast(data []byte) error                                     { return nil }
+func (a *mdnsPlatformAdapter) SendUnicast(data []byte, dst net.IP, port uint16) error              { return nil }
 func (a *mdnsPlatformAdapter) SetReceiveCallback(cb func(data []byte, src net.IP, srcPort uint16)) {}
 
 // ---------------------------------------------------------------------------
@@ -2492,7 +2493,6 @@ func (a *srpAdvDnssdPlatformAdapter) UnregisterHost(name string) error {
 	return nil
 }
 
-
 // ---------------------------------------------------------------------------
 // infraIfPlatformAdapter satisfies borderinfra.InfraIfPlatform.
 // ---------------------------------------------------------------------------
@@ -2501,10 +2501,12 @@ var _ borderinfra.InfraIfPlatform = (*infraIfPlatformAdapter)(nil)
 
 type infraIfPlatformAdapter struct{ inst *Instance }
 
-func (a *infraIfPlatformAdapter) SendIcmp6Nd(ifIndex uint32, dest ip6.Address, buf []byte) error { return nil }
+func (a *infraIfPlatformAdapter) SendIcmp6Nd(ifIndex uint32, dest ip6.Address, buf []byte) error {
+	return nil
+}
 func (a *infraIfPlatformAdapter) HasAddress(ifIndex uint32, addr ip6.Address) bool { return false }
-func (a *infraIfPlatformAdapter) DiscoverNat64Prefix(ifIndex uint32) error { return nil }
-func (a *infraIfPlatformAdapter) GetLinkLayerAddress(ifIndex uint32) []byte { return nil }
+func (a *infraIfPlatformAdapter) DiscoverNat64Prefix(ifIndex uint32) error         { return nil }
+func (a *infraIfPlatformAdapter) GetLinkLayerAddress(ifIndex uint32) []byte        { return nil }
 
 // ---------------------------------------------------------------------------
 // infraIfCallbacksAdapter satisfies borderinfra.InfraIfCallbacks.
@@ -2515,7 +2517,8 @@ var _ borderinfra.InfraIfCallbacks = (*infraIfCallbacksAdapter)(nil)
 type infraIfCallbacksAdapter struct{ inst *Instance }
 
 func (a *infraIfCallbacksAdapter) HandleInfraIfStateChanged() {}
-func (a *infraIfCallbacksAdapter) HandleReceiveIcmp6Nd(ifIndex uint32, src ip6.Address, icmpType uint8, buf []byte) {}
+func (a *infraIfCallbacksAdapter) HandleReceiveIcmp6Nd(ifIndex uint32, src ip6.Address, icmpType uint8, buf []byte) {
+}
 
 // ---------------------------------------------------------------------------
 // commissionerTransportAdapter satisfies meshcop.CommissionerTransport.
@@ -2588,12 +2591,14 @@ type joinerTransportAdapter struct{ inst *Instance }
 func (a *joinerTransportAdapter) Connect(addr [16]byte, port uint16, pskd string, cb func(connected bool)) error {
 	return nil
 }
-func (a *joinerTransportAdapter) Send(data []byte) error { return nil }
+func (a *joinerTransportAdapter) Send(data []byte) error                      { return nil }
 func (a *joinerTransportAdapter) SetReceiveHandler(handler func(data []byte)) {}
-func (a *joinerTransportAdapter) Disconnect() {}
-func (a *joinerTransportAdapter) RegisterHandler(uri string, handler func(msg *coap.Message, info coap.MessageInfo)) {}
+func (a *joinerTransportAdapter) Disconnect()                                 {}
+func (a *joinerTransportAdapter) RegisterHandler(uri string, handler func(msg *coap.Message, info coap.MessageInfo)) {
+}
 func (a *joinerTransportAdapter) UnregisterHandler(uri string) {}
-func (a *joinerTransportAdapter) SendResponse(code coap.Code, req *coap.Message, info coap.MessageInfo) {}
+func (a *joinerTransportAdapter) SendResponse(code coap.Code, req *coap.Message, info coap.MessageInfo) {
+}
 
 // ---------------------------------------------------------------------------
 // joinerRadioAdapter satisfies meshcop.JoinerRadio.
@@ -2693,10 +2698,13 @@ var _ meshcop.JoinerRouterUDPSocket = (*joinerRouterSocketAdapter)(nil)
 type joinerRouterSocketAdapter struct{ inst *Instance }
 
 func (a *joinerRouterSocketAdapter) Open(port uint16) error { return nil }
-func (a *joinerRouterSocketAdapter) Close() error { return nil }
-func (a *joinerRouterSocketAdapter) IsBound() bool { return false }
-func (a *joinerRouterSocketAdapter) Send(data []byte, peerAddr [16]byte, peerPort uint16) error { return nil }
-func (a *joinerRouterSocketAdapter) SetReceiveHandler(handler func(data []byte, peerAddr [16]byte, peerPort uint16)) {}
+func (a *joinerRouterSocketAdapter) Close() error           { return nil }
+func (a *joinerRouterSocketAdapter) IsBound() bool          { return false }
+func (a *joinerRouterSocketAdapter) Send(data []byte, peerAddr [16]byte, peerPort uint16) error {
+	return nil
+}
+func (a *joinerRouterSocketAdapter) SetReceiveHandler(handler func(data []byte, peerAddr [16]byte, peerPort uint16)) {
+}
 
 // ---------------------------------------------------------------------------
 // joinerRouterAddressingAdapter satisfies meshcop.JoinerRouterAddressing.
@@ -2722,9 +2730,9 @@ var _ meshcop.JoinerRouterNetworkData = (*joinerRouterNetworkDataAdapter)(nil)
 
 type joinerRouterNetworkDataAdapter struct{ inst *Instance }
 
-func (a *joinerRouterNetworkDataAdapter) IsJoiningAllowed() bool { return false }
+func (a *joinerRouterNetworkDataAdapter) IsJoiningAllowed() bool              { return false }
 func (a *joinerRouterNetworkDataAdapter) FindBorderAgentRLOC() (uint16, bool) { return 0, false }
-func (a *joinerRouterNetworkDataAdapter) FindJoinerUDPPort() (uint16, bool) { return 0, false }
+func (a *joinerRouterNetworkDataAdapter) FindJoinerUDPPort() (uint16, bool)   { return 0, false }
 
 // ---------------------------------------------------------------------------
 // joinerRouterKeyManagerAdapter satisfies meshcop.JoinerRouterKeyManager.
@@ -2874,5 +2882,5 @@ var _ utils.EapConfigurator = (*utilsEapConfiguratorAdapter)(nil)
 
 type utilsEapConfiguratorAdapter struct{ inst *Instance }
 
-func (a *utilsEapConfiguratorAdapter) ConfigureEap(extAddr types.ExtAddress) error { return nil }
+func (a *utilsEapConfiguratorAdapter) ConfigureEap(extAddr types.ExtAddress) error  { return nil }
 func (a *utilsEapConfiguratorAdapter) UnregisterEap(extAddr types.ExtAddress) error { return nil }

@@ -1069,7 +1069,6 @@ func TestFlushPendingParentResponses(t *testing.T) {
 	}
 }
 
-
 // --------------------------------------------------------------------------
 // nopRadio — minimal radio.Radio stub for tests that need MAC enabled
 // --------------------------------------------------------------------------
@@ -1082,28 +1081,28 @@ type nopRadio struct {
 	txBuf   radio.Frame
 }
 
-func (r *nopRadio) Enable() error                        { r.enabled = true; return nil }
-func (r *nopRadio) Disable() error                       { r.enabled = false; return nil }
-func (r *nopRadio) IsEnabled() bool                      { return r.enabled }
-func (r *nopRadio) GetState() radio.State                { return radio.StateSleep }
-func (r *nopRadio) Sleep() error                         { return nil }
-func (r *nopRadio) Receive(channel uint8) error          { return nil }
-func (r *nopRadio) Transmit(frame *radio.Frame) error    { return nil }
-func (r *nopRadio) GetTransmitBuffer() *radio.Frame      { return &r.txBuf }
-func (r *nopRadio) GetCaps() radio.Caps                  { return radio.CapNone }
-func (r *nopRadio) GetIEEEEui64() [8]byte                { return [8]byte{1, 2, 3, 4, 5, 6, 7, 8} }
-func (r *nopRadio) SetPanID(uint16)                      {}
-func (r *nopRadio) SetExtendedAddress(types.ExtAddress)   {}
-func (r *nopRadio) SetShortAddress(types.ShortAddress)    {}
-func (r *nopRadio) GetTransmitPower() (int8, error)       { return 0, nil }
-func (r *nopRadio) SetTransmitPower(int8) error           { return nil }
-func (r *nopRadio) GetPromiscuous() bool                  { return false }
-func (r *nopRadio) SetPromiscuous(bool)                   {}
-func (r *nopRadio) GetRSSI() int8                         { return -50 }
-func (r *nopRadio) GetSupportedChannelMask() uint32       { return 0x07FFF800 }
-func (r *nopRadio) GetPreferredChannelMask() uint32       { return 0x07FFF800 }
-func (r *nopRadio) GetReceiveSensitivity() int8           { return -100 }
-func (r *nopRadio) EnableSrcMatch(bool)                   {}
+func (r *nopRadio) Enable() error                                    { r.enabled = true; return nil }
+func (r *nopRadio) Disable() error                                   { r.enabled = false; return nil }
+func (r *nopRadio) IsEnabled() bool                                  { return r.enabled }
+func (r *nopRadio) GetState() radio.State                            { return radio.StateSleep }
+func (r *nopRadio) Sleep() error                                     { return nil }
+func (r *nopRadio) Receive(channel uint8) error                      { return nil }
+func (r *nopRadio) Transmit(frame *radio.Frame) error                { return nil }
+func (r *nopRadio) GetTransmitBuffer() *radio.Frame                  { return &r.txBuf }
+func (r *nopRadio) GetCaps() radio.Caps                              { return radio.CapNone }
+func (r *nopRadio) GetIEEEEui64() [8]byte                            { return [8]byte{1, 2, 3, 4, 5, 6, 7, 8} }
+func (r *nopRadio) SetPanID(uint16)                                  {}
+func (r *nopRadio) SetExtendedAddress(types.ExtAddress)              {}
+func (r *nopRadio) SetShortAddress(types.ShortAddress)               {}
+func (r *nopRadio) GetTransmitPower() (int8, error)                  { return 0, nil }
+func (r *nopRadio) SetTransmitPower(int8) error                      { return nil }
+func (r *nopRadio) GetPromiscuous() bool                             { return false }
+func (r *nopRadio) SetPromiscuous(bool)                              {}
+func (r *nopRadio) GetRSSI() int8                                    { return -50 }
+func (r *nopRadio) GetSupportedChannelMask() uint32                  { return 0x07FFF800 }
+func (r *nopRadio) GetPreferredChannelMask() uint32                  { return 0x07FFF800 }
+func (r *nopRadio) GetReceiveSensitivity() int8                      { return -100 }
+func (r *nopRadio) EnableSrcMatch(bool)                              {}
 func (r *nopRadio) AddSrcMatchShortEntry(types.ShortAddress) error   { return nil }
 func (r *nopRadio) AddSrcMatchExtEntry(types.ExtAddress) error       { return nil }
 func (r *nopRadio) ClearSrcMatchShortEntry(types.ShortAddress) error { return nil }
@@ -1112,9 +1111,9 @@ func (r *nopRadio) ClearSrcMatchShortEntries()                       {}
 func (r *nopRadio) ClearSrcMatchExtEntries()                         {}
 func (r *nopRadio) SetMacKey(uint8, uint8, types.KeyMaterial, types.KeyMaterial, types.KeyMaterial) {
 }
-func (r *nopRadio) SetMacFrameCounter(uint32)          {}
-func (r *nopRadio) SetMacFrameCounterIfLarger(uint32)  {}
-func (r *nopRadio) EnergyScan(uint8, uint16) error     { return nil }
+func (r *nopRadio) SetMacFrameCounter(uint32)         {}
+func (r *nopRadio) SetMacFrameCounterIfLarger(uint32) {}
+func (r *nopRadio) EnergyScan(uint8, uint16) error    { return nil }
 
 var _ radio.Radio = (*nopRadio)(nil)
 
