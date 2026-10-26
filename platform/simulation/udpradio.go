@@ -8,6 +8,7 @@ package simulation
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/hilli/gothread/crc"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/radio"
+	"golang.org/x/sys/unix"
 )
 
 // Compile-time interface check.
@@ -41,9 +43,9 @@ type UDPSimRadio struct {
 	enabled  bool
 	state    radio.State
 
-	txConn *net.UDPConn // send socket, bound to portBase+nodeID
-	rxFd   int          // raw RX socket fd for multicast receive
-	rxConn *net.UDPConn // fallback RX (used when raw fd unavailable)
+	txConn *net.UDPConn    // send socket, bound to portBase+nodeID
+	rxFd   int             // raw RX socket fd for multicast receive
+	rxConn *net.UDPConn    // fallback RX (used when raw fd unavailable)
 	rxMreq *syscall.IPMreq // saved for cleanup (IP_DROP_MEMBERSHIP)
 
 	rxCallback func(*radio.Frame)
@@ -80,7 +82,7 @@ func NewUDPSimRadioWithPort(nodeID, portBase uint16) (*UDPSimRadio, error) {
 // Start begins listening for incoming frames on the multicast group.
 // It mimics the OpenThread simulation socket setup: TX binds to
 // 127.0.0.1:portBase+nodeID, RX joins 224.0.0.116 on loopback.
-func (r *UDPSimRadio) Start() error {
+func (r *UDPSimRadio) Start() (err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -90,20 +92,37 @@ func (r *UDPSimRadio) Start() error {
 	if err != nil {
 		return fmt.Errorf("resolve tx addr: %w", err)
 	}
-	r.txConn, err = net.ListenUDP("udp4", txAddr)
+	txConn, err := net.ListenUDP("udp4", txAddr)
 	if err != nil {
 		return fmt.Errorf("bind tx socket: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, txConn.Close())
+		}
+	}()
 
 	// Set IP_MULTICAST_IF to loopback and enable IP_MULTICAST_LOOP on TX
 	// so packets go through the same path as OT.
-	txRaw, err := r.txConn.SyscallConn()
-	if err == nil {
-		txRaw.Control(func(fd uintptr) {
-			lo := [4]byte{127, 0, 0, 1}
-			syscall.SetsockoptInet4Addr(int(fd), syscall.IPPROTO_IP, syscall.IP_MULTICAST_IF, lo)
-			syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, syscall.IP_MULTICAST_LOOP, 1)
-		})
+	txRaw, err := txConn.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("tx syscall conn: %w", err)
+	}
+	var optionErr error
+	if err := txRaw.Control(func(fd uintptr) {
+		lo := [4]byte{127, 0, 0, 1}
+		if err := syscall.SetsockoptInet4Addr(int(fd), syscall.IPPROTO_IP, syscall.IP_MULTICAST_IF, lo); err != nil {
+			optionErr = fmt.Errorf("IP_MULTICAST_IF: %w", err)
+			return
+		}
+		if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, syscall.IP_MULTICAST_LOOP, 1); err != nil {
+			optionErr = fmt.Errorf("IP_MULTICAST_LOOP: %w", err)
+		}
+	}); err != nil {
+		return fmt.Errorf("configure tx socket: %w", err)
+	}
+	if optionErr != nil {
+		return optionErr
 	}
 
 	// RX socket: use raw syscalls to exactly match OT's socket setup.
@@ -111,11 +130,19 @@ func (r *UDPSimRadio) Start() error {
 	// bind to 224.0.0.116:portBase.
 	rxFd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
 	if err != nil {
-		r.txConn.Close()
 		return fmt.Errorf("rx socket: %w", err)
 	}
-	syscall.SetsockoptInt(rxFd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-	syscall.SetsockoptInt(rxFd, syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1)
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, syscall.Close(rxFd))
+		}
+	}()
+	if err := syscall.SetsockoptInt(rxFd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		return fmt.Errorf("SO_REUSEADDR: %w", err)
+	}
+	if err := syscall.SetsockoptInt(rxFd, syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
+		return fmt.Errorf("SO_REUSEPORT: %w", err)
+	}
 
 	// Join multicast group on loopback interface.
 	mreq := syscall.IPMreq{
@@ -123,8 +150,6 @@ func (r *UDPSimRadio) Start() error {
 		Interface: [4]byte{127, 0, 0, 1},
 	}
 	if err := syscall.SetsockoptIPMreq(rxFd, syscall.IPPROTO_IP, syscall.IP_ADD_MEMBERSHIP, &mreq); err != nil {
-		syscall.Close(rxFd)
-		r.txConn.Close()
 		return fmt.Errorf("IP_ADD_MEMBERSHIP: %w", err)
 	}
 
@@ -132,11 +157,13 @@ func (r *UDPSimRadio) Start() error {
 	sa := syscall.SockaddrInet4{Port: int(r.portBase)}
 	copy(sa.Addr[:], net.IPv4(224, 0, 0, 116).To4())
 	if err := syscall.Bind(rxFd, &sa); err != nil {
-		syscall.Close(rxFd)
-		r.txConn.Close()
 		return fmt.Errorf("bind rx: %w", err)
 	}
+	if err := syscall.SetNonblock(rxFd, true); err != nil {
+		return fmt.Errorf("rx nonblocking: %w", err)
+	}
 
+	r.txConn = txConn
 	r.rxFd = rxFd
 	r.rxMreq = &mreq
 	r.stopCh = make(chan struct{})
@@ -152,7 +179,7 @@ func (r *UDPSimRadio) Stop() {
 		close(r.stopCh)
 		r.stopCh = nil
 	}
-	// Don't close rxFd here — let receiveLoop exit first via SO_RCVTIMEO,
+	// Don't close rxFd here — let the nonblocking receiveLoop exit first,
 	// then clean up. Otherwise Recvfrom on a closed fd hangs on macOS.
 	if r.rxConn != nil {
 		r.rxConn.Close()
@@ -188,9 +215,6 @@ func (r *UDPSimRadio) receiveLoop() {
 	if fd <= 0 || stop == nil {
 		return
 	}
-
-	// Set the socket non-blocking so we can poll with a timeout.
-	syscall.SetNonblock(fd, true)
 
 	buf := make([]byte, udpMaxBuf)
 	for {

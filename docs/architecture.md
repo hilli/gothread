@@ -71,8 +71,9 @@ common/instance.cpp       →   instance/instance.go
 
 ### Module Boundary
 
-gothread is a single Go module (`github.com/hilli/gothread`) with **zero
-external dependencies** — only the Go standard library. All cryptographic
+gothread is a single Go module (`github.com/hilli/gothread`). The protocol
+stack uses only the Go standard library; the UDP simulation radio uses
+`golang.org/x/sys/unix` for platform-specific socket constants. All cryptographic
 primitives (AES-CCM, HMAC-SHA256, HKDF, ECDSA, PBKDF2) are implemented
 in-tree under `crypto/`.
 
@@ -854,6 +855,12 @@ type UDPSimRadio struct {
 - **Wire format**: compatible with OpenThread's simulation frame format
 - **CRC**: frames include CRC-16 for integrity
 
+The RX socket enables both `SO_REUSEADDR` and `SO_REUSEPORT` so simulation
+radios can share the multicast port. Socket setup errors are returned by
+`Start()`, which closes any sockets opened during a failed start. Linux
+(amd64 and arm64) and macOS use their native Unix socket option constants
+without changing the loopback multicast interface or wire format.
+
 This enables mixed simulations where gothread and OpenThread nodes form
 a single Thread mesh network.
 
@@ -1037,11 +1044,12 @@ interfaces (`radio.Radio`, `platform.Alarm`, etc.). This enables:
 - Easy test doubles (SimRadio)
 - OpenThread interop via UDPSimRadio
 
-### 3. Zero External Dependencies
+### 3. Standard-Library Protocol Stack
 
-All cryptographic primitives are implemented in-tree. This mirrors
-OpenThread's approach and ensures the module has no supply-chain
-dependencies beyond the Go standard library.
+All cryptographic primitives are implemented in-tree using the Go standard
+library. The module's only external dependency is `golang.org/x/sys`, used
+for Unix socket constants by the UDP simulation radio, which is excluded
+from TinyGo builds.
 
 ### 4. Adapter Pattern for Module Isolation
 

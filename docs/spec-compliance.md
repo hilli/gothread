@@ -381,8 +381,8 @@ StateDisabled (0) ──Enable──► StateReceive (2) ◄──Receive──�
 
 | Aspect | Status | Notes |
 |--------|--------|-------|
-| Pure Go | ✅ | No CGo dependency — `go.mod` has zero external dependencies |
-| Standard library only | ✅ | All crypto uses Go stdlib (`crypto/aes`, `crypto/ecdsa`, `crypto/sha256`, etc.) |
+| Pure Go | ✅ | No CGo dependency; UDP simulation uses `golang.org/x/sys/unix` for socket constants |
+| Standard-library protocol stack | ✅ | All crypto uses Go stdlib (`crypto/aes`, `crypto/ecdsa`, `crypto/sha256`, etc.) |
 | Cross-platform | ✅ | No OS-specific system calls in core packages |
 
 ### 6.3 Build & Test

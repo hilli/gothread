@@ -2,7 +2,7 @@
 
 A pure Go implementation of the [Thread](https://www.threadgroup.org/What-is-Thread/Overview) 1.4.0 networking protocol.
 
-This project is a port of [OpenThread](https://github.com/openthread/openthread), Google's open-source C++ implementation of the Thread networking protocol. `gothread` provides a fully independent, idiomatic Go implementation of the complete Thread protocol stack — no CGo, no external dependencies.
+This project is a port of [OpenThread](https://github.com/openthread/openthread), Google's open-source C++ implementation of the Thread networking protocol. `gothread` provides a fully independent, idiomatic Go implementation of the complete Thread protocol stack — no CGo. The UDP simulation radio uses `golang.org/x/sys/unix` for portable Unix socket constants; the protocol stack uses only the standard library.
 
 ## Highlights
 
