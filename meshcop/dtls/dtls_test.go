@@ -330,14 +330,9 @@ func TestSessionConnectHandshakeSuccess(t *testing.T) {
 	conn := newMockConn()
 	peer := testPeer(1)
 
-	var gotEvent dtls.ConnectEvent
-	eventCh := make(chan struct{}, 1)
+	eventCh := make(chan dtls.ConnectEvent, 2)
 	s.SetConnectHandler(func(event dtls.ConnectEvent) {
-		gotEvent = event
-		select {
-		case eventCh <- struct{}{}:
-		default:
-		}
+		eventCh <- event
 	})
 
 	err := s.Connect(peer, conn)
@@ -347,17 +342,16 @@ func TestSessionConnectHandshakeSuccess(t *testing.T) {
 
 	// Wait for the handshake goroutine to complete.
 	select {
-	case <-eventCh:
+	case gotEvent := <-eventCh:
+		if gotEvent != dtls.EventConnected {
+			t.Fatalf("connect event = %v, want Connected", gotEvent)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for connect event")
 	}
 
 	// After handshake, close the conn to end the read loop.
 	conn.Close()
-
-	if gotEvent != dtls.EventConnected {
-		t.Fatalf("connect event = %v, want Connected", gotEvent)
-	}
 
 	if !conn.handshakeCalled {
 		t.Fatal("Handshake was not called")
@@ -378,14 +372,9 @@ func TestSessionConnectHandshakeFailure(t *testing.T) {
 	conn.handshakeErr = errors.New("handshake failed")
 	peer := testPeer(1)
 
-	var gotEvent dtls.ConnectEvent
-	eventCh := make(chan struct{}, 1)
+	eventCh := make(chan dtls.ConnectEvent, 1)
 	s.SetConnectHandler(func(event dtls.ConnectEvent) {
-		gotEvent = event
-		select {
-		case eventCh <- struct{}{}:
-		default:
-		}
+		eventCh <- event
 	})
 
 	err := s.Connect(peer, conn)
@@ -394,13 +383,12 @@ func TestSessionConnectHandshakeFailure(t *testing.T) {
 	}
 
 	select {
-	case <-eventCh:
+	case gotEvent := <-eventCh:
+		if gotEvent != dtls.EventDisconnectedError {
+			t.Fatalf("connect event = %v, want Error", gotEvent)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for connect event")
-	}
-
-	if gotEvent != dtls.EventDisconnectedError {
-		t.Fatalf("connect event = %v, want Error", gotEvent)
 	}
 
 	if s.State() != dtls.StateDisconnected {
@@ -445,14 +433,9 @@ func TestSessionAccept(t *testing.T) {
 	conn := newMockConn()
 	peer := testPeer(1)
 
-	var gotEvent dtls.ConnectEvent
-	eventCh := make(chan struct{}, 1)
+	eventCh := make(chan dtls.ConnectEvent, 2)
 	s.SetConnectHandler(func(event dtls.ConnectEvent) {
-		gotEvent = event
-		select {
-		case eventCh <- struct{}{}:
-		default:
-		}
+		eventCh <- event
 	})
 
 	err := s.Accept(peer, conn)
@@ -461,16 +444,15 @@ func TestSessionAccept(t *testing.T) {
 	}
 
 	select {
-	case <-eventCh:
+	case gotEvent := <-eventCh:
+		if gotEvent != dtls.EventConnected {
+			t.Fatalf("accept event = %v, want Connected", gotEvent)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for accept event")
 	}
 
 	conn.Close()
-
-	if gotEvent != dtls.EventConnected {
-		t.Fatalf("accept event = %v, want Connected", gotEvent)
-	}
 
 	if !s.IsServer() {
 		t.Fatal("accepted session should be server")
