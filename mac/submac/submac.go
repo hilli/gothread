@@ -328,7 +328,8 @@ func (sm *SubMac) GetTransmitFrame() *radio.Frame {
 }
 
 // Send starts the transmission process for the current transmit frame
-// with the given parameters.
+// with the given parameters. It propagates the request channel and CSMA flag
+// to the radio frame without replacing any other transmit metadata.
 func (sm *SubMac) Send(req TxRequest) error {
 	switch sm.state {
 	case StateReceive, StateSleep:
@@ -336,8 +337,16 @@ func (sm *SubMac) Send(req TxRequest) error {
 	default:
 		return ErrInvalidState
 	}
+	if sm.txFrame == nil {
+		return ErrInvalidState
+	}
 
 	sm.txRequest = req
+	sm.txFrame.Channel = req.Channel
+	if sm.txFrame.TxInfo == nil {
+		sm.txFrame.TxInfo = &radio.TxInfo{}
+	}
+	sm.txFrame.TxInfo.CsmaCaEnabled = req.CsmaCaEnabled
 	sm.csmaBackoffs = 0
 	sm.transmitRetries = 0
 	sm.startCsmaBackoff()

@@ -5,6 +5,7 @@
 package submac
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -35,6 +36,7 @@ type mockRadio struct {
 	receiveCount      int
 	sleepCount        int
 	transmitCount     int
+	transmitFrame     *radio.Frame
 	enableCount       int
 	disableCount      int
 	energyScanCount   int
@@ -83,7 +85,8 @@ func (r *mockRadio) Receive(channel uint8) error {
 	return nil
 }
 
-func (r *mockRadio) Transmit(_ *radio.Frame) error {
+func (r *mockRadio) Transmit(frame *radio.Frame) error {
+	r.transmitFrame = frame
 	if r.transmitErr != nil {
 		return r.transmitErr
 	}
@@ -413,6 +416,20 @@ func TestSendFromDisabledReturnsError(t *testing.T) {
 	}
 }
 
+func TestSendWithoutTransmitFrameReturnsError(t *testing.T) {
+	sm, r, _, _ := newTestSubMac(radio.CapNone)
+	if err := sm.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	sm.txFrame = nil
+	if err := sm.Send(TxRequest{Channel: 15}); err != ErrInvalidState {
+		t.Fatalf("Send() without transmit frame = %v, want ErrInvalidState", err)
+	}
+	if r.transmitCount != 0 {
+		t.Fatal("radio transmit called without a frame")
+	}
+}
+
 func TestSendFromReceive(t *testing.T) {
 	sm, _, _, _ := newTestSubMac(radio.CapNone)
 	_ = sm.Enable()
@@ -435,6 +452,69 @@ func TestSendFromSleep(t *testing.T) {
 	err := sm.Send(TxRequest{Channel: 15, CsmaCaEnabled: false})
 	if err != nil {
 		t.Fatalf("Send() from Sleep = %v, want nil", err)
+	}
+}
+
+func TestSendPropagatesRadioMetadata(t *testing.T) {
+	for _, mode := range []struct {
+		name            string
+		caps            radio.Caps
+		softwareBackoff bool
+	}{
+		{"software-backoff", radio.CapNone, true},
+		{"hardware-backoff", radio.CapCsmaBackoff, false},
+		{"hardware-retries", radio.CapTransmitRetries, false},
+		{"sleep-to-tx", radio.CapSleepToTx, true},
+	} {
+		for _, csma := range []bool{true, false} {
+			for _, existingInfo := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s/csma=%v/existing-info=%v", mode.name, csma, existingInfo), func(t *testing.T) {
+					sm, r, _, timer := newTestSubMac(mode.caps)
+					if err := sm.Enable(); err != nil {
+						t.Fatal(err)
+					}
+					frame := sm.GetTransmitFrame()
+					frame.Channel = 11
+					var original *radio.TxInfo
+					var expected radio.TxInfo
+					if existingInfo {
+						original = &radio.TxInfo{
+							CsmaCaEnabled: !csma, IsSecurityProcessed: true, TxPower: -7,
+							Timestamp: 12345, IsHeaderUpdated: true, IsARetx: true,
+							CslPresent: true, MaxCsmaBackoffs: 8, MaxFrameRetries: 9,
+							RxChannelAfterTx: 15,
+						}
+						frame.TxInfo = original
+						expected = *original
+					}
+					expected.CsmaCaEnabled = csma
+					if err := sm.Send(TxRequest{Channel: 26, CsmaCaEnabled: csma}); err != nil {
+						t.Fatal(err)
+					}
+					if csma && mode.softwareBackoff {
+						if timer.scheduled != 1 || r.transmitCount != 0 {
+							t.Fatal("software backoff did not wait for its timer")
+						}
+						timer.fire()
+					} else if timer.scheduled != 0 {
+						t.Fatal("immediate transmit unexpectedly scheduled backoff")
+					}
+					observed := r.transmitFrame
+					if r.transmitCount != 1 || observed == nil {
+						t.Fatal("Radio.Transmit did not receive a frame")
+					}
+					if observed.Channel != 26 {
+						t.Errorf("transmit channel = %d, want request channel 26", observed.Channel)
+					}
+					if observed.TxInfo == nil || *observed.TxInfo != expected {
+						t.Errorf("transmit metadata = %+v, want %+v", observed.TxInfo, expected)
+					}
+					if existingInfo && observed.TxInfo != original {
+						t.Error("existing TxInfo was replaced")
+					}
+				})
+			}
+		}
 	}
 }
 
