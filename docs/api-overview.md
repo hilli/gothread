@@ -151,11 +151,12 @@ identity or a `Valid` address on `Netif`; supported unicast source scopes are
 link-local, ULA, and global `2000::/3`. Link-local and non-link-local source/peer
 scopes cannot be mixed.
 
-The initial supported routes are only **direct valid rx-on-when-idle neighbors**,
+The existing direct routes are **valid rx-on-when-idle neighbors**,
 including an established parent: canonical EUI-64-derived link-local peers, or
-RLOC peers with the current mesh-local prefix. Unknown/unresolved EIDs, sleepy
-children, other prefixes, anycast, multi-hop/off-mesh routes, and self-delivery
-return `errors.ErrNoRoute`. Multicast/group/discovery, including mDNS, is not
+RLOC peers with the current mesh-local prefix. Existing direct LL/RLOC delivery
+is unchanged by the narrower additional MTD gate below. Unknown LL destinations,
+self-delivery, anycast, sleepy children and general FTD routing/EID resolution
+still return `errors.ErrNoRoute`. Multicast/group/discovery, including mDNS, is not
 implemented by this boundary. It returns `errors.ErrNotCapable` rather than
 silently converting unsupported unicast to a MAC broadcast.
 
@@ -190,6 +191,65 @@ blocking, and perform reads/PASE processing outside the loop. Close the UDP
 socket through `Do` before closing/discarding that application queue; already
 copied packets remain application-owned. This API adds no unbounded receive
 worker, sockets, host-interface guessing, or local reinjection.
+
+### Minimal always-on MTD parent-unicast handoff
+
+The public API remains `Do` plus loop-only `SendUDP`. For a supported non-link-local
+unicast final destination that is not already an existing direct route, an
+**attached Child with MinimalThreadDevice (FTD bit clear) and RxOnWhenIdle**
+can hand a datagram to its **established valid awake FTD/router parent**.
+The actual MAC receiver mode must also be on. MLE, Instance, and MAC child RLOC
+must agree, be a canonical child RLOC, and belong to that parent's canonical
+router RLOC. The local and parent EUI-64 identities must be usable distinct
+unicast identities; the current PAN cannot be broadcast and the mesh prefix
+must be a configured ULA. A router, leader, FTD child, sleepy/ICD MTD, absent/
+invalid/restoring/lost/sleepy parent, mismatched RLOC, or unusable identity cannot
+gain this fallback.
+
+The parent is selected as the **link-layer next hop**, not the logical IPv6
+peer. Original explicit source, final `PeerAddr`, ports, hop, payload, IPv6/UDP
+lengths/checksum, and standard fragmentation are preserved. No endpoint mesh
+header or general EID query/pending-resolution mechanism is introduced.
+The implementation reference is pinned
+[OpenThread `7009584dadc20cf20c20a6062f357dd572ba6885`, `MeshForwarder::UpdateIp6Route`](https://github.com/openthread/openthread/blob/7009584dadc20cf20c20a6062f357dd572ba6885/src/core/thread/mesh_forwarder.cpp):
+after disabled/detached, multicast, LL and FTD branches, the MTD path selects
+the parent RLOC as MAC destination while preserving the original IP packet.
+This API intentionally supports only the attached always-on unicast subset.
+
+Sources remain actual valid assignments; no source is generated or inferred.
+For a final peer outside the mesh-local prefix, the source must be an explicit
+Valid Netif ULA/global assignment **outside** that mesh prefix, with nonzero
+valid prefix-length metadata, global scope, and neither MeshLocal nor RLOC flag.
+A mesh-local RLOC/EID is not accepted as an off-mesh-routable source. Nil/default,
+unspecified, loopback, multicast, IPv4-mapped, unassigned/invalid and mixed-LL
+source shapes retain their explicit errors.
+
+**This is qualified local parent HANDOFF, not end-to-end route success.**
+Netif assignment/prefix metadata cannot prove a border-router advertisement,
+external reachability, source registration, or remote return route. The caller
+must provision and verify the source's actual routability (for example a valid
+OMR/global assignment) and the parent/upstream path; any ULA by itself proves
+none of those. This library does not fabricate OMR addresses, discovery, network
+data, routing advertisements, or success at the final peer. It also never
+reinjects the packet through UDP ingress.
+
+Admission snapshots the eligible parent, local RLOC/EUI/PAN/prefix and network
+key. A bounded admission-owned validator rechecks those prerequisites and the
+current source assignment **before each distinct fragment/counter** and before
+delayed CSMA/software-retry radio attempts. It uses loop-owned SubMac state
+without re-entering the upper MAC mutex. Parent loss/replacement, role/mode,
+source invalidation, network/PAN or local identity change retires the remaining
+owned datagram with the normal logged drop/resource-release path; no automatic
+retargeting or extra source/address creation occurs. Key-sequence rotation with
+the same network key retains normal per-frame reservations and exact MAC retry
+semantics. A frame already accepted by a radio cannot be retracted; later
+forwarding/delivery is not guaranteed by local acceptance.
+
+MTU1280/UDP1232, shared count/byte/fragment/reassembly limits, SubmissionID
+origin rules, `errors.Is`, nil/acceptance versus asynchronous completion, and
+all executor cancellation/Stop guarantees remain unchanged. No general FTD
+routing, multicast/group/mDNS/SRP/discovery, commissioning, sleepy/ICD, Wi-Fi/BLE,
+native radio/storage geometry, or external consumer dependency is changed.
 
 ### Standard direct-neighbor fragmentation
 
@@ -275,8 +335,9 @@ tests; allocator/map buckets, GC, transient compression/crypto buffers, and
 application-owned receive queues require their own SRAM budget. Full consumer
 PASE, external MAC/OpenThread interoperability, and physical RF/flash behavior
 remain separate integration evidence, not consequences of a compile or fake-radio
-packet exchange. General routing, unresolved EIDs, sleepy delivery, multicast,
-and discovery remain unsupported by the native boundary.
+packet exchange. General FTD routing/EID resolution, sleepy delivery, multicast and discovery
+remain unsupported; only the qualified MTD parent-handoff exception described
+above accepts additional non-LL final unicast peers.
 
 ### Radio submission origin and borrowing
 

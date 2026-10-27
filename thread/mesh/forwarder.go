@@ -181,8 +181,13 @@ type TxMessage struct {
 	// Metadata holds IPv6/transport/MAC metadata for frame construction.
 	// When nil, Data is treated as a pre-built frame (legacy behavior).
 	Metadata *TxMetadata
-	transmit *transmitState
-	retired  bool
+	// ValidateFrame rechecks changing admission prerequisites before each
+	// distinct frame is built or takes a security counter. It runs on the
+	// owner's serialized loop and must not re-enter the upper MAC mutex.
+	// A failure retires the entire datagram through normal TX-drop handling.
+	ValidateFrame func() error
+	transmit      *transmitState
+	retired       bool
 }
 
 // NewTxMessage creates a new TxMessage with default settings.
@@ -340,7 +345,7 @@ func (f *Forwarder) SetEnabled(enabled bool) {
 	f.enabled = enabled
 	if !enabled {
 		for msg := range f.owned {
-			msg.transmit, msg.Data, msg.Metadata, msg.retired = nil, nil, nil, true
+			msg.transmit, msg.Data, msg.Metadata, msg.ValidateFrame, msg.retired = nil, nil, nil, nil, true
 			f.counters.TxDropped++
 		}
 		clear(f.owned)
@@ -494,7 +499,7 @@ func (f *Forwarder) releaseTxLocked(msg *TxMessage) {
 			f.pendingFragments -= msg.transmit.remaining
 		}
 		delete(f.owned, msg)
-		msg.transmit, msg.Data, msg.Metadata, msg.retired = nil, nil, nil, true
+		msg.transmit, msg.Data, msg.Metadata, msg.ValidateFrame, msg.retired = nil, nil, nil, nil, true
 	}
 }
 

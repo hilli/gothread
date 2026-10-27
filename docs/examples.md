@@ -749,6 +749,10 @@ See [native UDP limits](api-overview.md#external-executor-and-native-udp):
 direct-neighbor UDP through 1232 application bytes is supported using standard
 stack-owned fragmentation when necessary; general routes and multicast
 discovery are not. Do not split application/PASE messages into ad hoc chunks.
+An attached always-on MTD can also use the qualified
+[parent-unicast handoff](api-overview.md#minimal-always-on-mtd-parent-unicast-handoff)
+with an explicitly assigned, caller-verified routable source; local acceptance
+does not prove parent/upstream forwarding or a return route.
 
 ```go
 package example

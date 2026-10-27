@@ -150,6 +150,10 @@ type Callbacks interface {
 // TxRequest holds the per-frame transmission parameters that the upper
 // MAC sets before calling Send.
 type TxRequest struct {
+	// BeforeTransmit optionally revalidates owner prerequisites immediately
+	// before each radio attempt, including delayed CSMA and software retries.
+	// It must not re-enter the upper MAC mutex.
+	BeforeTransmit func() error
 	// MaxCsmaBackoffs is the maximum number of CSMA-CA backoff attempts.
 	MaxCsmaBackoffs uint8
 	// MaxFrameRetries is the maximum number of frame retransmission attempts.
@@ -179,6 +183,7 @@ type SubMac struct {
 	// Addresses
 	shortAddress types.ShortAddress
 	extAddress   types.ExtAddress
+	panID        uint16
 
 	// Radio capabilities (cached)
 	radioCaps radio.Caps
@@ -274,6 +279,7 @@ func (sm *SubMac) Disable() error {
 	sm.epoch++
 	sm.activeFrame, sm.completedFrame = nil, nil
 	sm.activeID, sm.completedID = 0, 0
+	sm.txRequest.BeforeTransmit = nil
 	sm.stopTimer()
 	if sm.radio != nil {
 		_ = sm.radio.Sleep()
@@ -417,10 +423,15 @@ func (sm *SubMac) EnergyScan(channel uint8, durationMs uint16) error {
 
 // SetPanID sets the radio PAN ID for frame filtering.
 func (sm *SubMac) SetPanID(panID uint16) {
+	sm.panID = panID
 	if sm.radio != nil {
 		sm.radio.SetPanID(panID)
 	}
 }
+
+// GetPanID returns the configured PAN without re-entering the upper MAC.
+// Like other SubMac state, access is serialized by the instance event loop.
+func (sm *SubMac) GetPanID() uint16 { return sm.panID }
 
 // GetShortAddress returns the short address.
 func (sm *SubMac) GetShortAddress() types.ShortAddress {
@@ -452,6 +463,9 @@ func (sm *SubMac) SetExtAddress(addr types.ExtAddress) {
 func (sm *SubMac) SetRxOnWhenIdle(rxOnWhenIdle bool) {
 	sm.rxOnWhenIdle = rxOnWhenIdle
 }
+
+// GetRxOnWhenIdle returns the configured receiver-on-when-idle mode.
+func (sm *SubMac) GetRxOnWhenIdle() bool { return sm.rxOnWhenIdle }
 
 // GetRSSI returns the current RSSI reading from the radio.
 func (sm *SubMac) GetRSSI() int8 {
@@ -614,6 +628,12 @@ func (sm *SubMac) beginTransmit() {
 		template = sm.activeFrame // Preserve radio-updated retry bytes/metadata.
 	}
 	frame := snapshotTransmitFrame(template)
+	if sm.txRequest.BeforeTransmit != nil {
+		if err := sm.txRequest.BeforeTransmit(); err != nil {
+			sm.finishTransmit(frame, nil, err)
+			return
+		}
+	}
 	id, ok := allocateSubmissionID()
 	if !ok {
 		sm.finishTransmit(frame, nil, ErrInvalidState)
@@ -679,6 +699,7 @@ func (sm *SubMac) finishTransmit(frame, ackFrame *radio.Frame, err error) {
 		sm.completedID = frame.TxInfo.SubmissionID
 	}
 	sm.activeFrame, sm.activeID = nil, 0
+	sm.txRequest.BeforeTransmit = nil
 
 	if sm.callbacks != nil {
 		sm.callbacks.TransmitDone(frame, ackFrame, err)

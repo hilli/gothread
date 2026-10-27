@@ -20,10 +20,14 @@ import (
 //
 // The interface and Thread must be up and attached, with a usable radio and
 // network key. The source must be explicitly assigned; both ports are nonzero.
-// Only direct, valid, rx-on-when-idle neighbors are supported, addressed by
-// their canonical EUI-64 link-local address or same-mesh-prefix RLOC.
-// Other EIDs, multi-hop/off-mesh routes, and multicast are not
-// implemented by this boundary. Unsupported routes return errors.ErrNoRoute.
+// Direct valid awake neighbors use canonical EUI-64 link-local or same-prefix
+// RLOC addresses. An attached always-on MTD child can additionally hand
+// supported non-link-local unicast to its established awake router parent.
+// This selects only the MAC next hop, preserving the final IPv6 tuple; it is
+// not proof that the parent can subsequently route the packet. Off-mesh final
+// peers require an explicitly assigned non-mesh source whose routability the
+// caller has verified. FTD/general routing, sleepy delivery, multicast and
+// discovery remain unsupported by this fallback (errors.ErrNoRoute/NotCapable).
 //
 // HopLimit zero defaults to 64; other nonzero values are honored. All other
 // MessageInfo options must be zero/nil, otherwise errors.ErrNotCapable is
@@ -35,6 +39,9 @@ import (
 // not transmitted or received. Later counter/encryption/radio errors remain
 // asynchronous: observe Forwarder().GetCounters(), MAC counters, logs, and
 // PersistenceError. Do not wait for radio completion on the event loop.
+// Changed parent/role/address prerequisites retire a parent-handoff datagram
+// before its next frame/counter or delayed radio attempt rather than retargeting
+// its accepted tuple. A frame already handed to a radio cannot be retracted.
 func (inst *Instance) SendUDP(payload []byte, info ip6.MessageInfo) error {
 	if err := inst.PersistenceError(); err != nil {
 		return err
@@ -76,6 +83,18 @@ func (inst *Instance) SendUDP(payload []byte, info ip6.MessageInfo) error {
 		return goterrors.ErrNoRoute
 	}
 	neighbor := inst.udpNeighbor(info.PeerAddr)
+	var parentRoute *udpParentRoute
+	if neighbor == nil && !info.PeerAddr.IsLinkLocal() {
+		if !udpUnicastAddress(info.PeerAddr) || info.PeerAddr.IsIidReserved() {
+			return goterrors.ErrNoRoute
+		}
+		parent, err := inst.currentUDPParentRoute(info)
+		if err != nil {
+			return err
+		}
+		parentRoute = &parent
+		neighbor = &routing.Neighbor{ExtAddress: parent.parentExt, RLOC16: parent.parentRLOC, Mode: inst.mleService.Mle().GetParent().Mode}
+	}
 	if neighbor == nil || !neighbor.Mode.IsRxOnWhenIdle() || neighbor.RLOC16 >= 0xfc00 ||
 		neighbor.ExtAddress == (types.ExtAddress{}) ||
 		neighbor.ExtAddress.IsGroup() || neighbor.ExtAddress == ext {
@@ -91,6 +110,23 @@ func (inst *Instance) SendUDP(payload []byte, info ip6.MessageInfo) error {
 	msg.Metadata.UseSrcShort = false
 	msg.Metadata.UseDstShort = false
 	msg.Metadata.DstExtAddr = neighbor.ExtAddress
+	if parentRoute != nil {
+		if parentRoute.localExt != ext || parentRoute.panID != msg.Metadata.PanId {
+			return goterrors.ErrInvalidState
+		}
+		// Preserve the final IPv6 tuple; only the MAC next hop is the parent.
+		snapshot := *parentRoute
+		msg.ValidateFrame = func() error {
+			current, err := inst.currentUDPParentRoute(info)
+			if err != nil {
+				return err
+			}
+			if current != snapshot {
+				return goterrors.ErrNoRoute
+			}
+			return nil
+		}
+	}
 	// Forwarder owns the single transactional preparation/admission step.
 	return inst.sendViaForwarder(msg)
 }
@@ -104,6 +140,10 @@ func (inst *Instance) hasUDPSource(addr ip6.Address) bool {
 	if addr == inst.GetLinkLocalAddress() {
 		return true
 	}
+	return inst.hasNonLinkLocalUDPSource(addr)
+}
+
+func (inst *Instance) hasNonLinkLocalUDPSource(addr ip6.Address) bool {
 	if inst.meshLocalPrefix != ([8]byte{}) && inst.rloc16 != mle.InvalidRLOC16 &&
 		inst.rloc16 == inst.mleService.Mle().RLOC16() && addr == inst.GetMeshLocalAddress() {
 		return true

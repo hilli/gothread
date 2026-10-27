@@ -532,6 +532,14 @@ func (inst *Instance) HandleFrameRequest(frame *radio.Frame) bool {
 	if msg == nil {
 		return false
 	}
+	if msg.ValidateFrame != nil {
+		if err := msg.ValidateFrame(); err != nil {
+			inst.forwarder.HandleSentFrame(msg, false)
+			inst.scheduleNextDirectFrame()
+			log.Warn(log.RegionMesh, "Retire outbound datagram after admission change: %v", err)
+			return false
+		}
+	}
 	if msg.HasMetadata() {
 		if msg.Metadata.SecurityEnabled {
 			counter, err := inst.allocateMacFrameCounter()
@@ -582,6 +590,26 @@ func (inst *Instance) HandleSentFrame(frame *radio.Frame, err error) {
 	inst.pendingTxMsg = nil
 	inst.forwarder.HandleSentFrame(msg, err == nil)
 	inst.scheduleNextDirectFrame()
+}
+
+// FrameTransmissionValidator captures changing prerequisites of the exact
+// current datagram for delayed radio submission/retry, not a future owner.
+func (inst *Instance) FrameTransmissionValidator() func() error {
+	msg := inst.pendingTxMsg
+	if msg == nil || msg.ValidateFrame == nil {
+		return nil
+	}
+	validate := msg.ValidateFrame
+	return func() error {
+		if msg.Metadata == nil {
+			return goterrors.ErrAbort // The forwarder retired this owner.
+		}
+		if err := validate(); err != nil {
+			log.Warn(log.RegionMesh, "Retire delayed outbound frame after admission change: %v", err)
+			return err
+		}
+		return nil
+	}
 }
 
 func (inst *Instance) scheduleNextDirectFrame() {
