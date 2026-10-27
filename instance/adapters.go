@@ -10,6 +10,7 @@ package instance
 // packages that cannot import each other.
 
 import (
+	"errors"
 	"math/bits"
 	"net"
 	"time"
@@ -18,8 +19,10 @@ import (
 	borderinfra "github.com/hilli/gothread/border"
 	"github.com/hilli/gothread/border/dhcp6pd"
 	"github.com/hilli/gothread/common/log"
+	csettings "github.com/hilli/gothread/common/settings"
 	"github.com/hilli/gothread/diags"
 	"github.com/hilli/gothread/encoding"
+	goterrors "github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/mac/datapoll"
 	macframe "github.com/hilli/gothread/mac/frame"
 	"github.com/hilli/gothread/mac/submac"
@@ -127,7 +130,11 @@ func (a *settingsDriverAdapter) Delete(key uint16, index int) error {
 }
 
 func (a *settingsDriverAdapter) Get(key uint16, index int) ([]byte, error) {
-	return a.ps.Get(platform.SettingsKey(key), index)
+	data, err := a.ps.Get(platform.SettingsKey(key), index)
+	if errors.Is(err, platform.ErrSettingsNotFound) {
+		err = csettings.ErrNotFound
+	}
+	return data, err
 }
 
 func (a *settingsDriverAdapter) Set(key uint16, value []byte) error {
@@ -513,16 +520,32 @@ func (inst *Instance) HandleFrameRequest(frame *radio.Frame) bool {
 		return false
 	}
 	if msg.HasMetadata() {
+		if msg.Metadata.SecurityEnabled {
+			counter, err := inst.allocateMacFrameCounter()
+			if err != nil {
+				log.Warn(log.RegionMac, "Allocate secured frame counter: %v", err)
+				inst.forwarder.HandleSentFrame(msg, false)
+				return false
+			}
+			msg.Metadata.Security.FrameCounter = counter
+			msg.Metadata.Security.KeyId = inst.keyManager.GetMacKeyId()
+			msg.Metadata.Security.Key = [16]byte(inst.keyManager.GetCurrentMacKey())
+		}
 		// Build the full 802.15.4 frame from metadata.
 		built, err := mesh.BuildTxFrame(msg, inst.macSeqNum)
 		if err != nil {
 			// Report the failure to the forwarder so the message is
 			// not silently lost after being dequeued.
 			inst.forwarder.HandleSentFrame(msg, false)
+			log.Warn(log.RegionMac, "Build transmit frame: %v", err)
 			return false
 		}
 		inst.macSeqNum++
 		frame.PSDU = built
+		if frame.TxInfo == nil {
+			frame.TxInfo = &radio.TxInfo{}
+		}
+		frame.TxInfo.IsSecurityProcessed = msg.Metadata.SecurityEnabled
 	} else {
 		// Legacy: copy raw data directly into the frame.
 		frame.PSDU = make([]byte, len(msg.Data))
@@ -908,6 +931,14 @@ func (inst *Instance) IncrementMleFrameCounter() {
 	inst.keyManager.IncrementMleFrameCounter()
 }
 
+// AllocateMleFrameCounter reserves and consumes a counter before MLE encryption.
+func (inst *Instance) AllocateMleFrameCounter() (uint32, error) {
+	if err := inst.PersistenceError(); err != nil {
+		return 0, err
+	}
+	return inst.keyManager.AllocateMleFrameCounter()
+}
+
 // GetMacFrameCounter delegates to threadkey.Manager.
 func (inst *Instance) GetMacFrameCounter() uint32 {
 	return inst.keyManager.GetMacFrameCounter()
@@ -1140,9 +1171,12 @@ func (inst *Instance) GetPendingTimestamp() meshcop.Timestamp {
 }
 
 // ReadActiveDataset returns the serialised Active Operational Dataset, or
-// nil if the dataset is empty or an error occurs.
+// nil if the dataset is empty or an error occurs (errors are logged).
 func (inst *Instance) ReadActiveDataset() []byte {
 	ds, err := inst.activeDataset.Read()
+	if err != nil && !errors.Is(err, goterrors.ErrNotFound) {
+		log.Warn(log.RegionMle, "Read active dataset: %v", err)
+	}
 	if err != nil || ds == nil {
 		return nil
 	}
@@ -1150,9 +1184,12 @@ func (inst *Instance) ReadActiveDataset() []byte {
 }
 
 // ReadPendingDataset returns the serialised Pending Operational Dataset, or
-// nil if the dataset is empty or an error occurs.
+// nil if the dataset is empty or an error occurs (errors are logged).
 func (inst *Instance) ReadPendingDataset() []byte {
 	ds, err := inst.pendingDataset.Read()
+	if err != nil && !errors.Is(err, goterrors.ErrNotFound) {
+		log.Warn(log.RegionMle, "Read pending dataset: %v", err)
+	}
 	if err != nil || ds == nil {
 		return nil
 	}
@@ -1222,6 +1259,9 @@ func (inst *Instance) postTask(fn func()) {
 // Without this notification the MAC stays idle — it uses a push model
 // and only starts TX when explicitly told via RequestDirect/IndirectFrameTransmission.
 func (inst *Instance) sendViaForwarder(msg *mesh.TxMessage) error {
+	if err := inst.PersistenceError(); err != nil {
+		return err
+	}
 	if err := inst.forwarder.SendMessage(msg); err != nil {
 		return err
 	}
@@ -2655,8 +2695,7 @@ type joinerDatasetSaverAdapter struct{ inst *Instance }
 
 //nolint:gocritic // The meshcop.DatasetSaver interface requires a value snapshot.
 func (a *joinerDatasetSaverAdapter) SaveDataset(info meshcop.Info) error {
-	a.inst.activeDataset.SaveLocalFromInfo(&info)
-	return nil
+	return a.inst.activeDataset.SaveLocalFromInfo(&info)
 }
 
 // ---------------------------------------------------------------------------
@@ -2793,11 +2832,9 @@ func (a *datasetStoreAdapter) SaveDataset(dt meshcop.DatasetType, ds *meshcop.Da
 }
 func (a *datasetStoreAdapter) DeleteDataset(dt meshcop.DatasetType) error {
 	if dt == meshcop.DatasetActive {
-		a.inst.activeDataset.Clear()
-	} else {
-		a.inst.pendingDataset.Clear()
+		return a.inst.activeDataset.Clear()
 	}
-	return nil
+	return a.inst.pendingDataset.Clear()
 }
 
 // ---------------------------------------------------------------------------

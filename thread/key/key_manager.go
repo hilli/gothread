@@ -5,6 +5,10 @@
 package key
 
 import (
+	"crypto/sha256"
+	"math"
+
+	"github.com/hilli/gothread/common/settings"
 	"github.com/hilli/gothread/crypto/hmac"
 	"github.com/hilli/gothread/encoding"
 )
@@ -49,6 +53,10 @@ type Manager struct {
 	mleFrameCounter  uint32
 	storedMacCounter uint32
 	storedMleCounter uint32
+	settings         *settings.Settings
+	persistenceErr   error
+	savedKeyHash     [32]byte
+	savedKeySequence uint32
 
 	kek             Kek
 	kekFrameCounter uint32
@@ -78,8 +86,20 @@ func (m *Manager) SetNetworkKey(key NetworkKey) {
 	if m.networkKey == key {
 		return
 	}
+	sequence := uint32(0)
+	if m.settings != nil {
+		if m.persistenceErr != nil {
+			return
+		}
+		if sha256.Sum256(key[:]) == m.savedKeyHash {
+			sequence = m.savedKeySequence
+		}
+		if err := m.saveCounterState(m.storedMacCounter, m.storedMleCounter, key, sequence); err != nil {
+			return
+		}
+	}
 	m.networkKey = key
-	m.keySequence = 0
+	m.keySequence = sequence
 	m.UpdateKeyMaterial()
 	m.resetFrameCounters()
 }
@@ -118,8 +138,15 @@ func (m *Manager) SetCurrentKeySequence(seq uint32, flags SeqUpdateFlag) {
 	}
 
 	// Reset frame counters before updating keys.
-	m.macFrameCounter = 0
-	m.mleFrameCounter = 0
+	if m.settings != nil {
+		if m.persistenceErr != nil {
+			return
+		}
+		if err := m.saveCounterState(m.storedMacCounter, m.storedMleCounter, m.networkKey, seq); err != nil {
+			return
+		}
+	}
+	m.resetFrameCounters()
 
 	m.keySequence = seq
 	m.UpdateKeyMaterial()
@@ -216,7 +243,11 @@ func (m *Manager) MacFrameCounterUsed(counter uint32) {
 	if m.macFrameCounter > counter {
 		return
 	}
-	m.macFrameCounter = counter + 1
+	if counter == math.MaxUint32 {
+		m.macFrameCounter = math.MaxUint32
+	} else {
+		m.macFrameCounter = counter + 1
+	}
 }
 
 // GetMleFrameCounter returns the current MLE frame counter.
@@ -231,7 +262,9 @@ func (m *Manager) SetMleFrameCounter(counter uint32) {
 
 // IncrementMleFrameCounter increments the MLE frame counter by one.
 func (m *Manager) IncrementMleFrameCounter() {
-	m.mleFrameCounter++
+	if m.mleFrameCounter != math.MaxUint32 {
+		m.mleFrameCounter++
+	}
 }
 
 // --- Stored frame counters (non-volatile) ---
@@ -338,6 +371,11 @@ func (m *Manager) checkForKeyRotation() {
 
 // resetFrameCounters resets all frame counters to zero.
 func (m *Manager) resetFrameCounters() {
+	// Persistent counters are global high-water marks, including across key
+	// changes. Returning to an earlier key must not restart its nonce space.
+	if m.settings != nil {
+		return
+	}
 	m.macFrameCounter = 0
 	m.mleFrameCounter = 0
 }

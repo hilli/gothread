@@ -136,6 +136,7 @@ func (dm *DatasetManager) SetMgmtPending(pending bool) {
 // Restore reads the dataset from persistent storage and restores timestamps.
 // Returns ErrNotFound if no dataset is stored (but timestamps are still cleared).
 func (dm *DatasetManager) Restore() error {
+	dm.localSaved = false
 	ds, err := dm.store.ReadDataset(dm.datasetType)
 	if err != nil {
 		dm.networkTimestamp.SetToInvalid()
@@ -148,6 +149,7 @@ func (dm *DatasetManager) Restore() error {
 
 // RestoreFromDataset restores the manager state from an in-memory dataset.
 func (dm *DatasetManager) RestoreFromDataset(ds *Dataset) {
+	dm.localSaved = false
 	dm.networkTimestamp.SetToInvalid()
 	dm.localTimestamp.SetToInvalid()
 
@@ -215,12 +217,15 @@ func (dm *DatasetManager) calculateRemainingDelay(originalDelay uint32) uint32 {
 }
 
 // Clear invalidates timestamps, deletes the stored dataset, and signals change.
-func (dm *DatasetManager) Clear() {
+func (dm *DatasetManager) Clear() error {
+	if err := dm.store.DeleteDataset(dm.datasetType); err != nil {
+		return err
+	}
 	dm.networkTimestamp.SetToInvalid()
 	dm.localTimestamp.SetToInvalid()
 	dm.localSaved = false
-	_ = dm.store.DeleteDataset(dm.datasetType)
 	dm.signalChange()
+	return nil
 }
 
 // Save sets the dataset for the partition. If the new dataset's timestamp
@@ -239,6 +244,7 @@ func (dm *DatasetManager) Save(ds *Dataset) error {
 // If allowOlderTimestamp is true, the dataset is saved regardless of
 // timestamp comparison.
 func (dm *DatasetManager) SaveWithOptions(ds *Dataset, allowOlderTimestamp bool) error {
+	previousTimestamp := dm.networkTimestamp
 	// Update network timestamp from the dataset.
 	ts, err := ds.ReadTimestamp(dm.datasetType)
 	if err == nil {
@@ -248,7 +254,10 @@ func (dm *DatasetManager) SaveWithOptions(ds *Dataset, allowOlderTimestamp bool)
 	cmp := Compare(&dm.networkTimestamp, &dm.localTimestamp)
 
 	if cmp > 0 || allowOlderTimestamp {
-		dm.localSave(ds)
+		if err := dm.localSave(ds); err != nil {
+			dm.networkTimestamp = previousTimestamp
+			return err
+		}
 		dm.signalChange()
 		return nil
 	} else if cmp < 0 {
@@ -262,24 +271,37 @@ func (dm *DatasetManager) SaveWithOptions(ds *Dataset, allowOlderTimestamp bool)
 
 // SaveLocal saves the dataset locally (for use by API callers setting
 // the dataset from the application layer).
-func (dm *DatasetManager) SaveLocal(ds *Dataset) {
-	dm.localSave(ds)
+func (dm *DatasetManager) SaveLocal(ds *Dataset) error {
+	if err := dm.localSave(ds); err != nil {
+		return err
+	}
 	dm.signalChange()
+	return nil
 }
 
 // SaveLocalFromInfo saves a dataset constructed from a structured Info.
-func (dm *DatasetManager) SaveLocalFromInfo(info *Info) {
+func (dm *DatasetManager) SaveLocalFromInfo(info *Info) error {
 	ds := InfoToDataset(info)
-	dm.SaveLocal(ds)
+	return dm.SaveLocal(ds)
 }
 
 // localSave persists the dataset and updates local timestamps.
-func (dm *DatasetManager) localSave(ds *Dataset) {
+func (dm *DatasetManager) localSave(ds *Dataset) error {
+	if ds == nil {
+		return goterrors.ErrInvalidArgs
+	}
+	if err := ds.ValidateTLVs(); err != nil {
+		return err
+	}
 	if ds.Length() == 0 {
-		_ = dm.store.DeleteDataset(dm.datasetType)
+		if err := dm.store.DeleteDataset(dm.datasetType); err != nil {
+			return err
+		}
 		dm.localSaved = false
 	} else {
-		_ = dm.store.SaveDataset(dm.datasetType, ds)
+		if err := dm.store.SaveDataset(dm.datasetType, ds); err != nil {
+			return err
+		}
 		dm.localSaved = true
 	}
 
@@ -291,6 +313,7 @@ func (dm *DatasetManager) localSave(ds *Dataset) {
 	}
 
 	dm.localUpdateTime = time.Now()
+	return nil
 }
 
 // NeedsSyncWithLeader reports whether the local dataset is newer than the

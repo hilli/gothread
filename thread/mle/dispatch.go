@@ -272,6 +272,20 @@ func (d *Dispatcher) SendMessage(msg *Message, dstIP ip6.Address) error {
 
 	// Build the security header from current key material.
 	frameCounter := d.keyMgr.GetMleFrameCounter()
+	if allocator, ok := d.keyMgr.(interface {
+		AllocateMleFrameCounter() (uint32, error)
+	}); ok {
+		var err error
+		frameCounter, err = allocator.AllocateMleFrameCounter()
+		if err != nil {
+			return fmt.Errorf("mle send: allocate frame counter: %w", err)
+		}
+	} else {
+		if frameCounter == ^uint32(0) {
+			return key.ErrFrameCounterExhausted
+		}
+		d.keyMgr.IncrementMleFrameCounter()
+	}
 	keySequence := d.keyMgr.GetCurrentKeySequence()
 	secHdr := NewSecurityHeader(keySequence, frameCounter)
 
@@ -282,8 +296,6 @@ func (d *Dispatcher) SendMessage(msg *Message, dstIP ip6.Address) error {
 	if err := msg.Finalize(secHdr, mleKey, srcAddr, srcIP, dstIP); err != nil {
 		return fmt.Errorf("mle send: finalize: %w", err)
 	}
-
-	d.keyMgr.IncrementMleFrameCounter()
 
 	return d.transport.SendMLE(msg.Bytes(), dstIP)
 }
