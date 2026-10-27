@@ -5,6 +5,7 @@
 package submac
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -43,8 +44,10 @@ type mockRadio struct {
 	energyScanChannel uint8
 	energyScanDur     uint16
 
-	// Control transmit behavior.
-	transmitErr error
+	// Control operation failures.
+	transmitErr   error
+	receiveErr    error
+	energyScanErr error
 }
 
 func newMockRadio(caps radio.Caps) *mockRadio {
@@ -79,9 +82,12 @@ func (r *mockRadio) Sleep() error {
 }
 
 func (r *mockRadio) Receive(channel uint8) error {
+	r.receiveCount++
+	if r.receiveErr != nil {
+		return r.receiveErr
+	}
 	r.state = radio.StateReceive
 	r.channel = channel
-	r.receiveCount++
 	return nil
 }
 
@@ -139,7 +145,7 @@ func (r *mockRadio) EnergyScan(channel uint8, duration uint16) error {
 	r.energyScanCount++
 	r.energyScanChannel = channel
 	r.energyScanDur = duration
-	return nil
+	return r.energyScanErr
 }
 
 // --------------------------------------------------------------------------
@@ -985,6 +991,98 @@ func TestEnergyScanHardwareDoneCallback(t *testing.T) {
 	}
 	if cb.energyScanMaxRSSI != -45 {
 		t.Errorf("maxRSSI = %d, want -45", cb.energyScanMaxRSSI)
+	}
+}
+
+func TestEnergyScanStartFailurePreservesState(t *testing.T) {
+	for _, hardware := range []bool{true, false} {
+		for _, priorState := range []State{StateSleep, StateReceive} {
+			t.Run(fmt.Sprintf("hardware=%v/state=%s", hardware, priorState), func(t *testing.T) {
+				caps := radio.CapNone
+				if hardware {
+					caps = radio.CapEnergyScan
+				}
+				sm, r, cb, timer := newTestSubMac(caps)
+				if err := sm.Enable(); err != nil {
+					t.Fatal(err)
+				}
+				if priorState == StateReceive {
+					if err := sm.Receive(15); err != nil {
+						t.Fatal(err)
+					}
+				}
+				sm.energyScanChannel = 11
+				sm.energyScanMaxRSSI = -61
+				previousEnd := time.Unix(12345, 0)
+				sm.energyScanEndTime = previousEnd
+				timerFired := false
+				timer.schedule(time.Second, func() { timerFired = true })
+				scheduled, stopped := timer.scheduled, timer.stopped
+				receiveCount := r.receiveCount
+				startErr := errors.New("radio: busy during ACK turnaround")
+				if hardware {
+					r.energyScanErr = startErr
+				} else {
+					r.receiveErr = startErr
+				}
+
+				if err := sm.EnergyScan(20, 300); err != startErr {
+					t.Fatalf("scan start error = %v, want original radio error %v", err, startErr)
+				}
+				if hardware {
+					if r.energyScanCount != 1 || r.energyScanChannel != 20 || r.energyScanDur != 300 ||
+						r.receiveCount != receiveCount {
+						t.Error("failed hardware scan did not use Radio.EnergyScan exclusively")
+					}
+				} else if r.receiveCount != receiveCount+1 || r.energyScanCount != 0 {
+					t.Error("failed fallback scan did not use Radio.Receive exclusively")
+				}
+				if sm.GetState() != priorState {
+					t.Errorf("state after failed scan = %v, want %v", sm.GetState(), priorState)
+				}
+				if sm.energyScanChannel != 11 || sm.energyScanMaxRSSI != -61 ||
+					!sm.energyScanEndTime.Equal(previousEnd) {
+					t.Error("failed scan changed scan bookkeeping")
+				}
+				if timer.scheduled != scheduled || timer.stopped != stopped {
+					t.Error("failed scan replaced or stopped prior timer")
+				}
+				timer.fire()
+				if !timerFired {
+					t.Fatal("prior timer no longer fires after failed scan")
+				}
+				if cb.energyScanDoneCount != 0 {
+					t.Error("failed start reported scan completion")
+				}
+
+				r.energyScanErr = nil
+				r.receiveErr = nil
+				if err := sm.Send(TxRequest{Channel: 15}); err != nil {
+					t.Fatalf("send after failed scan: %v", err)
+				}
+				if r.transmitCount != 1 || r.transmitFrame != sm.GetTransmitFrame() {
+					t.Fatal("send after failed scan did not reach Radio.Transmit")
+				}
+				sm.HandleTransmitDone(sm.GetTransmitFrame(), nil, nil)
+				if err := sm.EnergyScan(20, 300); err != nil {
+					t.Fatalf("subsequent scan: %v", err)
+				}
+				if sm.GetState() != StateEnergyScan || sm.energyScanChannel != 20 {
+					t.Fatal("accepted scan did not commit scan state")
+				}
+				if hardware {
+					sm.HandleEnergyScanDone(-45)
+				} else {
+					sm.energyScanEndTime = time.Now().Add(-time.Millisecond)
+					r.rssi = -45
+					timer.fire()
+				}
+				if sm.GetState() != StateReceive || cb.energyScanDoneCount != 1 ||
+					cb.energyScanMaxRSSI != -45 {
+					t.Fatal("subsequent scan did not complete normally")
+				}
+			})
+		}
 	}
 }
 

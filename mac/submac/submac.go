@@ -364,7 +364,8 @@ func (sm *SubMac) GetTransmitRetries() uint8 {
 // --------------------------------------------------------------------------
 
 // EnergyScan starts an energy scan on the given channel for the specified
-// duration in milliseconds.
+// duration in milliseconds. If the radio rejects the start, the prior state,
+// timer, and scan bookkeeping are unchanged.
 func (sm *SubMac) EnergyScan(channel uint8, durationMs uint16) error {
 	switch sm.state {
 	case StateReceive, StateSleep:
@@ -373,18 +374,23 @@ func (sm *SubMac) EnergyScan(channel uint8, durationMs uint16) error {
 		return ErrInvalidState
 	}
 
+	// If the radio supports hardware energy scan, delegate.
+	hardwareScan := sm.radioCaps.Has(radio.CapEnergyScan)
+	if hardwareScan {
+		if err := sm.radio.EnergyScan(channel, durationMs); err != nil {
+			return err
+		}
+	} else if err := sm.radio.Receive(channel); err != nil {
+		return err
+	}
+
 	sm.state = StateEnergyScan
 	sm.energyScanChannel = channel
-
-	// If the radio supports hardware energy scan, delegate.
-	if sm.radioCaps.Has(radio.CapEnergyScan) {
-		return sm.radio.EnergyScan(channel, durationMs)
+	if hardwareScan {
+		return nil
 	}
 
 	// Software energy scan.
-	if err := sm.radio.Receive(channel); err != nil {
-		return err
-	}
 	sm.energyScanMaxRSSI = radio.RSSIInvalid
 	sm.energyScanEndTime = time.Now().Add(time.Duration(durationMs) * time.Millisecond)
 	sm.scheduleTimer(0, sm.sampleRSSI)
