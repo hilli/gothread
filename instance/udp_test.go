@@ -266,8 +266,11 @@ func TestSendUDPSupportedRoutesHopLimitsAndExactBounds(t *testing.T) {
 						copy(info.PeerAddr[8:], iid[:])
 					}
 					macKey = inst.keyManager.GetCurrentMacKey()
-					if err := inst.SendUDP(make([]byte, maxPayload+1), info); err != goterrors.ErrNoBufs {
-						t.Errorf("oversize admission=%v, want ErrNoBufs", err)
+					probe := inst.newUDPMessage(make([]byte, maxPayload+1), info)
+					probe.Metadata.UseSrcShort, probe.Metadata.UseDstShort = false, false
+					probe.Metadata.DstExtAddr = udpPeerExt
+					if err := mesh.ValidateTxFrame(probe); err != goterrors.ErrNoBufs {
+						t.Errorf("single-frame threshold=%v, want ErrNoBufs", err)
 					}
 					return inst.SendUDP(bytes.Repeat([]byte{0xa5}, maxPayload), info)
 				}); err != nil {
@@ -333,8 +336,11 @@ func TestSendUDPCompressedPortBounds(t *testing.T) {
 			var macKey [16]byte
 			if err := inst.Do(context.Background(), func() error {
 				macKey = inst.keyManager.GetCurrentMacKey()
-				if err := inst.SendUDP(make([]byte, ports.max+1), info); err != goterrors.ErrNoBufs {
-					t.Errorf("compressed-port oversize admission=%v", err)
+				probe := inst.newUDPMessage(make([]byte, ports.max+1), info)
+				probe.Metadata.UseSrcShort, probe.Metadata.UseDstShort = false, false
+				probe.Metadata.DstExtAddr = udpPeerExt
+				if err := mesh.ValidateTxFrame(probe); err != goterrors.ErrNoBufs {
+					t.Errorf("compressed-port single-frame threshold=%v", err)
 				}
 				return inst.SendUDP(make([]byte, ports.max), info)
 			}); err != nil {

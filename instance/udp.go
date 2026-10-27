@@ -22,13 +22,14 @@ import (
 // network key. The source must be explicitly assigned; both ports are nonzero.
 // Only direct, valid, rx-on-when-idle neighbors are supported, addressed by
 // their canonical EUI-64 link-local address or same-mesh-prefix RLOC.
-// Other EIDs, multi-hop/off-mesh routes, multicast, and fragmentation are not
+// Other EIDs, multi-hop/off-mesh routes, and multicast are not
 // implemented by this boundary. Unsupported routes return errors.ErrNoRoute.
 //
 // HopLimit zero defaults to 64; other nonzero values are honored. All other
 // MessageInfo options must be zero/nil, otherwise errors.ErrNotCapable is
-// returned. Actual compressed/security overhead determines the single-frame
-// size limit (errors.ErrNoBufs); zero-length payloads are valid.
+// returned. UDP payload is at most 1232 bytes (IPv6 MTU 1280). Standard
+// RFC 4944/6282 fragmentation is owned by the shared forwarder; empty payloads
+// remain valid and small datagrams remain unfragmented.
 //
 // Payload and retained metadata are copied before success. Nil means QUEUED,
 // not transmitted or received. Later counter/encryption/radio errors remain
@@ -80,8 +81,7 @@ func (inst *Instance) SendUDP(payload []byte, info ip6.MessageInfo) error {
 		neighbor.ExtAddress.IsGroup() || neighbor.ExtAddress == ext {
 		return goterrors.ErrNoRoute
 	}
-	// Bound copying before building the exact compressed representation.
-	if len(payload) > mesh.MaxPsduSize-mesh.FCSSize {
+	if len(payload) > mesh.IPv6MTU-ip6.HeaderSize-ip6.UDPHeaderSize {
 		return goterrors.ErrNoBufs
 	}
 	msg := inst.newUDPMessage(payload, info)
@@ -91,9 +91,7 @@ func (inst *Instance) SendUDP(payload []byte, info ip6.MessageInfo) error {
 	msg.Metadata.UseSrcShort = false
 	msg.Metadata.UseDstShort = false
 	msg.Metadata.DstExtAddr = neighbor.ExtAddress
-	if err := mesh.ValidateTxFrame(msg); err != nil {
-		return err
-	}
+	// Forwarder owns the single transactional preparation/admission step.
 	return inst.sendViaForwarder(msg)
 }
 

@@ -222,9 +222,8 @@ type FragmentHeader struct {
 	DatagramSize uint16
 	// DatagramTag identifies which datagram this fragment belongs to.
 	DatagramTag uint16
-	// DatagramOffset is the offset (in units of 8 bytes) of this
-	// fragment's payload within the original datagram. Zero for the
-	// first fragment.
+	// DatagramOffset is a BYTE offset in the original, uncompressed IPv6
+	// datagram. The wire field encodes this in eight-octet units.
 	DatagramOffset uint16
 	// IsFirst is true when this is a first-fragment header (dispatch 0xC0).
 	IsFirst bool
@@ -250,6 +249,9 @@ func ParseFragmentHeader(data []byte) (FragmentHeader, int, error) {
 	// datagram_size: 11 bits across bytes 0-1 (lower 3 bits of byte 0 + all 8 bits of byte 1).
 	size := uint16(data[0]&0x07)<<8 | uint16(data[1])
 	tag := uint16(data[2])<<8 | uint16(data[3])
+	if size < ipv6HeaderSize {
+		return FragmentHeader{}, 0, errors.ErrParse
+	}
 
 	if isFirst {
 		return FragmentHeader{
@@ -265,6 +267,9 @@ func ParseFragmentHeader(data []byte) (FragmentHeader, int, error) {
 		return FragmentHeader{}, 0, errors.ErrParse
 	}
 	offset := uint16(data[4]) * 8 // offset is in units of 8 octets
+	if offset == 0 || offset >= size {
+		return FragmentHeader{}, 0, errors.ErrParse
+	}
 
 	return FragmentHeader{
 		DatagramSize:   size,

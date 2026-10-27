@@ -5,149 +5,204 @@
 package mesh
 
 import (
+	"encoding/binary"
+
 	"github.com/hilli/gothread/checksum"
-	"github.com/hilli/gothread/encoding"
 	"github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/thread/lowpan"
 )
 
-// BuildTxFrame constructs a complete IEEE 802.15.4 MAC frame from a
-// TxMessage that has IPv6/transport metadata. The frame construction
-// pipeline is:
-//
-//  1. Build 40-byte IPv6 header from metadata
-//  2. Compress IPv6 header via 6LoWPAN IPHC
-//  3. If UDP: build and compress UDP header via NHC
-//  4. Concatenate: compressed_IPHC + (compressed_NHC_UDP) + payload
-//  5. Build 802.15.4 MAC data frame around the 6LoWPAN payload
-//
-// The sequenceNumber parameter is the MAC-layer sequence number to use.
-// Returns the complete MAC frame (without FCS, as radio hardware appends it).
-func BuildTxFrame(msg *TxMessage, sequenceNumber uint8) ([]byte, error) {
-	ctx, payload, err := prepareTxFrame(msg)
+// IPv6MTU is the uncompressed IPv6 link MTU. UDP application payload is at
+// most IPv6MTU - 40 - 8 = 1232 bytes.
+const IPv6MTU = lowpan.IPv6MTU
+
+type transmitState struct {
+	packet     []byte
+	header     []byte
+	headerSize int // represented, uncompressed header bytes
+	maxPayload int
+	offset     int // always in uncompressed IPv6 bytes
+	frameEnd   int
+	fragments  int
+	remaining  int
+	tag        uint16
+}
+
+func frameContext(msg *TxMessage) *FrameContext {
+	meta := msg.Metadata
+	return &FrameContext{
+		SrcShortAddr: msg.MeshSource, DstShortAddr: msg.MeshDest,
+		SrcExtAddr: meta.SrcExtAddr, DstExtAddr: meta.DstExtAddr,
+		UseSrcShort: meta.UseSrcShort, UseDstShort: meta.UseDstShort,
+		PanId: meta.PanId, SecurityEnabled: meta.SecurityEnabled,
+		Security: meta.Security, AckRequest: msg.AckRequired,
+	}
+}
+
+func prepareTransmit(msg *TxMessage) (*transmitState, error) {
+	if msg == nil || msg.Metadata == nil {
+		return nil, errors.ErrInvalidArgs
+	}
+	meta := msg.Metadata
+	headerSize := ip6.HeaderSize
+	if meta.NextHeader == ip6.ProtoUDP {
+		headerSize += ip6.UDPHeaderSize
+	}
+	if len(msg.Data) > IPv6MTU-headerSize {
+		return nil, errors.ErrNoBufs
+	}
+	packet := make([]byte, headerSize+len(msg.Data))
+	hdr := ip6.NewHeader(meta.SrcAddr, meta.DstAddr, meta.NextHeader, meta.HopLimit, uint16(len(packet)-ip6.HeaderSize))
+	raw := hdr.Bytes()
+	copy(packet, raw[:])
+	copy(packet[headerSize:], msg.Data)
+	header, err := lowpan.CompressHeader(raw, lowpan.AddressContext{
+		SrcExtAddr: types.ExtAddress(meta.SrcExtAddr), DstExtAddr: types.ExtAddress(meta.DstExtAddr),
+		SrcShort: types.ShortAddress(msg.MeshSource), DstShort: types.ShortAddress(msg.MeshDest),
+	}, nil)
 	if err != nil {
 		return nil, err
 	}
+	if meta.NextHeader == ip6.ProtoUDP {
+		udpHeader := packet[ip6.HeaderSize:headerSize]
+		binary.BigEndian.PutUint16(udpHeader[:2], meta.SrcPort)
+		binary.BigEndian.PutUint16(udpHeader[2:4], meta.DstPort)
+		binary.BigEndian.PutUint16(udpHeader[4:6], uint16(len(packet)-ip6.HeaderSize))
+		var sum checksum.Checksum
+		sum.AddData(packet[8:40])
+		sum.AddUint16(0)
+		sum.AddUint16(uint16(len(packet) - ip6.HeaderSize))
+		sum.AddUint16(0)
+		sum.AddUint16(uint16(ip6.ProtoUDP))
+		sum.AddData(packet[ip6.HeaderSize:])
+		binary.BigEndian.PutUint16(udpHeader[6:8], sum.Finalize())
+		var udp [ip6.UDPHeaderSize]byte
+		copy(udp[:], udpHeader)
+		compressed, compressErr := lowpan.CompressUDPHeader(udp)
+		if compressErr != nil {
+			return nil, compressErr
+		}
+		header = append(header, compressed...)
+	}
+	state := &transmitState{
+		packet: packet, header: header, headerSize: headerSize,
+		maxPayload: NewFramer().GetMaxPayloadSize(frameContext(msg)),
+	}
+	if len(header)+len(msg.Data) <= state.maxPayload {
+		state.fragments, state.remaining = 1, 1
+		return state, nil
+	}
+	// Routing/address selection belongs to the caller. Fragmentation never
+	// invents a mesh route or an indirect delivery path.
+	if !msg.Direct {
+		return nil, errors.ErrNoBufs
+	}
+	for offset := 0; offset < len(packet); {
+		end, endErr := state.nextEnd(offset)
+		if endErr != nil {
+			return nil, endErr
+		}
+		state.fragments++
+		offset = end
+	}
+	state.remaining = state.fragments
+	return state, nil
+}
+
+func (s *transmitState) nextEnd(offset int) (int, error) {
+	start, capacity := offset, s.maxPayload-lowpan.FragSubsequentHeaderLen
+	if offset == 0 {
+		start = s.headerSize
+		capacity = s.maxPayload - lowpan.FragFirstHeaderLen - len(s.header)
+	}
+	if capacity < 0 {
+		return 0, errors.ErrNoBufs
+	}
+	end := start + capacity
+	if end >= len(s.packet) {
+		return len(s.packet), nil
+	}
+	end &^= 7
+	if end <= offset || end < start {
+		return 0, errors.ErrNoBufs
+	}
+	return end, nil
+}
+
+func (s *transmitState) payload() ([]byte, error) {
+	if s.fragments == 1 {
+		s.frameEnd = len(s.packet)
+		data := append([]byte(nil), s.header...)
+		return append(data, s.packet[s.headerSize:]...), nil
+	}
+	end, err := s.nextEnd(s.offset)
+	if err != nil {
+		return nil, err
+	}
+	data, err := lowpan.AppendFragmentHeader(nil, uint16(len(s.packet)), s.tag, uint16(s.offset))
+	if err != nil {
+		return nil, err
+	}
+	start := s.offset
+	if start == 0 {
+		data = append(data, s.header...)
+		start = s.headerSize
+	}
+	s.frameEnd = end
+	return append(data, s.packet[start:end]...), nil
+}
+
+// BuildTxFrame constructs the current secured MAC frame. Queued datagrams carry
+// an owned transmit plan; only successful MAC completion advances its ORIGINAL
+// IPv6 offset. SubMac retries the same prepared frame without rebuilding it.
+func BuildTxFrame(msg *TxMessage, sequenceNumber uint8) ([]byte, error) {
+	if msg == nil || msg.Metadata == nil {
+		return nil, errors.ErrInvalidArgs
+	}
+	state := msg.transmit
+	if state == nil {
+		var err error
+		state, err = prepareTransmit(msg)
+		if err != nil {
+			return nil, err
+		}
+		if state.fragments != 1 {
+			return nil, errors.ErrNoBufs // Tag/admission must be owned by Forwarder.
+		}
+	}
+	payload, err := state.payload()
+	if err != nil {
+		return nil, err
+	}
+	ctx := frameContext(msg)
 	ctx.SequenceNumber = sequenceNumber
 	return NewFramer().BuildDataFrame(ctx, payload)
 }
 
-// ValidateTxFrame checks the actual compressed headers, security overhead, and
-// payload against the single-frame limit without encrypting or using a counter.
-// The instance TX path does not currently integrate outbound fragmentation.
+// ValidateTxFrame checks a single-frame representation without consuming
+// security material. Use ValidateTxDatagram for the integrated fragment path.
 func ValidateTxFrame(msg *TxMessage) error {
-	ctx, payload, err := prepareTxFrame(msg)
-	if err != nil {
-		return err
+	state, err := prepareTransmit(msg)
+	if err == nil && state.fragments != 1 {
+		err = errors.ErrNoBufs
 	}
-	if len(payload) > NewFramer().GetMaxPayloadSize(ctx) {
-		return errors.ErrNoBufs
-	}
-	return nil
+	return err
 }
 
-func prepareTxFrame(msg *TxMessage) (*FrameContext, []byte, error) {
-	if msg == nil || msg.Metadata == nil {
-		return nil, nil, errors.ErrInvalidArgs
-	}
-	// No single frame can carry this much application data, regardless of
-	// compression. Reject before length conversion or allocating a datagram.
-	if len(msg.Data) > MaxPsduSize-FCSSize {
-		return nil, nil, errors.ErrNoBufs
-	}
-	meta := msg.Metadata
-
-	// --- Step 1: Build IPv6 header ---
-	var srcAddr, dstAddr ip6.Address
-	copy(srcAddr[:], meta.SrcAddr[:])
-	copy(dstAddr[:], meta.DstAddr[:])
-
-	// Payload length: for UDP, it includes the 8-byte UDP header + data.
-	// For other protocols (ICMPv6, etc.), it's just the data length.
-	var payloadLen uint16
-	if meta.NextHeader == ip6.ProtoUDP {
-		payloadLen = uint16(8 + len(msg.Data)) // UDP header + payload
-	} else {
-		payloadLen = uint16(len(msg.Data))
-	}
-
-	ipv6Hdr := ip6.NewHeader(srcAddr, dstAddr, meta.NextHeader, meta.HopLimit, payloadLen)
-	ipv6Raw := ipv6Hdr.Bytes()
-
-	// --- Step 2: Build MAC address context for IPHC compression ---
-	macAddrs := lowpan.AddressContext{
-		SrcExtAddr: meta.SrcExtAddr,
-		DstExtAddr: meta.DstExtAddr,
-		SrcShort:   types.ShortAddress(msg.MeshSource),
-		DstShort:   types.ShortAddress(msg.MeshDest),
-	}
-
-	// --- Step 3: Compress IPv6 header ---
-	compressedIPHC, err := lowpan.CompressHeader(ipv6Raw, macAddrs, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// --- Step 4: Build the 6LoWPAN payload ---
-	// Start with the compressed IPHC header.
-	var lowpanPayload []byte
-	lowpanPayload = append(lowpanPayload, compressedIPHC...)
-
-	if meta.NextHeader == ip6.ProtoUDP {
-		// Build the 8-byte UDP header and compress it.
-		var udpHdr [8]byte
-		encoding.BigEndianWriteUint16(meta.SrcPort, udpHdr[0:2])
-		encoding.BigEndianWriteUint16(meta.DstPort, udpHdr[2:4])
-		encoding.BigEndianWriteUint16(payloadLen, udpHdr[4:6])
-		var sum checksum.Checksum
-		sum.AddData(srcAddr[:])
-		sum.AddData(dstAddr[:])
-		sum.AddUint16(0) // Upper-layer length, high word.
-		sum.AddUint16(payloadLen)
-		sum.AddUint16(0)
-		sum.AddUint16(uint16(ip6.ProtoUDP))
-		sum.AddData(udpHdr[:])
-		sum.AddData(msg.Data)
-		encoding.BigEndianWriteUint16(sum.Finalize(), udpHdr[6:8])
-
-		compressedUDP, err := lowpan.CompressUDPHeader(udpHdr)
-		if err != nil {
-			return nil, nil, err
-		}
-		lowpanPayload = append(lowpanPayload, compressedUDP...)
-	}
-
-	// Append the application-layer payload.
-	lowpanPayload = append(lowpanPayload, msg.Data...)
-
-	// --- Step 5: Build the 802.15.4 MAC frame ---
-	frameCtx := &FrameContext{
-		SrcShortAddr:    msg.MeshSource,
-		SrcExtAddr:      meta.SrcExtAddr,
-		DstShortAddr:    msg.MeshDest,
-		DstExtAddr:      meta.DstExtAddr,
-		UseSrcShort:     meta.UseSrcShort,
-		UseDstShort:     meta.UseDstShort,
-		PanId:           meta.PanId,
-		SecurityEnabled: meta.SecurityEnabled,
-		Security:        meta.Security,
-		AckRequest:      msg.AckRequired,
-	}
-	return frameCtx, lowpanPayload, nil
+// ValidateTxDatagram validates an IPv6-MTU datagram and its actual per-fragment
+// budgets without assigning a tag, admitting resources, encrypting, or taking
+// a security counter.
+func ValidateTxDatagram(msg *TxMessage) error {
+	_, err := prepareTransmit(msg)
+	return err
 }
 
-// BuildUDPMetadata is a convenience function that creates a TxMetadata
-// populated for UDP transmission. This covers the common case of MLE
-// and CoAP messages.
+// BuildUDPMetadata creates UDP transmit metadata.
 func BuildUDPMetadata(srcAddr, dstAddr [16]byte, srcPort, dstPort uint16, hopLimit uint8) *TxMetadata {
 	return &TxMetadata{
-		SrcAddr:    srcAddr,
-		DstAddr:    dstAddr,
-		SrcPort:    srcPort,
-		DstPort:    dstPort,
-		NextHeader: ip6.ProtoUDP,
-		HopLimit:   hopLimit,
+		SrcAddr: srcAddr, DstAddr: dstAddr, SrcPort: srcPort, DstPort: dstPort,
+		NextHeader: ip6.ProtoUDP, HopLimit: hopLimit,
 	}
 }

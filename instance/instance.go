@@ -989,7 +989,7 @@ func (inst *Instance) wireModules() {
 		// Update SLAAC addresses based on the new on-mesh prefixes.
 		inst.updateSlaacAddresses()
 	})
-	inst.forwarder = mesh.NewForwarder()
+	inst.forwarder = mesh.NewForwarderWithTag(uint16(inst.keyManager.GetMacFrameCounter()))
 
 	// TMF services — register handlers with the TMF agent for
 	// Address Solicit/Release (Leader), Server Data (network data
@@ -1693,12 +1693,19 @@ func (inst *Instance) ThreadStop() error {
 	}
 	m := inst.mleService.Mle()
 	_ = m.Disable()
+	inst.abortFragmentedTraffic()
 	inst.threadEnabled = false
 	return nil
 }
 
 // IsThreadRunning reports whether the Thread protocol is enabled.
 func (inst *Instance) IsThreadRunning() bool { return inst.threadEnabled }
+
+func (inst *Instance) abortFragmentedTraffic() {
+	if inst.forwarder != nil {
+		inst.forwarder.AbortFragments()
+	}
+}
 
 // IsRunning reports whether the event loop is active.
 func (inst *Instance) IsRunning() bool {
@@ -2589,6 +2596,13 @@ func (inst *Instance) eventLoop(stop <-chan struct{}, done chan struct{}) {
 	inst.startPeriodicTick()
 
 	for {
+		select {
+		case <-stop:
+			inst.drainTasks()
+			inst.abortFragmentedTraffic()
+			return
+		default:
+		}
 		// Determine how long to wait for the next timer.
 		var timerCh <-chan time.Time
 		if d, ok := inst.timers.nextDeadline(); ok {
@@ -2599,10 +2613,18 @@ func (inst *Instance) eventLoop(stop <-chan struct{}, done chan struct{}) {
 		case <-stop:
 			// Drain remaining tasks before exit.
 			inst.drainTasks()
+			inst.abortFragmentedTraffic()
 			return
 
 		case fn := <-inst.taskCh:
 			fn()
+			select {
+			case <-stop:
+				inst.drainTasks()
+				inst.abortFragmentedTraffic()
+				return
+			default:
+			}
 			// After running a task, process any timers and notifier events.
 			inst.timers.processExpired()
 			inst.notifier.process()

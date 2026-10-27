@@ -516,6 +516,9 @@ func (sm *SubMac) HandleTransmitStarted(_ *radio.Frame) {
 
 // HandleTransmitDone is called by the radio when transmission completes.
 func (sm *SubMac) HandleTransmitDone(frame, ackFrame *radio.Frame, err error) {
+	if sm.state != StateTransmit {
+		return // A late completion must not retry/revive a disabled transmitter.
+	}
 	sm.stopTimer()
 	sm.handleTransmitResult(frame, ackFrame, err)
 }

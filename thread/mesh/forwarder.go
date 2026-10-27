@@ -9,6 +9,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	goterrors "github.com/hilli/gothread/errors"
 )
 
 // Mesh header constants for IEEE 802.15.4 mesh addressing.
@@ -82,6 +84,14 @@ var (
 	ErrFragmentTooLarge  = errors.New("fragment exceeds maximum size")
 	ErrReassemblyTimeout = errors.New("reassembly timeout")
 	ErrNoRoute           = errors.New("no route available")
+)
+
+// Shared TX budgets include direct, indirect, and in-flight owned datagrams.
+// Four maximum-MTU packets fit the byte budget; small packets may use the
+// existing descriptor bound without allocating 100 maximum-MTU buffers.
+const (
+	MaxPendingDatagramBytes = 4 * IPv6MTU
+	MaxPendingFragments     = MaxFramesInDirectTxQueue
 )
 
 // ForwarderCounters tracks mesh forwarder-specific transmission and reception statistics.
@@ -171,6 +181,8 @@ type TxMessage struct {
 	// Metadata holds IPv6/transport/MAC metadata for frame construction.
 	// When nil, Data is treated as a pre-built frame (legacy behavior).
 	Metadata *TxMetadata
+	transmit *transmitState
+	retired  bool
 }
 
 // NewTxMessage creates a new TxMessage with default settings.
@@ -221,7 +233,10 @@ type FragmentInfo struct {
 	// ReceivedLen is the total bytes received so far.
 	ReceivedLen uint16
 	// Timer is the time the first fragment was received.
-	Timer time.Time
+	Timer      time.Time
+	buffer     []byte
+	ranges     [IPv6MTU / 8]fragmentRange
+	rangeCount int
 }
 
 // FragmentData holds a single fragment's offset and payload.
@@ -244,6 +259,9 @@ func (f *FragmentInfo) IsExpired(now time.Time) bool {
 func (f *FragmentInfo) Reassemble() []byte {
 	if !f.IsComplete() {
 		return nil
+	}
+	if f.buffer != nil {
+		return append([]byte(nil), f.buffer...)
 	}
 	buf := make([]byte, f.Size)
 	for _, frag := range f.Fragments {
@@ -282,9 +300,14 @@ type Forwarder struct {
 	enabled      bool
 	rxOnWhenIdle bool
 
-	directQueue   []*TxMessage
-	indirectQueue []*TxMessage
-	reassemblyMap map[uint32]*FragmentInfo // key: (srcAddr << 16) | tag
+	directQueue      []*TxMessage
+	indirectQueue    []*TxMessage
+	reassemblyMap    map[FragmentKey]*FragmentInfo
+	recentFragments  map[fragmentIdentity]recentFragment
+	now              func() time.Time
+	owned            map[*TxMessage]int
+	pendingBytes     int
+	pendingFragments int
 
 	counters    ForwarderCounters
 	nextFragTag uint16
@@ -292,11 +315,21 @@ type Forwarder struct {
 
 // NewForwarder creates a new Forwarder ready for use.
 func NewForwarder() *Forwarder {
+	return NewForwarderWithTag(DefaultFragmentTag)
+}
+
+// NewForwarderWithTag selects the initial (otherwise unspecified by RFC 4944)
+// fragment tag. Instance seeds this from its restored MAC counter to avoid
+// immediately repeating recent tags after an ordinary persistent reboot.
+func NewForwarderWithTag(tag uint16) *Forwarder {
 	return &Forwarder{
-		directQueue:   make([]*TxMessage, 0),
-		indirectQueue: make([]*TxMessage, 0),
-		reassemblyMap: make(map[uint32]*FragmentInfo),
-		nextFragTag:   DefaultFragmentTag,
+		directQueue:     make([]*TxMessage, 0, MaxFramesInDirectTxQueue),
+		indirectQueue:   make([]*TxMessage, 0, MaxFramesInDirectTxQueue),
+		reassemblyMap:   make(map[FragmentKey]*FragmentInfo),
+		recentFragments: make(map[fragmentIdentity]recentFragment),
+		now:             time.Now,
+		owned:           make(map[*TxMessage]int),
+		nextFragTag:     tag,
 	}
 }
 
@@ -306,8 +339,16 @@ func (f *Forwarder) SetEnabled(enabled bool) {
 	defer f.mu.Unlock()
 	f.enabled = enabled
 	if !enabled {
+		for msg := range f.owned {
+			msg.transmit, msg.Data, msg.Metadata, msg.retired = nil, nil, nil, true
+			f.counters.TxDropped++
+		}
+		clear(f.owned)
+		f.pendingBytes, f.pendingFragments = 0, 0
 		f.directQueue = f.directQueue[:0]
 		f.indirectQueue = f.indirectQueue[:0]
+		clear(f.reassemblyMap)
+		clear(f.recentFragments)
 	}
 }
 
@@ -340,12 +381,49 @@ func (f *Forwarder) SendMessage(msg *TxMessage) error {
 	if !f.enabled {
 		return ErrForwarderDisabled
 	}
-
-	if msg.Direct {
-		if len(f.directQueue) >= MaxFramesInDirectTxQueue {
-			f.counters.TxDropped++
-			return ErrQueueFull
+	if msg == nil {
+		return goterrors.ErrInvalidArgs
+	}
+	if _, exists := f.owned[msg]; exists {
+		return goterrors.ErrInvalidState
+	}
+	if len(f.owned) >= MaxFramesInDirectTxQueue {
+		f.counters.TxDropped++
+		return ErrQueueFull
+	}
+	owned := *msg
+	owned.retired = false
+	var state *transmitState
+	if msg.Metadata != nil {
+		metadata := *msg.Metadata
+		owned.Metadata = &metadata
+		var err error
+		state, err = prepareTransmit(&owned)
+		if err != nil {
+			return err
 		}
+		owned.Data = state.packet[state.headerSize:]
+	} else {
+		if len(msg.Data) > MaxPsduSize-FCSSize {
+			return goterrors.ErrNoBufs
+		}
+		owned.Data = append([]byte(nil), msg.Data...)
+		state = &transmitState{packet: owned.Data, fragments: 1, remaining: 1}
+	}
+	if f.pendingBytes+len(state.packet) > MaxPendingDatagramBytes ||
+		f.pendingFragments+state.fragments > MaxPendingFragments {
+		f.counters.TxDropped++
+		return ErrQueueFull
+	}
+	if state.fragments > 1 {
+		state.tag = f.allocateTagLocked()
+	}
+	owned.transmit = state
+	*msg = owned
+	f.owned[msg] = len(state.packet)
+	f.pendingBytes += len(state.packet)
+	f.pendingFragments += state.fragments
+	if msg.Direct {
 		f.directQueue = append(f.directQueue, msg)
 	} else {
 		f.indirectQueue = append(f.indirectQueue, msg)
@@ -365,7 +443,9 @@ func (f *Forwarder) HandleFrameRequest() *TxMessage {
 	}
 
 	msg := f.directQueue[0]
-	f.directQueue = f.directQueue[1:]
+	copy(f.directQueue, f.directQueue[1:])
+	f.directQueue[len(f.directQueue)-1] = nil
+	f.directQueue = f.directQueue[:len(f.directQueue)-1]
 	return msg
 }
 
@@ -373,23 +453,133 @@ func (f *Forwarder) HandleFrameRequest() *TxMessage {
 func (f *Forwarder) HandleSentFrame(msg *TxMessage, success bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if msg.retired {
+		return
+	}
 
+	if state := msg.transmit; state != nil {
+		if _, exists := f.owned[msg]; exists && success {
+			state.offset = state.frameEnd
+			state.remaining--
+			f.pendingFragments--
+			if state.remaining > 0 {
+				f.directQueue = append(f.directQueue, nil)
+				copy(f.directQueue[1:], f.directQueue[:len(f.directQueue)-1])
+				f.directQueue[0] = msg
+				return
+			}
+		}
+	}
+	f.releaseTxLocked(msg)
 	if !success {
 		f.counters.TxDropped++
 		return
 	}
-
 	if msg.Direct {
 		f.counters.TxDirect++
 	} else {
 		f.counters.TxIndirect++
 	}
-
 	if msg.MeshDest == 0xFFFF {
 		f.counters.TxBroadcast++
 	} else {
 		f.counters.TxUnicast++
 	}
+}
+
+func (f *Forwarder) releaseTxLocked(msg *TxMessage) {
+	if count, exists := f.owned[msg]; exists {
+		f.pendingBytes -= count
+		if msg.transmit != nil {
+			f.pendingFragments -= msg.transmit.remaining
+		}
+		delete(f.owned, msg)
+		msg.transmit, msg.Data, msg.Metadata, msg.retired = nil, nil, nil, true
+	}
+}
+
+func (f *Forwarder) allocateTagLocked() uint16 {
+	for {
+		tag := f.nextFragTag
+		f.nextFragTag++ // RFC 4944 wraps 65535 to zero.
+		used := false
+		for msg := range f.owned {
+			if msg.transmit != nil && msg.transmit.fragments > 1 && msg.transmit.tag == tag {
+				used = true
+				break
+			}
+		}
+		if !used {
+			return tag
+		}
+	}
+}
+
+// FramePrepared records a distinct secured fragment, not a MAC retry.
+func (f *Forwarder) FramePrepared(msg *TxMessage) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if msg.transmit != nil && msg.transmit.fragments > 1 {
+		f.counters.TxFragment++
+	}
+}
+
+// HasPendingDirect reports whether the MAC should request another frame.
+func (f *Forwarder) HasPendingDirect() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.directQueue) != 0
+}
+
+// AbortFragments discards queued/partial fragmented datagrams on a Thread
+// disassociation or event-loop stop. An already prepared radio frame cannot
+// be retracted, but its eventual completion cannot revive the datagram.
+// Unfragmented pending traffic retains the pre-existing lifecycle behavior.
+func (f *Forwarder) AbortFragments() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for msg := range f.owned {
+		if msg.transmit != nil && msg.transmit.fragments > 1 {
+			f.releaseTxLocked(msg)
+			f.counters.TxDropped++
+		}
+	}
+	keep := func(queue []*TxMessage) []*TxMessage {
+		n := 0
+		for _, msg := range queue {
+			if !msg.retired {
+				queue[n] = msg
+				n++
+			}
+		}
+		clear(queue[n:])
+		return queue[:n]
+	}
+	f.directQueue = keep(f.directQueue)
+	f.indirectQueue = keep(f.indirectQueue)
+	clear(f.reassemblyMap)
+	clear(f.recentFragments)
+}
+
+// BufferUsage reports owned payload resources, including in-flight TX.
+type BufferUsage struct {
+	TxDatagrams int
+	TxBytes     int
+	TxFragments int
+	RxDatagrams int
+	RxBytes     int
+}
+
+// GetBufferUsage returns the current bounded buffer usage.
+func (f *Forwarder) GetBufferUsage() BufferUsage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	usage := BufferUsage{TxDatagrams: len(f.owned), TxBytes: f.pendingBytes, TxFragments: f.pendingFragments}
+	for _, entry := range f.reassemblyMap {
+		usage.RxDatagrams++
+		usage.RxBytes += int(entry.Size)
+	}
+	return usage
 }
 
 // PrepareDirectFrame builds a direct (non-mesh) frame from a TxMessage.
@@ -476,41 +666,12 @@ func (f *Forwarder) handleMeshFrameLocked(data []byte) ([]byte, error) {
 	return payload, nil
 }
 
-// HandleFragment processes a received 6LoWPAN fragment, adding it to the
-// reassembly buffer. Returns the complete datagram if reassembly is finished.
+// HandleFragment is the compatibility entry point for uncompressed byte ranges
+// with no additional link scope. Real MAC receivers use HandleScopedFragment.
 func (f *Forwarder) HandleFragment(srcAddr [8]byte, tag, size, offset uint16, data []byte) ([]byte, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.counters.RxFragment++
-
-	key := (uint32(binary.BigEndian.Uint16(srcAddr[6:])) << 16) | uint32(tag)
-
-	info, exists := f.reassemblyMap[key]
-	if !exists {
-		info = &FragmentInfo{
-			Tag:       tag,
-			Size:      size,
-			Source:    srcAddr,
-			Fragments: make([]FragmentData, 0, 4),
-			Timer:     time.Now(),
-		}
-		f.reassemblyMap[key] = info
-	}
-
-	info.Fragments = append(info.Fragments, FragmentData{
-		Offset: offset,
-		Data:   append([]byte(nil), data...),
-	})
-	info.ReceivedLen += uint16(len(data))
-
-	if info.IsComplete() {
-		result := info.Reassemble()
-		delete(f.reassemblyMap, key)
-		return result, nil
-	}
-
-	return nil, nil
+	return f.HandleScopedFragment(FragmentKey{
+		Scope: FragmentScope{Source: srcAddr}, Tag: tag, Size: size,
+	}, offset, data)
 }
 
 // GetReassemblyList returns the number of datagrams currently being reassembled.
@@ -525,16 +686,7 @@ func (f *Forwarder) CleanupExpiredReassemblies() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	now := time.Now()
-	removed := 0
-	for key, info := range f.reassemblyMap {
-		if info.IsExpired(now) {
-			delete(f.reassemblyMap, key)
-			f.counters.ReassemblyTimeout++
-			removed++
-		}
-	}
-	return removed
+	return f.expireFragmentsLocked(f.now())
 }
 
 // GetDirectQueue returns a snapshot of the current direct TX queue.
@@ -584,6 +736,7 @@ func (f *Forwarder) EvictMessage(priority uint8) bool {
 	}
 
 	// Remove the evicted message.
+	f.releaseTxLocked(f.directQueue[lowestIdx])
 	copy(f.directQueue[lowestIdx:], f.directQueue[lowestIdx+1:])
 	f.directQueue = f.directQueue[:len(f.directQueue)-1]
 	f.counters.TxDropped++
@@ -593,60 +746,41 @@ func (f *Forwarder) EvictMessage(priority uint8) bool {
 // FragmentMessage splits a datagram into 6LoWPAN fragments.
 // Each fragment will be at most fragmentSize bytes of payload.
 func (f *Forwarder) FragmentMessage(data []byte, fragmentSize int) (frames [][]byte, datagramTag uint16, err error) {
-	if len(data) > FragMaxSize {
+	// This utility accepts ORIGINAL IPv6 bytes, not an already compressed
+	// buffer. Its first fragment uses the standard uncompressed dispatch.
+	if len(data) < 40 || len(data) > IPv6MTU || data[0]>>4 != 6 ||
+		int(binary.BigEndian.Uint16(data[4:6]))+40 != len(data) ||
+		fragmentSize < FragFirstHeaderLen+41 || fragmentSize > MaxPsduSize-FCSSize {
 		return nil, 0, ErrFragmentTooLarge
 	}
-	if fragmentSize <= 0 {
-		return nil, 0, ErrFragmentTooLarge
+	header := append([]byte{0x41}, data[:40]...)
+	if len(data)+1 <= fragmentSize {
+		return [][]byte{append([]byte{0x41}, data...)}, 0, nil
 	}
-
-	f.mu.Lock()
-	tag := f.nextFragTag
-	f.nextFragTag++
-	if f.nextFragTag == 0 {
-		f.nextFragTag = 1
-	}
-	f.mu.Unlock()
-
-	datagramSize := uint16(len(data))
-	var fragments [][]byte
-	offset := 0
-
-	for offset < len(data) {
-		end := offset + fragmentSize
-		if end > len(data) {
-			end = len(data)
+	state := &transmitState{packet: data, header: header, headerSize: 40, maxPayload: fragmentSize}
+	for offset := 0; offset < len(data); {
+		end, endErr := state.nextEnd(offset)
+		if endErr != nil {
+			return nil, 0, endErr
 		}
-
-		var frag []byte
-		if offset == 0 {
-			// First fragment: 4-byte header.
-			frag = make([]byte, FragFirstHeaderLen+end-offset)
-			frag[0] = FragFirstDispatch | byte(datagramSize>>8)
-			frag[1] = byte(datagramSize)
-			frag[2] = byte(tag >> 8)
-			frag[3] = byte(tag)
-			copy(frag[FragFirstHeaderLen:], data[offset:end])
-		} else {
-			// Subsequent fragment: 5-byte header.
-			frag = make([]byte, FragSubsequentHeaderLen+end-offset)
-			frag[0] = FragSubsequentDispatch | byte(datagramSize>>8)
-			frag[1] = byte(datagramSize)
-			frag[2] = byte(tag >> 8)
-			frag[3] = byte(tag)
-			frag[4] = byte(offset / 8) // offset is in units of 8 bytes
-			copy(frag[FragSubsequentHeaderLen:], data[offset:end])
-		}
-
-		fragments = append(fragments, frag)
+		state.fragments++
 		offset = end
 	}
-
 	f.mu.Lock()
-	f.counters.TxFragment += uint32(len(fragments))
+	state.tag = f.allocateTagLocked()
 	f.mu.Unlock()
-
-	return fragments, tag, nil
+	for state.offset < len(data) {
+		part, partErr := state.payload()
+		if partErr != nil {
+			return nil, 0, partErr
+		}
+		frames = append(frames, part)
+		state.offset = state.frameEnd
+	}
+	f.mu.Lock()
+	f.counters.TxFragment += uint32(len(frames))
+	f.mu.Unlock()
+	return frames, state.tag, nil
 }
 
 // GetCounters returns a copy of the forwarder counters.

@@ -746,8 +746,9 @@ already running, attached instance with a valid direct neighbor. It does not
 open an OS socket, fabricate a radio link, or establish a Matter session.
 Use explicit assigned addresses and a context with the application's deadline.
 See [native UDP limits](api-overview.md#external-executor-and-native-udp):
-single-frame unicast is supported; general routes, fragmentation, and multicast
-discovery are not.
+direct-neighbor UDP through 1232 application bytes is supported using standard
+stack-owned fragmentation when necessary; general routes and multicast
+discovery are not. Do not split application/PASE messages into ad hoc chunks.
 
 ```go
 package example

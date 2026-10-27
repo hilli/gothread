@@ -297,6 +297,7 @@ func (m *Mac) Disable() error {
 	}
 	m.stopTimer()
 	m.pendingOps = 0
+	m.transmitPending = false
 	m.currentOp = OperationIdle
 	m.scanning = false
 	m.energyScanning = false

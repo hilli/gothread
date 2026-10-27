@@ -130,8 +130,10 @@ Concurrent `Stop` calls share one shutdown barrier; pending `Do` operations are
 released without executing and cannot run in a restarted generation. Started
 operations complete before `Stop` returns. Existing stack state and ordinary
 timers survive an event-loop restart; `Stop` does not undo previously accepted
-datagrams or perform `ThreadStop`/`IfConfigDown`. Use those operations via `Do`
-before stopping when interface teardown/queue flushing is required.
+datagrams or perform `ThreadStop`/`IfConfigDown`. Partial/queued **fragmented**
+datagrams and reassembly state are discarded on Stop; already prepared radio
+frames cannot be retracted. Use ThreadStop/IfConfigDown via `Do` for interface
+teardown and flushing of all traffic.
 
 Call `Do`, `Start`, and `Stop` only **outside** loop callbacks. Inside the loop,
 call loop-only stack methods directly. Never wrap `PostTask` in a helper
@@ -160,16 +162,16 @@ silently converting unsupported unicast to a MAC broadcast.
 HopLimit zero defaults to 64; explicit 1-255 values are honored. `Ecn`,
 `MulticastLoop`, `IsHostInterface`, `AllowZeroHopLimit`, and `LinkInfo` must all
 remain zero/nil, otherwise admission returns `errors.ErrNotCapable`.
-The shared framer computes and includes the IPv6 UDP checksum. Only a **single
-secured 802.15.4 frame** is supported: preflight uses actual compressed IPv6/UDP
-headers, extended MAC addressing, security/MIC, and FCS overhead, not a purported
-125-byte application MTU. At ports 5540 and hop limits 1/64/255, the application
-limit is 85 bytes for canonical link-local peers, or 53 bytes with both
-mesh-local IPv6 addresses inline. Other nonzero hop limits consume one more
-byte; compressed UDP ports can save bytes. Oversize returns `errors.ErrNoBufs`
-before queueing; no `uint16` truncation or hidden fragmentation occurs. Empty
-payloads are valid. This subset does **not** establish full-size Matter/PASE
-transport support.
+The shared framer computes and includes the IPv6 UDP checksum. The IPv6 link
+MTU is **1280 uncompressed bytes**, permitting UDP application payload up to
+**1232 bytes**. Larger payloads return `errors.ErrNoBufs` before admission.
+Empty/small datagrams remain unfragmented; larger supported direct datagrams use
+standard RFC 4944/RFC 6282 fragmentation owned by the stack, not application
+chunks. Actual compressed headers, MAC addresses, security/MIC, and FCS determine
+each frame budget. At ports 5540 and hops 1/64/255, the unfragmented thresholds
+remain 85 app bytes for canonical link-local peers and 53 for fully inline
+mesh-local addresses; crossing them no longer refuses an otherwise valid
+MTU-sized datagram.
 
 Success means **copied into the real bounded forwarding queue with MAC work
 requested**, not TX complete, peer receipt, or Matter MRP ACK. Payload and retained
@@ -188,6 +190,86 @@ blocking, and perform reads/PASE processing outside the loop. Close the UDP
 socket through `Do` before closing/discarding that application queue; already
 copied packets remain application-owned. This API adds no unbounded receive
 worker, sockets, host-interface guessing, or local reinjection.
+
+### Standard direct-neighbor fragmentation
+
+The existing `Do`/`SendUDP` API is unchanged. The standards references are
+[RFC 4944 section 5.3](https://www.rfc-editor.org/rfc/rfc4944#section-5.3) and
+[RFC 6282 section 2](https://www.rfc-editor.org/rfc/rfc6282#section-2).
+`datagram_size` and `datagram_offset` describe **original IPv6 bytes**, never a
+compressed buffer's length. FRAG1 carries the compressed headers and first data
+range; FRAGN carries original bytes at an eight-octet encoded offset. Nonfinal
+endpoints are aligned in that original coordinate space.
+
+The native extended/extended secured MAC budget is 127 - 2 FCS - 27 MAC/security
+header - 4 MIC = 94 adaptation bytes. For a full 1280-byte packet with full UDP
+ports, FRAG1 represents 128 original bytes on canonical LL links or 96 with
+fully inline mesh-local addresses. Subsequent nonfinal data ranges contain 88
+original bytes; these common forms emit 15 secured frames. No security counters
+are taken for planning/admission. Every distinct fragment allocates/reserves a
+fresh counter before encryption; MAC retries reuse only the exact same
+prepared frame. Tags advance only on successful whole-datagram admission,
+wrap 65535 to zero, avoid currently owned tags, and initially use the restored
+MAC counter's low 16 bits without changing any persistent settings format.
+
+Forwarder resources are bounded and shared with indirect/in-flight traffic:
+
+| Resource | Bound |
+|---|---:|
+| Owned TX descriptors/datagrams | Existing 100-entry bound, shared direct/indirect/in-flight |
+| Owned original TX packet bytes | 5120 bytes (four maximum-MTU packets) |
+| Logical pending TX frames/fragments | 100, including in-flight |
+| Incomplete RX contexts | 4 |
+| Owned RX packet bytes | 2560 bytes (two maximum-MTU packets) |
+| Per-context disjoint byte ranges | 160 fixed slots, not a growing fragment slice |
+| Completed/rejected tag suppression | 16 entries, at most 60 seconds |
+
+`Forwarder.GetBufferUsage()` reports owned packet bytes, datagrams, and remaining
+TX fragments; read it through `Do` while running. Admission is transactional:
+resource shortage returns `mesh.ErrQueueFull` without taking a tag/security
+counter or retaining part of a datagram. The entire owned packet remains charged
+through final completion/failure. Success advances the original-byte offset;
+final noACK/CCA/radio/build/persistence failure discards unsent fragments,
+records a datagram drop, releases its bytes, and allows later queued traffic
+to progress. `TxFragment` counts distinct prepared fragments (not retries);
+`TxDirect` counts completed datagrams. RF delivery is not an all-or-nothing
+transaction: a receiver cannot know a sender's later failure.
+
+RX reassembly keys include full source/destination EUI-64 identity, PAN,
+channel, security status, tag, and size. Known short MAC addresses, including
+short address zero, are resolved to complete identity. The fragmented Thread
+path requires authenticated MAC data. It expands FRAG1 before placing ranges,
+supports FRAGN-before-FRAG1/out-of-order and exact duplicates, rejects conflicting
+overlaps or contradictory sizes, and validates final UDP lengths/checksum
+before one application dispatch. Unsupported NHC chains, stateful contexts
+without context plumbing, checksum elision, and malformed/truncated headers
+are refused rather than guessed. Rejected known datagrams release their state.
+The fixed reassembly lifetime starts with the first received fragment, never
+extends on duplicates, and expires at 60 seconds using monotonic time.
+
+Completed/rejected tags are suppressed only within the bounded 16-entry/60-second
+window; this is not an unbounded replay cache or a replacement for MAC replay
+protection or Matter MRP. ThreadStop/Stop clear partial fragmented TX/RX state;
+IfConfigDown clears all forwarding resources. A frame already handed to a radio
+may finish, and normal radio completion/timeout guarantees are still required.
+Late completion while the SubMac is disabled cannot revive/retry that frame.
+Unfragmented Stop behavior and all executor cancellation guarantees are retained.
+
+The standalone `Forwarder.FragmentMessage` utility now takes **uncompressed
+IPv6 packets**, emits standard uncompressed IPv6 dispatch in FRAG1, and treats
+its size argument as the whole adaptation-payload budget. Passing compressed
+buffers as original datagrams was never a standard wire representation; those
+simulation fixtures have been migrated. The real TX path uses the shared
+compressed-header plan and existing MAC/security allocator instead.
+
+The packet-byte/count caps bound retained protocol storage, not total
+Instance/application/driver/Go-runtime RAM. Structural storage is checked in
+tests; allocator/map buckets, GC, transient compression/crypto buffers, and
+application-owned receive queues require their own SRAM budget. Full consumer
+PASE, external MAC/OpenThread interoperability, and physical RF/flash behavior
+remain separate integration evidence, not consequences of a compile or fake-radio
+packet exchange. General routing, unresolved EIDs, sleepy delivery, multicast,
+and discovery remain unsupported by the native boundary.
 
 ### Persistent datasets and secured counters
 
