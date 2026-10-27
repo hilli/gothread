@@ -68,7 +68,8 @@ import (
 // submacCallbackBridge implements submac.Callbacks by forwarding to a
 // target that is set after both SubMac and Mac are constructed.
 type submacCallbackBridge struct {
-	target submac.Callbacks
+	target               submac.Callbacks
+	scheduleTransmitDone func(func())
 }
 
 func (b *submacCallbackBridge) ReceiveDone(frame *radio.Frame, err error) {
@@ -79,7 +80,13 @@ func (b *submacCallbackBridge) ReceiveDone(frame *radio.Frame, err error) {
 
 func (b *submacCallbackBridge) TransmitDone(frame, ackFrame *radio.Frame, err error) {
 	if b.target != nil {
-		b.target.TransmitDone(frame, ackFrame, err)
+		if b.scheduleTransmitDone != nil {
+			// A radio can fail synchronously inside Mac's locked Send.
+			// The stack owns the TX buffer until MAC receives completion.
+			b.scheduleTransmitDone(func() { b.target.TransmitDone(frame, ackFrame, err) })
+		} else {
+			b.target.TransmitDone(frame, ackFrame, err)
+		}
 	}
 }
 
@@ -565,6 +572,11 @@ func (inst *Instance) HandleSentFrame(frame *radio.Frame, err error) {
 	msg := inst.pendingTxMsg
 	inst.pendingTxMsg = nil
 	inst.forwarder.HandleSentFrame(msg, err == nil)
+	if inst.mac != nil && len(inst.forwarder.GetDirectQueue()) > 0 {
+		// Mac invokes this callback while holding its mutex. Defer the next
+		// request so a burst queued before the first TX cannot be stranded.
+		inst.timers.schedule(0, inst.mac.RequestDirectFrameTransmission)
+	}
 }
 
 // HandleReceivedFrame is called by the MAC layer when a frame is received.
@@ -1248,10 +1260,17 @@ func (inst *Instance) scheduleTimerDirect(delay time.Duration, fn func()) {
 // Helper: postTask — lowercase wrapper for internal use
 // --------------------------------------------------------------------------
 
-// postTask is a lowercase wrapper around PostTask for passing to module
-// Config structs. It schedules a function to run on the event loop.
+// postTask coalesces the MAC operation tasklet on the event loop. Posting back
+// into a full external task queue from that loop would deadlock its consumer.
 func (inst *Instance) postTask(fn func()) {
-	inst.PostTask(fn)
+	if inst.macTaskPending {
+		return
+	}
+	inst.macTaskPending = true
+	inst.timers.schedule(0, func() {
+		inst.macTaskPending = false
+		fn()
+	})
 }
 
 // sendViaForwarder enqueues a TxMessage through the mesh forwarder and
@@ -1261,6 +1280,9 @@ func (inst *Instance) postTask(fn func()) {
 func (inst *Instance) sendViaForwarder(msg *mesh.TxMessage) error {
 	if err := inst.PersistenceError(); err != nil {
 		return err
+	}
+	if inst.forwarder == nil {
+		return goterrors.ErrInvalidState
 	}
 	if err := inst.forwarder.SendMessage(msg); err != nil {
 		return err
@@ -1328,11 +1350,19 @@ func (inst *Instance) sendCoAP(data []byte, info coap.MessageInfo) error {
 // the same framing logic as sendCoAP but is not restricted to TMF ports.
 func (inst *Instance) sendUDP(payload []byte, srcAddr [16]byte, srcPort uint16, dstAddr [16]byte, dstPort uint16) error {
 	if inst.forwarder == nil {
-		return nil
+		return goterrors.ErrInvalidState
 	}
+	return inst.sendViaForwarder(inst.newUDPMessage(payload, ip6.MessageInfo{
+		SockAddr: srcAddr, SockPort: srcPort, PeerAddr: dstAddr, PeerPort: dstPort,
+	}))
+}
+
+// newUDPMessage shares the existing secured framing path with protocol senders.
+// It owns both the queued payload and metadata; counter allocation remains at
+// actual frame construction, never at queue admission.
+func (inst *Instance) newUDPMessage(payload []byte, info ip6.MessageInfo) *mesh.TxMessage {
 	// Derive destination RLOC16 from the destination address.
-	var dst ip6.Address
-	copy(dst[:], dstAddr[:])
+	dst := info.PeerAddr
 	var dstRLOC uint16 = 0xFFFF // broadcast default
 	if dst.IsRoutingLocator() {
 		iid := dst.GetIid()
@@ -1340,7 +1370,11 @@ func (inst *Instance) sendUDP(payload []byte, srcAddr [16]byte, srcPort uint16, 
 	}
 
 	// Build TxMetadata for proper 6LoWPAN frame construction.
-	meta := mesh.BuildUDPMetadata(srcAddr, dstAddr, srcPort, dstPort, 64)
+	hopLimit := info.HopLimit
+	if hopLimit == 0 {
+		hopLimit = 64
+	}
+	meta := mesh.BuildUDPMetadata(info.SockAddr, info.PeerAddr, info.SockPort, info.PeerPort, hopLimit)
 	meta.SrcExtAddr = inst.GetExtAddress()
 	meta.UseSrcShort = true
 	meta.UseDstShort = (dstRLOC != 0xFFFF) // short for unicast
@@ -1355,9 +1389,9 @@ func (inst *Instance) sendUDP(payload []byte, srcAddr [16]byte, srcPort uint16, 
 	meta.Security.FrameCounter = inst.keyManager.GetMacFrameCounter()
 	meta.Security.Key = [16]byte(inst.keyManager.GetCurrentMacKey())
 
-	txMsg := mesh.NewTxMessageWithMetadata(payload, dstRLOC, inst.rloc16, meta)
+	txMsg := mesh.NewTxMessageWithMetadata(append([]byte(nil), payload...), dstRLOC, inst.rloc16, meta)
 	txMsg.Priority = uint8(mesh.PriorityNormal)
-	return inst.sendViaForwarder(txMsg)
+	return txMsg
 }
 
 // --------------------------------------------------------------------------

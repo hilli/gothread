@@ -13,6 +13,7 @@ import (
 	borderinfra "github.com/hilli/gothread/border"
 	cnotifier "github.com/hilli/gothread/common/notifier"
 	"github.com/hilli/gothread/encoding"
+	goterrors "github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/mac"
 	"github.com/hilli/gothread/mac/filter"
 	macframe "github.com/hilli/gothread/mac/frame"
@@ -5626,10 +5627,10 @@ func TestSendUDP_NilForwarder(t *testing.T) {
 	inst := New(Config{})
 	inst.forwarder = nil
 
-	// sendUDP with nil forwarder should return nil (no panic).
+	// A missing outbound path must not look like successful admission.
 	err := inst.sendUDP([]byte{0x01}, [16]byte{}, 1234, [16]byte{}, 5678)
-	if err != nil {
-		t.Errorf("sendUDP() with nil forwarder = %v, want nil", err)
+	if err != goterrors.ErrInvalidState {
+		t.Errorf("sendUDP() with nil forwarder = %v, want ErrInvalidState", err)
 	}
 }
 

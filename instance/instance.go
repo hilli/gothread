@@ -308,8 +308,11 @@ type Instance struct {
 	notifier *notifier
 
 	// running tracks whether the event loop is active.
-	running   bool
-	runningMu sync.Mutex
+	running            bool
+	stopping           bool
+	runningMu          sync.Mutex
+	periodicTickCancel func()
+	macTaskPending     bool
 
 	// ifConfigUp tracks whether the IP6/MAC interface is enabled
 	// (equivalent to otIp6SetEnabled).
@@ -809,7 +812,9 @@ func (inst *Instance) wireModules() {
 	// SubMac needs Callbacks at construction, Mac needs SubMac at
 	// construction. The bridge starts empty and gets populated after
 	// both are created.
-	bridge := &submacCallbackBridge{}
+	bridge := &submacCallbackBridge{
+		scheduleTransmitDone: func(fn func()) { inst.timers.schedule(0, fn) },
+	}
 
 	inst.subMac = submac.New(submac.Config{
 		Radio:     inst.platRadio,
@@ -1506,18 +1511,19 @@ func (inst *Instance) wireModules() {
 // Start launches the event loop goroutine. It is an error to call Start
 // on an already-running Instance.
 func (inst *Instance) Start() error {
+	inst.runningMu.Lock()
+	defer inst.runningMu.Unlock()
+	if inst.running {
+		return errAlreadyRunning
+	}
 	if err := inst.PersistenceError(); err != nil {
 		return err
 	}
-	inst.runningMu.Lock()
-	if inst.running {
-		inst.runningMu.Unlock()
-		return errAlreadyRunning
-	}
+	inst.stopCh = make(chan struct{})
+	inst.doneCh = make(chan struct{})
 	inst.running = true
-	inst.runningMu.Unlock()
 
-	go inst.eventLoop()
+	go inst.eventLoop(inst.stopCh, inst.doneCh)
 	return nil
 }
 
@@ -1528,17 +1534,13 @@ func (inst *Instance) Stop() {
 		inst.runningMu.Unlock()
 		return
 	}
+	done := inst.doneCh
+	if !inst.stopping {
+		inst.stopping = true
+		close(inst.stopCh)
+	}
 	inst.runningMu.Unlock()
-
-	close(inst.stopCh)
-	<-inst.doneCh
-
-	inst.runningMu.Lock()
-	inst.running = false
-	// Reset channels for potential restart.
-	inst.stopCh = make(chan struct{})
-	inst.doneCh = make(chan struct{})
-	inst.runningMu.Unlock()
+	<-done
 }
 
 // --------------------------------------------------------------------------
@@ -1549,8 +1551,8 @@ func (inst *Instance) Stop() {
 // enabled so frames can be sent and received. This is the equivalent of
 // OpenThread's otIp6SetEnabled(true).
 //
-// Must be called before ThreadStart. Safe to call from any goroutine;
-// the work is posted to the event loop.
+// Must be called before ThreadStart, either before Start or on the event loop.
+// External callers of a running instance must use Do.
 func (inst *Instance) IfConfigUp() error {
 	if err := inst.PersistenceError(); err != nil {
 		return err
@@ -2272,7 +2274,10 @@ const periodicTickInterval = 1 * time.Second
 // startPeriodicTick schedules the first periodic tick. Subsequent ticks
 // are self-re-arming via handlePeriodicTick.
 func (inst *Instance) startPeriodicTick() {
-	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
+	if inst.periodicTickCancel != nil {
+		inst.periodicTickCancel()
+	}
+	inst.periodicTickCancel = inst.timers.scheduleWithCancel(periodicTickInterval, inst.handlePeriodicTick)
 }
 
 // handlePeriodicTick is called once per second from the timer scheduler.
@@ -2463,7 +2468,7 @@ func (inst *Instance) handlePeriodicTick() {
 	}
 
 	// Re-arm for the next tick.
-	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
+	inst.startPeriodicTick()
 }
 
 // applyPublisherAction applies a single PublisherAction from the
@@ -2568,8 +2573,17 @@ func (inst *Instance) sendLinkRequestToRouter(r *routing.Router) {
 
 // eventLoop is the main processing loop. It runs in a single goroutine
 // and processes tasks, timers, and notifier events cooperatively.
-func (inst *Instance) eventLoop() {
-	defer close(inst.doneCh)
+func (inst *Instance) eventLoop(stop <-chan struct{}, done chan struct{}) {
+	defer func() {
+		if inst.periodicTickCancel != nil {
+			inst.periodicTickCancel()
+		}
+		inst.runningMu.Lock()
+		inst.running = false
+		inst.stopping = false
+		close(done)
+		inst.runningMu.Unlock()
+	}()
 
 	// Start the 1-second periodic tick.
 	inst.startPeriodicTick()
@@ -2582,7 +2596,7 @@ func (inst *Instance) eventLoop() {
 		}
 
 		select {
-		case <-inst.stopCh:
+		case <-stop:
 			// Drain remaining tasks before exit.
 			inst.drainTasks()
 			return
@@ -2604,7 +2618,9 @@ func (inst *Instance) eventLoop() {
 
 // drainTasks processes any remaining tasks in the channel.
 func (inst *Instance) drainTasks() {
-	for {
+	// Bound shutdown even if legacy PostTask producers continue posting.
+	// Do requests in the stopped generation are cancelled, not executed.
+	for remaining := len(inst.taskCh); remaining > 0; remaining-- {
 		select {
 		case fn := <-inst.taskCh:
 			fn()

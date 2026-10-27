@@ -5,6 +5,7 @@
 package mesh
 
 import (
+	"github.com/hilli/gothread/checksum"
 	"github.com/hilli/gothread/encoding"
 	"github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/mac/types"
@@ -25,8 +26,36 @@ import (
 // The sequenceNumber parameter is the MAC-layer sequence number to use.
 // Returns the complete MAC frame (without FCS, as radio hardware appends it).
 func BuildTxFrame(msg *TxMessage, sequenceNumber uint8) ([]byte, error) {
-	if msg.Metadata == nil {
-		return nil, errors.ErrInvalidArgs
+	ctx, payload, err := prepareTxFrame(msg)
+	if err != nil {
+		return nil, err
+	}
+	ctx.SequenceNumber = sequenceNumber
+	return NewFramer().BuildDataFrame(ctx, payload)
+}
+
+// ValidateTxFrame checks the actual compressed headers, security overhead, and
+// payload against the single-frame limit without encrypting or using a counter.
+// The instance TX path does not currently integrate outbound fragmentation.
+func ValidateTxFrame(msg *TxMessage) error {
+	ctx, payload, err := prepareTxFrame(msg)
+	if err != nil {
+		return err
+	}
+	if len(payload) > NewFramer().GetMaxPayloadSize(ctx) {
+		return errors.ErrNoBufs
+	}
+	return nil
+}
+
+func prepareTxFrame(msg *TxMessage) (*FrameContext, []byte, error) {
+	if msg == nil || msg.Metadata == nil {
+		return nil, nil, errors.ErrInvalidArgs
+	}
+	// No single frame can carry this much application data, regardless of
+	// compression. Reject before length conversion or allocating a datagram.
+	if len(msg.Data) > MaxPsduSize-FCSSize {
+		return nil, nil, errors.ErrNoBufs
 	}
 	meta := msg.Metadata
 
@@ -58,7 +87,7 @@ func BuildTxFrame(msg *TxMessage, sequenceNumber uint8) ([]byte, error) {
 	// --- Step 3: Compress IPv6 header ---
 	compressedIPHC, err := lowpan.CompressHeader(ipv6Raw, macAddrs, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// --- Step 4: Build the 6LoWPAN payload ---
@@ -72,13 +101,20 @@ func BuildTxFrame(msg *TxMessage, sequenceNumber uint8) ([]byte, error) {
 		encoding.BigEndianWriteUint16(meta.SrcPort, udpHdr[0:2])
 		encoding.BigEndianWriteUint16(meta.DstPort, udpHdr[2:4])
 		encoding.BigEndianWriteUint16(payloadLen, udpHdr[4:6])
-		// Checksum: 0 for now (Thread uses MAC-layer security, UDP
-		// checksum is typically 0 per RFC 6282 §4.3.2 for 6LoWPAN).
-		encoding.BigEndianWriteUint16(0, udpHdr[6:8])
+		var sum checksum.Checksum
+		sum.AddData(srcAddr[:])
+		sum.AddData(dstAddr[:])
+		sum.AddUint16(0) // Upper-layer length, high word.
+		sum.AddUint16(payloadLen)
+		sum.AddUint16(0)
+		sum.AddUint16(uint16(ip6.ProtoUDP))
+		sum.AddData(udpHdr[:])
+		sum.AddData(msg.Data)
+		encoding.BigEndianWriteUint16(sum.Finalize(), udpHdr[6:8])
 
 		compressedUDP, err := lowpan.CompressUDPHeader(udpHdr)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		lowpanPayload = append(lowpanPayload, compressedUDP...)
 	}
@@ -98,11 +134,8 @@ func BuildTxFrame(msg *TxMessage, sequenceNumber uint8) ([]byte, error) {
 		SecurityEnabled: meta.SecurityEnabled,
 		Security:        meta.Security,
 		AckRequest:      msg.AckRequired,
-		SequenceNumber:  sequenceNumber,
 	}
-
-	framer := NewFramer()
-	return framer.BuildDataFrame(frameCtx, lowpanPayload)
+	return frameCtx, lowpanPayload, nil
 }
 
 // BuildUDPMetadata is a convenience function that creates a TxMetadata

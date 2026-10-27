@@ -60,6 +60,8 @@ func (inst *Instance) ThreadStop() error     // disable Thread, detach
 func (inst *Instance) IsRunning() bool
 func (inst *Instance) IsThreadRunning() bool
 func (inst *Instance) PostTask(fn func())    // post work (any goroutine)
+func (inst *Instance) Do(ctx context.Context, op func() error) error
+func (inst *Instance) SendUDP(payload []byte, info ip6.MessageInfo) error // loop-only
 func (inst *Instance) ScheduleTimer(delay time.Duration, fn func())
 func (inst *Instance) SignalEvents(events Event)
 ```
@@ -72,9 +74,15 @@ inst := instance.New(instance.Config{
     Alarm: plat.Alarm, Entropy: plat.Entropy,
     Settings: plat.Settings, Logger: plat.Logger, Radio: plat.Radio,
 })
-inst.Start()
-inst.IfConfigUp()
-inst.ThreadStart()
+if err := inst.Start(); err != nil {
+    return err
+}
+return inst.Do(ctx, func() error {
+    if err := inst.IfConfigUp(); err != nil {
+        return err
+    }
+    return inst.ThreadStart() // Begins attachment; does not mean attached yet.
+})
 ```
 
 `New` initializes the effective MAC extended address from the injected radio's
@@ -91,6 +99,95 @@ configured/restored effective-MAC override in `Config`: changing `Mac` or the
 radio filter after construction does not update identities already captured by
 other modules. The existing persisted SLAAC privacy secret and Joiner ID
 derivation are unchanged; no randomized MAC policy is introduced.
+
+### External executor and native UDP
+
+External adapters use **one** scheduling layer:
+
+```go
+err := inst.Do(ctx, func() error {
+    return inst.SendUDP(payload, ip6.MessageInfo{
+        SockAddr: localAddress, SockPort: localPort,
+        PeerAddr: peerAddress, PeerPort: peerPort,
+        HopLimit: 64,
+    })
+})
+```
+
+`Do` runs an operation on the current instance event loop and returns its
+**exact** result. It shares the existing 256-entry task queue, with no worker
+goroutines or second executor. Full admission returns `errors.ErrNoBufs`; nil
+context/operation returns `errors.ErrInvalidArgs`; not-started, stopping,
+stopped, or stale-generation work returns `errors.ErrInvalidState` when it did
+not start. A pre-cancelled or queued operation whose cancellation wins returns
+`context.Canceled`/`DeadlineExceeded` and **never executes later**. Cancelled
+wrappers occupy their bounded queue slot until drained.
+
+Once an operation starts, cancellation and `Stop` cannot retract it: `Do` waits
+for its real return, even after the context deadline. This is not a native
+timeout or rollback guarantee. Do not retry an uncertain accepted side effect.
+Concurrent `Stop` calls share one shutdown barrier; pending `Do` operations are
+released without executing and cannot run in a restarted generation. Started
+operations complete before `Stop` returns. Existing stack state and ordinary
+timers survive an event-loop restart; `Stop` does not undo previously accepted
+datagrams or perform `ThreadStop`/`IfConfigDown`. Use those operations via `Do`
+before stopping when interface teardown/queue flushing is required.
+
+Call `Do`, `Start`, and `Stop` only **outside** loop callbacks. Inside the loop,
+call loop-only stack methods directly. Never wrap `PostTask` in a helper
+goroutine or call `Do` recursively. Legacy `PostTask`/`ScheduleTimer` remain
+fire-and-forget and can block on their full queue; they are not substitutes for
+cancellable admission. The MAC tasklet is coalesced separately through the
+existing timer scheduler so it cannot block its own full external task queue.
+
+`SendUDP` is loop-only and uses the existing secured forwarding/MAC pipeline,
+not `UDPManager.HandleMessage` (which is ingress/local socket delivery).
+It requires a running instance, enabled interface/MAC/forwarder, attached Thread
+role, valid local radio identity and MAC security material. Source address and
+both nonzero ports must be explicit. Sources are the current link-local/RLOC
+identity or a `Valid` address on `Netif`; supported unicast source scopes are
+link-local, ULA, and global `2000::/3`. Link-local and non-link-local source/peer
+scopes cannot be mixed.
+
+The initial supported routes are only **direct valid rx-on-when-idle neighbors**,
+including an established parent: canonical EUI-64-derived link-local peers, or
+RLOC peers with the current mesh-local prefix. Unknown/unresolved EIDs, sleepy
+children, other prefixes, anycast, multi-hop/off-mesh routes, and self-delivery
+return `errors.ErrNoRoute`. Multicast/group/discovery, including mDNS, is not
+implemented by this boundary. It returns `errors.ErrNotCapable` rather than
+silently converting unsupported unicast to a MAC broadcast.
+
+HopLimit zero defaults to 64; explicit 1-255 values are honored. `Ecn`,
+`MulticastLoop`, `IsHostInterface`, `AllowZeroHopLimit`, and `LinkInfo` must all
+remain zero/nil, otherwise admission returns `errors.ErrNotCapable`.
+The shared framer computes and includes the IPv6 UDP checksum. Only a **single
+secured 802.15.4 frame** is supported: preflight uses actual compressed IPv6/UDP
+headers, extended MAC addressing, security/MIC, and FCS overhead, not a purported
+125-byte application MTU. At ports 5540 and hop limits 1/64/255, the application
+limit is 85 bytes for canonical link-local peers, or 53 bytes with both
+mesh-local IPv6 addresses inline. Other nonzero hop limits consume one more
+byte; compressed UDP ports can save bytes. Oversize returns `errors.ErrNoBufs`
+before queueing; no `uint16` truncation or hidden fragmentation occurs. Empty
+payloads are valid. This subset does **not** establish full-size Matter/PASE
+transport support.
+
+Success means **copied into the real bounded forwarding queue with MAC work
+requested**, not TX complete, peer receipt, or Matter MRP ACK. Payload and retained
+metadata are stack-owned before success; the caller can immediately reuse its
+input. Missing forwarders return `errors.ErrInvalidState`, disabled forwarders
+return `mesh.ErrForwarderDisabled`, and queue saturation returns the existing
+`mesh.ErrQueueFull`. Latched persistence failures retain their `errors.Is`
+identity. Later build/encryption/counter/radio errors remain asynchronous and
+observable through drop/MAC counters, logs, and persistence latches. Do not wait
+for a radio callback on its own event loop.
+
+Use `Do` for UDP `Open`/`Bind`/`Close` and stack observations too. UDP receive
+callbacks borrow payload, `MessageInfo`, and `LinkInfo` for their synchronous
+duration. Copy retained data into an **application-owned bounded queue** without
+blocking, and perform reads/PASE processing outside the loop. Close the UDP
+socket through `Do` before closing/discarding that application queue; already
+copied packets remain application-owned. This API adds no unbounded receive
+worker, sockets, host-interface guessing, or local reinjection.
 
 ### Persistent datasets and secured counters
 
@@ -118,15 +215,12 @@ if err := inst.PendingDataset().SaveLocalFromInfo(&pendingInfo); err != nil {
 if err := inst.Start(); err != nil {
     return err
 }
-result := make(chan error, 1)
-inst.PostTask(func() {
+return inst.Do(ctx, func() error {
     if err := inst.IfConfigUp(); err != nil {
-        result <- err
-        return
+        return err
     }
-    result <- inst.ThreadStart()
+    return inst.ThreadStart()
 })
-return <-result
 ```
 
 `ActiveDataset()` and `PendingDataset()` expose the existing MeshCoP managers.
@@ -136,7 +230,7 @@ mutation methods now return errors; ordinary statement-style calls still compile
 but callers must check the result. `Read`/`ReadInfo` preserve read errors.
 `New` retains its existing signature; `PersistenceError`, `Start`, `IfConfigUp`,
 and `ThreadStart` expose restoration failures. Perform stack operations before
-`Start` or serialize them on the event loop with `PostTask`.
+`Start` or serialize them on the event loop with `Do`.
 
 The settings adapter must meet these requirements:
 
