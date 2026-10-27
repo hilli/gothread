@@ -265,7 +265,8 @@ type Config struct {
 	Settings platform.Settings
 	// Logger provides platform logging.
 	Logger platform.Logger
-	// Radio provides IEEE 802.15.4 radio access.
+	// Radio provides IEEE 802.15.4 radio access. Its factory EUI-64 initializes
+	// the MAC identity before identity-dependent modules are constructed.
 	Radio radio.Radio
 
 	// ParentPriority is the parent priority value (0-3) placed in the
@@ -844,6 +845,12 @@ func (inst *Instance) wireModules() {
 		},
 		PostOperation: inst.postTask,
 	})
+
+	// Identity-dependent constructors capture this address, so initialize it
+	// through MAC/SubMac before constructing those modules.
+	if inst.platRadio != nil {
+		inst.mac.SetExtAddress(types.ExtAddress(inst.platRadio.GetIEEEEui64()))
+	}
 
 	// Now wire Mac as the SubMac's callback receiver.
 	bridge.target = inst.mac

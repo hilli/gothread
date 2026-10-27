@@ -77,6 +77,21 @@ inst.IfConfigUp()
 inst.ThreadStart()
 ```
 
+`New` initializes the effective MAC extended address from the injected radio's
+`GetIEEEEui64()` before constructing identity-dependent modules. This propagates
+through MAC/SubMac to `Radio.SetExtendedAddress` and supplies the same identity
+to SLAAC, DHCPv6, prefix delegation, and border routing. Both radio address
+methods use canonical EUI-64 bytes, most significant byte first; hardware/wire
+byte reversal belongs in the driver or frame encoder. The link-local IPv6 IID
+uses Modified EUI-64, toggling the universal/local bit without changing the MAC
+address.
+
+Nil-radio instances keep their existing zero identity. There is currently no
+configured/restored effective-MAC override in `Config`: changing `Mac` or the
+radio filter after construction does not update identities already captured by
+other modules. The existing persisted SLAAC privacy secret and Joiner ID
+derivation are unchanged; no randomized MAC policy is introduced.
+
 ### Persistent datasets and secured counters
 
 `Config.Settings` backs the active and pending dataset managers as well as
