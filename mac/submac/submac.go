@@ -328,7 +328,8 @@ func (sm *SubMac) GetTransmitFrame() *radio.Frame {
 }
 
 // Send starts the transmission process for the current transmit frame
-// with the given parameters.
+// with the given parameters. It propagates the request channel and CSMA flag
+// to the radio frame without replacing any other transmit metadata.
 func (sm *SubMac) Send(req TxRequest) error {
 	switch sm.state {
 	case StateReceive, StateSleep:
@@ -336,8 +337,16 @@ func (sm *SubMac) Send(req TxRequest) error {
 	default:
 		return ErrInvalidState
 	}
+	if sm.txFrame == nil {
+		return ErrInvalidState
+	}
 
 	sm.txRequest = req
+	sm.txFrame.Channel = req.Channel
+	if sm.txFrame.TxInfo == nil {
+		sm.txFrame.TxInfo = &radio.TxInfo{}
+	}
+	sm.txFrame.TxInfo.CsmaCaEnabled = req.CsmaCaEnabled
 	sm.csmaBackoffs = 0
 	sm.transmitRetries = 0
 	sm.startCsmaBackoff()
@@ -355,7 +364,8 @@ func (sm *SubMac) GetTransmitRetries() uint8 {
 // --------------------------------------------------------------------------
 
 // EnergyScan starts an energy scan on the given channel for the specified
-// duration in milliseconds.
+// duration in milliseconds. If the radio rejects the start, the prior state,
+// timer, and scan bookkeeping are unchanged.
 func (sm *SubMac) EnergyScan(channel uint8, durationMs uint16) error {
 	switch sm.state {
 	case StateReceive, StateSleep:
@@ -364,18 +374,23 @@ func (sm *SubMac) EnergyScan(channel uint8, durationMs uint16) error {
 		return ErrInvalidState
 	}
 
+	// If the radio supports hardware energy scan, delegate.
+	hardwareScan := sm.radioCaps.Has(radio.CapEnergyScan)
+	if hardwareScan {
+		if err := sm.radio.EnergyScan(channel, durationMs); err != nil {
+			return err
+		}
+	} else if err := sm.radio.Receive(channel); err != nil {
+		return err
+	}
+
 	sm.state = StateEnergyScan
 	sm.energyScanChannel = channel
-
-	// If the radio supports hardware energy scan, delegate.
-	if sm.radioCaps.Has(radio.CapEnergyScan) {
-		return sm.radio.EnergyScan(channel, durationMs)
+	if hardwareScan {
+		return nil
 	}
 
 	// Software energy scan.
-	if err := sm.radio.Receive(channel); err != nil {
-		return err
-	}
 	sm.energyScanMaxRSSI = radio.RSSIInvalid
 	sm.energyScanEndTime = time.Now().Add(time.Duration(durationMs) * time.Millisecond)
 	sm.scheduleTimer(0, sm.sampleRSSI)

@@ -206,11 +206,13 @@ type Radio interface {
 
 	// GetCaps returns the radio capability bitmask.
 	GetCaps() Caps
-	// GetIEEEEui64 returns the factory-assigned IEEE EUI-64 identifier.
+	// GetIEEEEui64 returns the factory-assigned IEEE EUI-64 identifier in
+	// canonical byte order (most significant byte first), like types.ExtAddress.
 	GetIEEEEui64() [8]byte
 	// SetPanID sets the IEEE 802.15.4 PAN ID for frame filtering.
 	SetPanID(panID uint16)
-	// SetExtendedAddress sets the IEEE 802.15.4 extended address.
+	// SetExtendedAddress sets the IEEE 802.15.4 extended address in canonical
+	// byte order. The driver handles any hardware-specific byte reversal.
 	SetExtendedAddress(addr types.ExtAddress)
 	// SetShortAddress sets the IEEE 802.15.4 short address.
 	SetShortAddress(addr types.ShortAddress)

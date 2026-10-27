@@ -5,6 +5,8 @@
 package submac
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -35,14 +37,17 @@ type mockRadio struct {
 	receiveCount      int
 	sleepCount        int
 	transmitCount     int
+	transmitFrame     *radio.Frame
 	enableCount       int
 	disableCount      int
 	energyScanCount   int
 	energyScanChannel uint8
 	energyScanDur     uint16
 
-	// Control transmit behavior.
-	transmitErr error
+	// Control operation failures.
+	transmitErr   error
+	receiveErr    error
+	energyScanErr error
 }
 
 func newMockRadio(caps radio.Caps) *mockRadio {
@@ -77,13 +82,17 @@ func (r *mockRadio) Sleep() error {
 }
 
 func (r *mockRadio) Receive(channel uint8) error {
+	r.receiveCount++
+	if r.receiveErr != nil {
+		return r.receiveErr
+	}
 	r.state = radio.StateReceive
 	r.channel = channel
-	r.receiveCount++
 	return nil
 }
 
-func (r *mockRadio) Transmit(_ *radio.Frame) error {
+func (r *mockRadio) Transmit(frame *radio.Frame) error {
+	r.transmitFrame = frame
 	if r.transmitErr != nil {
 		return r.transmitErr
 	}
@@ -136,7 +145,7 @@ func (r *mockRadio) EnergyScan(channel uint8, duration uint16) error {
 	r.energyScanCount++
 	r.energyScanChannel = channel
 	r.energyScanDur = duration
-	return nil
+	return r.energyScanErr
 }
 
 // --------------------------------------------------------------------------
@@ -413,6 +422,20 @@ func TestSendFromDisabledReturnsError(t *testing.T) {
 	}
 }
 
+func TestSendWithoutTransmitFrameReturnsError(t *testing.T) {
+	sm, r, _, _ := newTestSubMac(radio.CapNone)
+	if err := sm.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	sm.txFrame = nil
+	if err := sm.Send(TxRequest{Channel: 15}); err != ErrInvalidState {
+		t.Fatalf("Send() without transmit frame = %v, want ErrInvalidState", err)
+	}
+	if r.transmitCount != 0 {
+		t.Fatal("radio transmit called without a frame")
+	}
+}
+
 func TestSendFromReceive(t *testing.T) {
 	sm, _, _, _ := newTestSubMac(radio.CapNone)
 	_ = sm.Enable()
@@ -435,6 +458,69 @@ func TestSendFromSleep(t *testing.T) {
 	err := sm.Send(TxRequest{Channel: 15, CsmaCaEnabled: false})
 	if err != nil {
 		t.Fatalf("Send() from Sleep = %v, want nil", err)
+	}
+}
+
+func TestSendPropagatesRadioMetadata(t *testing.T) {
+	for _, mode := range []struct {
+		name            string
+		caps            radio.Caps
+		softwareBackoff bool
+	}{
+		{"software-backoff", radio.CapNone, true},
+		{"hardware-backoff", radio.CapCsmaBackoff, false},
+		{"hardware-retries", radio.CapTransmitRetries, false},
+		{"sleep-to-tx", radio.CapSleepToTx, true},
+	} {
+		for _, csma := range []bool{true, false} {
+			for _, existingInfo := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s/csma=%v/existing-info=%v", mode.name, csma, existingInfo), func(t *testing.T) {
+					sm, r, _, timer := newTestSubMac(mode.caps)
+					if err := sm.Enable(); err != nil {
+						t.Fatal(err)
+					}
+					frame := sm.GetTransmitFrame()
+					frame.Channel = 11
+					var original *radio.TxInfo
+					var expected radio.TxInfo
+					if existingInfo {
+						original = &radio.TxInfo{
+							CsmaCaEnabled: !csma, IsSecurityProcessed: true, TxPower: -7,
+							Timestamp: 12345, IsHeaderUpdated: true, IsARetx: true,
+							CslPresent: true, MaxCsmaBackoffs: 8, MaxFrameRetries: 9,
+							RxChannelAfterTx: 15,
+						}
+						frame.TxInfo = original
+						expected = *original
+					}
+					expected.CsmaCaEnabled = csma
+					if err := sm.Send(TxRequest{Channel: 26, CsmaCaEnabled: csma}); err != nil {
+						t.Fatal(err)
+					}
+					if csma && mode.softwareBackoff {
+						if timer.scheduled != 1 || r.transmitCount != 0 {
+							t.Fatal("software backoff did not wait for its timer")
+						}
+						timer.fire()
+					} else if timer.scheduled != 0 {
+						t.Fatal("immediate transmit unexpectedly scheduled backoff")
+					}
+					observed := r.transmitFrame
+					if r.transmitCount != 1 || observed == nil {
+						t.Fatal("Radio.Transmit did not receive a frame")
+					}
+					if observed.Channel != 26 {
+						t.Errorf("transmit channel = %d, want request channel 26", observed.Channel)
+					}
+					if observed.TxInfo == nil || *observed.TxInfo != expected {
+						t.Errorf("transmit metadata = %+v, want %+v", observed.TxInfo, expected)
+					}
+					if existingInfo && observed.TxInfo != original {
+						t.Error("existing TxInfo was replaced")
+					}
+				})
+			}
+		}
 	}
 }
 
@@ -905,6 +991,98 @@ func TestEnergyScanHardwareDoneCallback(t *testing.T) {
 	}
 	if cb.energyScanMaxRSSI != -45 {
 		t.Errorf("maxRSSI = %d, want -45", cb.energyScanMaxRSSI)
+	}
+}
+
+func TestEnergyScanStartFailurePreservesState(t *testing.T) {
+	for _, hardware := range []bool{true, false} {
+		for _, priorState := range []State{StateSleep, StateReceive} {
+			t.Run(fmt.Sprintf("hardware=%v/state=%s", hardware, priorState), func(t *testing.T) {
+				caps := radio.CapNone
+				if hardware {
+					caps = radio.CapEnergyScan
+				}
+				sm, r, cb, timer := newTestSubMac(caps)
+				if err := sm.Enable(); err != nil {
+					t.Fatal(err)
+				}
+				if priorState == StateReceive {
+					if err := sm.Receive(15); err != nil {
+						t.Fatal(err)
+					}
+				}
+				sm.energyScanChannel = 11
+				sm.energyScanMaxRSSI = -61
+				previousEnd := time.Unix(12345, 0)
+				sm.energyScanEndTime = previousEnd
+				timerFired := false
+				timer.schedule(time.Second, func() { timerFired = true })
+				scheduled, stopped := timer.scheduled, timer.stopped
+				receiveCount := r.receiveCount
+				startErr := errors.New("radio: busy during ACK turnaround")
+				if hardware {
+					r.energyScanErr = startErr
+				} else {
+					r.receiveErr = startErr
+				}
+
+				if err := sm.EnergyScan(20, 300); err != startErr {
+					t.Fatalf("scan start error = %v, want original radio error %v", err, startErr)
+				}
+				if hardware {
+					if r.energyScanCount != 1 || r.energyScanChannel != 20 || r.energyScanDur != 300 ||
+						r.receiveCount != receiveCount {
+						t.Error("failed hardware scan did not use Radio.EnergyScan exclusively")
+					}
+				} else if r.receiveCount != receiveCount+1 || r.energyScanCount != 0 {
+					t.Error("failed fallback scan did not use Radio.Receive exclusively")
+				}
+				if sm.GetState() != priorState {
+					t.Errorf("state after failed scan = %v, want %v", sm.GetState(), priorState)
+				}
+				if sm.energyScanChannel != 11 || sm.energyScanMaxRSSI != -61 ||
+					!sm.energyScanEndTime.Equal(previousEnd) {
+					t.Error("failed scan changed scan bookkeeping")
+				}
+				if timer.scheduled != scheduled || timer.stopped != stopped {
+					t.Error("failed scan replaced or stopped prior timer")
+				}
+				timer.fire()
+				if !timerFired {
+					t.Fatal("prior timer no longer fires after failed scan")
+				}
+				if cb.energyScanDoneCount != 0 {
+					t.Error("failed start reported scan completion")
+				}
+
+				r.energyScanErr = nil
+				r.receiveErr = nil
+				if err := sm.Send(TxRequest{Channel: 15}); err != nil {
+					t.Fatalf("send after failed scan: %v", err)
+				}
+				if r.transmitCount != 1 || r.transmitFrame != sm.GetTransmitFrame() {
+					t.Fatal("send after failed scan did not reach Radio.Transmit")
+				}
+				sm.HandleTransmitDone(sm.GetTransmitFrame(), nil, nil)
+				if err := sm.EnergyScan(20, 300); err != nil {
+					t.Fatalf("subsequent scan: %v", err)
+				}
+				if sm.GetState() != StateEnergyScan || sm.energyScanChannel != 20 {
+					t.Fatal("accepted scan did not commit scan state")
+				}
+				if hardware {
+					sm.HandleEnergyScanDone(-45)
+				} else {
+					sm.energyScanEndTime = time.Now().Add(-time.Millisecond)
+					r.rssi = -45
+					timer.fire()
+				}
+				if sm.GetState() != StateReceive || cb.energyScanDoneCount != 1 ||
+					cb.energyScanMaxRSSI != -45 {
+					t.Fatal("subsequent scan did not complete normally")
+				}
+			})
+		}
 	}
 }
 

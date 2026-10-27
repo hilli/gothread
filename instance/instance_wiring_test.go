@@ -1684,14 +1684,14 @@ type mockSettings struct {
 func (ms *mockSettings) Get(key platform.SettingsKey, index int) ([]byte, error) {
 	k := uint16(key)
 	if ms.store == nil {
-		return nil, errNotFound
+		return nil, platform.ErrSettingsNotFound
 	}
 	entries, ok := ms.store[k]
 	if !ok || len(entries) == 0 {
-		return nil, errNotFound
+		return nil, platform.ErrSettingsNotFound
 	}
 	if index < 0 || index >= len(entries) {
-		return nil, errNotFound
+		return nil, platform.ErrSettingsNotFound
 	}
 	cp := make([]byte, len(entries[index]))
 	copy(cp, entries[index])

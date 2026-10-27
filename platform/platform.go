@@ -111,6 +111,13 @@ const (
 // Keys that hold multiple values (e.g. ChildInfo) use index-based access:
 // Get and Delete accept an index parameter (0-based). An index of -1
 // passed to Delete removes all entries for that key.
+//
+// Get must return ErrSettingsNotFound (possibly wrapped) only for absent
+// entries, not for I/O failures or corrupt data. Set must atomically replace
+// an entry and make it durable before returning success. A failed Set may
+// leave either the old or the new complete value, never a partial value.
+// Do not roll back stored state, share a namespace between live instances,
+// or restore credentials without their associated counter reservations.
 type Settings interface {
 	// Get reads the entry at index for the setting identified by key.
 	// For single-value keys, use index 0. Returns the value bytes or

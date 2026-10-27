@@ -27,6 +27,7 @@ import (
 	cnotifier "github.com/hilli/gothread/common/notifier"
 	csettings "github.com/hilli/gothread/common/settings"
 	"github.com/hilli/gothread/diags"
+	goterrors "github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/mac"
 	"github.com/hilli/gothread/mac/csl"
 	"github.com/hilli/gothread/mac/datapoll"
@@ -259,11 +260,13 @@ type Config struct {
 	Alarm platform.Alarm
 	// Entropy provides cryptographic random bytes.
 	Entropy platform.Entropy
-	// Settings provides persistent non-volatile storage.
+	// Settings persists datasets, key sequence and reserved MAC/MLE counters.
+	// Set must be atomic and durable before returning. Nil uses volatile state.
 	Settings platform.Settings
 	// Logger provides platform logging.
 	Logger platform.Logger
-	// Radio provides IEEE 802.15.4 radio access.
+	// Radio provides IEEE 802.15.4 radio access. Its factory EUI-64 initializes
+	// the MAC identity before identity-dependent modules are constructed.
 	Radio radio.Radio
 
 	// ParentPriority is the parent priority value (0-3) placed in the
@@ -326,6 +329,7 @@ type Instance struct {
 	// stackSettings wraps the platform.Settings driver for use by
 	// protocol modules.
 	stackSettings *csettings.Settings
+	restoreErr    error
 
 	// stackNotifier is the protocol-level event bus (distinct from
 	// the instance-level notifier above which drives the event loop).
@@ -783,24 +787,21 @@ func (inst *Instance) wireModules() {
 	inst.stackNotifier = cnotifier.New()
 	inst.keyManager = key.NewManager()
 
+	var datasetStore meshcop.DatasetStore = meshcop.NewMemoryDatasetStore()
+	if inst.platSettings != nil {
+		inst.stackSettings = csettings.New(&settingsDriverAdapter{ps: inst.platSettings})
+		datasetStore = &settingsDatasetStore{settings: inst.stackSettings}
+	}
 	inst.activeDataset = meshcop.NewActiveDatasetManager(
-		meshcop.NewMemoryDatasetStore(),
+		datasetStore,
 		func(dt meshcop.DatasetType) { inst.stackNotifier.Signal(cnotifier.Events(EventActiveDatasetChanged)) },
 	)
 	inst.pendingDataset = meshcop.NewPendingDatasetManager(
-		meshcop.NewMemoryDatasetStore(),
+		datasetStore,
 		func(dt meshcop.DatasetType) { inst.stackNotifier.Signal(cnotifier.Events(EventPendingDatasetChanged)) },
 	)
 
-	// Restore datasets from persistent storage. With MemoryDatasetStore
-	// this is a no-op, but a real persistent store needs it to hydrate
-	// the manager's localSaved/timestamp state on restart.
-	_ = inst.activeDataset.Restore()
-	_ = inst.pendingDataset.Restore()
-
-	if inst.platSettings != nil {
-		inst.stackSettings = csettings.New(&settingsDriverAdapter{ps: inst.platSettings})
-	}
+	inst.restorePersistence()
 
 	// SubMac wraps the radio with CSMA-CA and retransmission logic.
 	// Mac serves as the SubMac's Callbacks (it implements the interface).
@@ -845,12 +846,17 @@ func (inst *Instance) wireModules() {
 		PostOperation: inst.postTask,
 	})
 
+	// Identity-dependent constructors capture this address, so initialize it
+	// through MAC/SubMac before constructing those modules.
+	if inst.platRadio != nil {
+		inst.mac.SetExtAddress(types.ExtAddress(inst.platRadio.GetIEEEEui64()))
+	}
+
 	// Now wire Mac as the SubMac's callback receiver.
 	bridge.target = inst.mac
 
-	// Wire frame counter callback: when the MAC consumes a frame
-	// counter, forward it to the key manager so it can persist
-	// the high-water mark.
+	// Track counters reported by the MAC. Software TX instead allocates and
+	// durably reserves each counter in HandleFrameRequest before encryption.
 	inst.mac.SetOnFrameCounterUsed(func(counter uint32) {
 		inst.keyManager.MacFrameCounterUsed(counter)
 	})
@@ -1500,6 +1506,9 @@ func (inst *Instance) wireModules() {
 // Start launches the event loop goroutine. It is an error to call Start
 // on an already-running Instance.
 func (inst *Instance) Start() error {
+	if err := inst.PersistenceError(); err != nil {
+		return err
+	}
 	inst.runningMu.Lock()
 	if inst.running {
 		inst.runningMu.Unlock()
@@ -1543,6 +1552,9 @@ func (inst *Instance) Stop() {
 // Must be called before ThreadStart. Safe to call from any goroutine;
 // the work is posted to the event loop.
 func (inst *Instance) IfConfigUp() error {
+	if err := inst.PersistenceError(); err != nil {
+		return err
+	}
 	if inst.ifConfigUp {
 		return errAlready
 	}
@@ -1593,6 +1605,9 @@ func (inst *Instance) IsIfConfigUp() bool { return inst.ifConfigUp }
 // interface must be up (IfConfigUp) first. This is the equivalent of
 // OpenThread's otThreadSetEnabled(true).
 func (inst *Instance) ThreadStart() error {
+	if err := inst.PersistenceError(); err != nil {
+		return err
+	}
 	if inst.threadEnabled {
 		return errAlready
 	}
@@ -1603,7 +1618,9 @@ func (inst *Instance) ThreadStart() error {
 	// Apply the Active Operational Dataset (channel, PAN ID, network key,
 	// etc.) before enabling MLE so the device attaches with the correct
 	// credentials and radio parameters.
-	inst.applyActiveDataset()
+	if err := inst.applyActiveDataset(); err != nil {
+		return err
+	}
 
 	m := inst.mleService.Mle()
 	if err := m.Enable(); err != nil {
@@ -1622,13 +1639,16 @@ func (inst *Instance) ThreadStart() error {
 // parameters to the MAC, key manager, and network identity fields. This
 // ensures the device starts on the correct channel, PAN ID, and network
 // key before MLE is enabled.
-func (inst *Instance) applyActiveDataset() {
+func (inst *Instance) applyActiveDataset() error {
 	if inst.activeDataset == nil {
-		return
+		return nil
 	}
 	ds, err := inst.activeDataset.Read()
-	if err != nil || ds == nil {
-		return
+	if errors.Is(err, goterrors.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
 	}
 	info := ds.ConvertToInfo()
 
@@ -1659,6 +1679,7 @@ func (inst *Instance) applyActiveDataset() {
 		inst.mac.SetExtendedPanID(info.ExtendedPanID)
 	}
 	inst.updateMacKeys()
+	return inst.PersistenceError()
 }
 
 // ThreadStop disables the Thread protocol: MLE returns to Disabled,
@@ -1734,6 +1755,14 @@ func (inst *Instance) SubMac() *submac.SubMac { return inst.subMac }
 
 // KeyManager returns the key manager.
 func (inst *Instance) KeyManager() *key.Manager { return inst.keyManager }
+
+// ActiveDataset returns the active operational dataset manager.
+// Mutations must run before Start or on the event loop via PostTask.
+func (inst *Instance) ActiveDataset() *meshcop.ActiveDatasetManager { return inst.activeDataset }
+
+// PendingDataset returns the pending operational dataset manager.
+// Mutations must run before Start or on the event loop via PostTask.
+func (inst *Instance) PendingDataset() *meshcop.PendingDatasetManager { return inst.pendingDataset }
 
 // MessagePool returns the message buffer pool.
 func (inst *Instance) MessagePool() *message.Pool { return inst.messagePool }

@@ -77,6 +77,111 @@ inst.IfConfigUp()
 inst.ThreadStart()
 ```
 
+`New` initializes the effective MAC extended address from the injected radio's
+`GetIEEEEui64()` before constructing identity-dependent modules. This propagates
+through MAC/SubMac to `Radio.SetExtendedAddress` and supplies the same identity
+to SLAAC, DHCPv6, prefix delegation, and border routing. Both radio address
+methods use canonical EUI-64 bytes, most significant byte first; hardware/wire
+byte reversal belongs in the driver or frame encoder. The link-local IPv6 IID
+uses Modified EUI-64, toggling the universal/local bit without changing the MAC
+address.
+
+Nil-radio instances keep their existing zero identity. There is currently no
+configured/restored effective-MAC override in `Config`: changing `Mac` or the
+radio filter after construction does not update identities already captured by
+other modules. The existing persisted SLAAC privacy secret and Joiner ID
+derivation are unchanged; no randomized MAC policy is introduced.
+
+### Persistent datasets and secured counters
+
+`Config.Settings` backs the active and pending dataset managers as well as
+key-sequence and MAC/MLE counter reservations. Nil settings retain the existing
+volatile behavior; they are not safe for reusing credentials across a reboot.
+The platform owns storage initialization, encryption/access control, and wear
+leveling. No hardware-specific storage implementation is required by gothread.
+
+Provision a fresh settings namespace through the instance before starting:
+
+```go
+inst := instance.New(instance.Config{Settings: durableSettings, Radio: driver})
+if err := inst.PersistenceError(); err != nil {
+    return err
+}
+// Only provision when commissioning a genuinely new network identity.
+// On subsequent boots, let New restore the existing datasets.
+if err := inst.ActiveDataset().SaveLocalFromInfo(&activeInfo); err != nil {
+    return err
+}
+if err := inst.PendingDataset().SaveLocalFromInfo(&pendingInfo); err != nil {
+    return err
+}
+if err := inst.Start(); err != nil {
+    return err
+}
+result := make(chan error, 1)
+inst.PostTask(func() {
+    if err := inst.IfConfigUp(); err != nil {
+        result <- err
+        return
+    }
+    result <- inst.ThreadStart()
+})
+return <-result
+```
+
+`ActiveDataset()` and `PendingDataset()` expose the existing MeshCoP managers.
+Their `Save`, `SaveLocal`, `SaveLocalFromInfo`, and `Clear` operations return
+storage errors and leave manager state unchanged on failure. Previously void
+mutation methods now return errors; ordinary statement-style calls still compile,
+but callers must check the result. `Read`/`ReadInfo` preserve read errors.
+`New` retains its existing signature; `PersistenceError`, `Start`, `IfConfigUp`,
+and `ThreadStart` expose restoration failures. Perform stack operations before
+`Start` or serialize them on the event loop with `PostTask`.
+
+The settings adapter must meet these requirements:
+
+- Return `platform.ErrSettingsNotFound` (possibly wrapped) only for missing
+  keys/indexes. Report corruption and I/O failures as errors, not missing data.
+- Atomically replace each value in `Set` and make it durable **before returning
+  success**. After a failed write, either the old or the new complete value may
+  exist. Counter write failures latch a fail-closed error until a fresh instance
+  restores durable state.
+- Give each node an exclusive settings namespace. Never share it between live
+  instances, roll it back to a snapshot, or restore only the credentials.
+  Settings must survive power cuts, not merely flush during shutdown.
+
+Datasets use the active/pending setting keys. The versioned, checksummed
+`SettingsKeyNetworkInfo` record stores a network-key fingerprint, key sequence,
+and exclusive MAC/MLE counter upper bounds. It is internal gothread state, not an
+OpenThread binary settings format. An existing dataset without this counter
+record is rejected: importing a dataset alone cannot prove its previous counter
+usage. Do not delete the counter record to recover an exhausted or corrupt store;
+recommission with genuinely new credentials/identity instead.
+
+Counter ranges contain 1024 values and are reserved before encryption. A reboot
+resumes at the stored upper bounds, skipping unused values. MAC allocation occurs
+when a queued frame is built, not when metadata is queued, so multiple queued
+messages cannot reuse a counter. MLE allocation happens before message encryption.
+Persistent counters stay globally monotonic across network-key and key-sequence
+changes, including returning to an earlier key. `math.MaxUint32` is an exhausted
+sentinel, never a transmitted counter; allocation returns
+`key.ErrFrameCounterExhausted` instead of wrapping. Exhaustion is not automatically
+cleared by key rotation.
+
+**Scope and limitations:** This protects the instance's managed software-secured
+MAC/MLE transmit paths, not application-crafted raw frames, direct radio/SubMac
+transmissions, or manual mutation of reservation state through lower-level APIs.
+Persistent operation rejects radios advertising `radio.CapTransmitSec`: autonomous
+offload/secured enhanced ACK counters cannot be constrained by the current radio
+interface. Software-encrypted frames carry `TxInfo.IsSecurityProcessed = true`.
+MAC frame-build failures are logged and reported as dropped frames; storage
+failures are also observable through `PersistenceError`. MLE send errors are
+returned directly. The platform must preserve the node's extended address.
+Pending datasets are restored, but their saved delay is not reduced by powered-off
+time; no RTC-based pending activation or full routing/neighbor restoration is
+provided here. Host reboot/fault tests do not establish flash endurance,
+power-loss atomicity, or RF interoperability on actual hardware.
+
 ### Event (notifier bitmask)
 
 ```go
