@@ -61,6 +61,7 @@ func prepareTransmit(msg *TxMessage) (*transmitState, error) {
 	header, err := lowpan.CompressHeader(raw, lowpan.AddressContext{
 		SrcExtAddr: types.ExtAddress(meta.SrcExtAddr), DstExtAddr: types.ExtAddress(meta.DstExtAddr),
 		SrcShort: types.ShortAddress(msg.MeshSource), DstShort: types.ShortAddress(msg.MeshDest),
+		SrcShortValid: meta.UseSrcShort, DstShortValid: meta.UseDstShort,
 	}, nil)
 	if err != nil {
 		return nil, err

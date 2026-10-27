@@ -33,13 +33,13 @@ func TestStandardFragmentedKeyRotationBetweenFragments(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	completeNativeFrame(t, src, nil)
+	completeNativeFrame(t, src, first, nil)
 	last := captureUDP(t, src.driver.boundedUDPRadio)
 	lastCtx, _ := nativeAdaptation(t, last, src.macKey)
 	if lastCtx.Security.FrameCounter != firstCtx.Security.FrameCounter+1 {
 		t.Fatal("persistent key rotation reset a fragment counter")
 	}
 	deliverNativeFrame(t, dst, last)
-	completeNativeFrame(t, src, nil)
+	completeNativeFrame(t, src, last, nil)
 	assertFragmentDelivery(t, src, dst, payload, info, 1)
 }

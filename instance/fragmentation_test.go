@@ -166,10 +166,10 @@ func deliverNativeFrame(t *testing.T, node *fragmentEndpoint, capture udpRadioCa
 	}
 }
 
-func completeNativeFrame(t *testing.T, node *fragmentEndpoint, txErr error) {
+func completeNativeFrame(t *testing.T, node *fragmentEndpoint, completed udpRadioCapture, txErr error) {
 	t.Helper()
 	if err := node.inst.Do(context.Background(), func() error {
-		node.inst.subMac.HandleTransmitDone(node.inst.subMac.GetTransmitFrame(), nil, txErr)
+		node.inst.subMac.HandleTransmitDone(&completed.frame, nil, txErr)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -200,7 +200,7 @@ func sendNativeDatagram(t *testing.T, src, dst *fragmentEndpoint, payload []byte
 				deliverNativeFrame(t, dst, capture) // Exact duplicate fragment.
 			}
 		}
-		completeNativeFrame(t, src, nil)
+		completeNativeFrame(t, src, capture, nil)
 		var usage mesh.BufferUsage
 		if err := src.inst.Do(context.Background(), func() error { usage = src.inst.forwarder.GetBufferUsage(); return nil }); err != nil {
 			t.Fatal(err)
@@ -337,7 +337,7 @@ func TestStandardFragmentedRetryReusesOnlyTheSameMACFrame(t *testing.T) {
 	first := captureUDP(t, src.driver.boundedUDPRadio)
 	firstCtx, _ := nativeAdaptation(t, first, src.macKey)
 	deliverNativeFrame(t, dst, first)
-	completeNativeFrame(t, src, submac.ErrNoAck)
+	completeNativeFrame(t, src, first, submac.ErrNoAck)
 	retry := captureUDP(t, src.driver.boundedUDPRadio)
 	retryCtx, _ := nativeAdaptation(t, retry, src.macKey)
 	if !bytes.Equal(first.frame.PSDU, retry.frame.PSDU) ||
@@ -345,14 +345,14 @@ func TestStandardFragmentedRetryReusesOnlyTheSameMACFrame(t *testing.T) {
 		t.Fatal("retry rebuilt a distinct frame or changed its nonce/counter")
 	}
 	deliverNativeFrame(t, dst, retry)
-	completeNativeFrame(t, src, nil)
+	completeNativeFrame(t, src, retry, nil)
 	last := captureUDP(t, src.driver.boundedUDPRadio)
 	lastCtx, _ := nativeAdaptation(t, last, src.macKey)
 	if lastCtx.Security.FrameCounter != firstCtx.Security.FrameCounter+1 {
 		t.Fatal("distinct next fragment did not allocate a fresh counter")
 	}
 	deliverNativeFrame(t, dst, last)
-	completeNativeFrame(t, src, nil)
+	completeNativeFrame(t, src, last, nil)
 	assertFragmentDelivery(t, src, dst, payload, info, 1)
 }
 
@@ -365,9 +365,9 @@ func TestStandardFragmentedPartialNoAckAndImmediateFailureRelease(t *testing.T) 
 	}
 	first := captureUDP(t, src.driver.boundedUDPRadio)
 	deliverNativeFrame(t, dst, first)
-	completeNativeFrame(t, src, nil)
-	_ = captureUDP(t, src.driver.boundedUDPRadio)
-	completeNativeFrame(t, src, submac.ErrNoAck)
+	completeNativeFrame(t, src, first, nil)
+	failed := captureUDP(t, src.driver.boundedUDPRadio)
+	completeNativeFrame(t, src, failed, submac.ErrNoAck)
 	if err := src.inst.Do(context.Background(), func() error {
 		if src.inst.forwarder.GetBufferUsage().TxBytes != 0 || src.inst.forwarder.GetCounters().TxDropped != 1 {
 			t.Error("final noACK did not retire the whole partial datagram")
@@ -432,7 +432,7 @@ func TestStandardFragmentedStopRestartAndInterfaceDisableRelease(t *testing.T) {
 	}
 	// Stop cannot retract a frame already given to a radio. Its completion
 	// must be harmless and must not revive the discarded fragment sequence.
-	completeNativeFrame(t, src, nil)
+	completeNativeFrame(t, src, first, nil)
 	payload := bytes.Repeat([]byte{0x28}, 131)
 	sendNativeDatagram(t, src, dst, payload, info, false)
 	assertFragmentDelivery(t, src, dst, payload, info, 1)
@@ -495,7 +495,7 @@ func TestStandardFragmentedPersistenceFailureAndFreshInstance(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	completeNativeFrame(t, src, nil)
+	completeNativeFrame(t, src, first, nil)
 	waitUDPCondition(t, src.inst, func() bool {
 		return src.inst.forwarder.GetBufferUsage().TxBytes == 0
 	})

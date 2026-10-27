@@ -237,7 +237,13 @@ transaction: a receiver cannot know a sender's later failure.
 
 RX reassembly keys include full source/destination EUI-64 identity, PAN,
 channel, security status, tag, and size. Known short MAC addresses, including
-short address zero, are resolved to complete identity. The fragmented Thread
+short address zero, are resolved to complete identity **only for authentication,
+reassembly, and link metadata**. The actual encapsulating MAC address form is
+kept separately for IPHC: SAM/DAM=11 under a short MAC reconstructs
+`0000:00ff:fe00:XXXX` with the U/L bit zero; an extended EUI-64 instead inverts
+the U/L bit ([RFC 6282 section 3.2.2](https://www.rfc-editor.org/rfc/rfc6282#section-3.2.2)).
+Resolved factory identity cannot replace a short-zero address in that mapping.
+The fragmented Thread
 path requires authenticated MAC data. It expands FRAG1 before placing ranges,
 supports FRAGN-before-FRAG1/out-of-order and exact duplicates, rejects conflicting
 overlaps or contradictory sizes, and validates final UDP lengths/checksum
@@ -252,7 +258,8 @@ window; this is not an unbounded replay cache or a replacement for MAC replay
 protection or Matter MRP. ThreadStop/Stop clear partial fragmented TX/RX state;
 IfConfigDown clears all forwarding resources. A frame already handed to a radio
 may finish, and normal radio completion/timeout guarantees are still required.
-Late completion while the SubMac is disabled cannot revive/retry that frame.
+Late completion cannot revive/retry a disabled frame or complete a newer frame
+after re-enable; see the mandatory submission-origin contract below.
 Unfragmented Stop behavior and all executor cancellation guarantees are retained.
 
 The standalone `Forwarder.FragmentMessage` utility now takes **uncompressed
@@ -270,6 +277,39 @@ PASE, external MAC/OpenThread interoperability, and physical RF/flash behavior
 remain separate integration evidence, not consequences of a compile or fake-radio
 packet exchange. General routing, unresolved EIDs, sleepy delivery, multicast,
 and discovery remain unsupported by the native boundary.
+
+### Radio submission origin and borrowing
+
+`GetTransmitBuffer`/`SubMac.GetTransmitFrame` expose a reusable **staging**
+buffer, never a completion identity. SubMac gives each `Radio.Transmit` attempt
+an owned bounded frame/metadata snapshot and a nonzero opaque
+`TxInfo.SubmissionID`. The ID is assigned before submission, process-unique,
+not reused on disable/re-enable, and independent of MAC security counters and
+persistent settings.
+
+**Driver contract:** accept the supplied frame rather than requiring the staging
+object's pointer. Capture its SubmissionID at submission and echo it unchanged
+in transmit-start/completion callbacks. Queue-owned Frame/TxInfo value copies
+are explicitly supported. Never obtain a pending event's ID from a mutable
+current TX slot or `GetTransmitBuffer` when dispatching that event. A driver
+whose hardware cannot identify an old event must actually quiesce/drain it
+before accepting another TX, not fabricate a new ID at arrival.
+
+SubMac rejects stale/zero IDs before touching a current attempt's timer or state.
+Deferred upper-MAC completions retain validated origin and are invalidated by a
+new send/disable; scheduled backoff/ACK timers retain their operation/attempt
+owner too. Callback frame/ACK data is borrowed: SubMac copies retained callback
+data before deferral or retry. A software retry preserves the exact radio-updated
+PSDU/security metadata and MAC counter but receives a **new attempt ID**.
+Staging metadata retains its existing values/pointer, with ID zero, and cannot
+alias a submitted snapshot.
+
+Method signatures remain source-compatible, but an adapter that reports a
+current staging buffer as an old completion is **not semantically compatible**.
+Existing frame value-copy implementations can carry the added field without an
+exact-object-pointer requirement, but their submission-to-IRQ/event discipline
+still requires verification before upgrading. No external adapter was changed
+or hardware quiescence asserted by this library fix.
 
 ### Persistent datasets and secured counters
 
@@ -410,6 +450,7 @@ type Frame struct {
 }
 
 type TxInfo struct {
+    SubmissionID uint64 // opaque per-attempt origin; captured/echoed by driver
     MaxCsmaBackoffs, MaxFrameRetries, RxChannelAfterTx uint8
     TxPower int8; Timestamp uint64
     CsmaCaEnabled, IsHeaderUpdated, IsARetx, IsSecurityProcessed, CslPresent bool

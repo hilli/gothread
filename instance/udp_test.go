@@ -35,9 +35,10 @@ type udpRadioCapture struct {
 
 type boundedUDPRadio struct {
 	nopRadio
-	captures chan udpRadioCapture
-	settings platform.Settings
-	txErr    error
+	captures   chan udpRadioCapture
+	settings   platform.Settings
+	txErr      error
+	lastSubmit *radio.Frame
 }
 
 func (r *boundedUDPRadio) GetIEEEEui64() [8]byte {
@@ -49,6 +50,7 @@ func (*boundedUDPRadio) GetCaps() radio.Caps {
 }
 
 func (r *boundedUDPRadio) Transmit(frame *radio.Frame) error {
+	r.lastSubmit = frame
 	if r.txErr != nil {
 		return r.txErr
 	}
@@ -236,7 +238,7 @@ func TestSendUDPRealOutboundOwnsPayloadAndNeverReinjects(t *testing.T) {
 		if inst.keyManager.GetMacFrameCounter() != counter+1 {
 			t.Error("outbound send did not use normal frame-counter allocation")
 		}
-		inst.subMac.HandleTransmitDone(inst.subMac.GetTransmitFrame(), nil, nil)
+		inst.subMac.HandleTransmitDone(&captured.frame, nil, nil)
 		return inst.udpManager.Close(socket)
 	}); err != nil {
 		t.Fatal(err)
@@ -309,7 +311,7 @@ func TestSendUDPZeroPayloadAndQueuedBurst(t *testing.T) {
 		t.Fatalf("zero datagram carried %x", data)
 	}
 	if err := inst.Do(context.Background(), func() error {
-		inst.subMac.HandleTransmitDone(inst.subMac.GetTransmitFrame(), nil, nil)
+		inst.subMac.HandleTransmitDone(&first.frame, nil, nil)
 		return nil
 	}); err != nil {
 		t.Fatal(err)

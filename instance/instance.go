@@ -814,6 +814,9 @@ func (inst *Instance) wireModules() {
 	// both are created.
 	bridge := &submacCallbackBridge{
 		scheduleTransmitDone: func(fn func()) { inst.timers.schedule(0, fn) },
+		validTransmitCompletion: func(frame *radio.Frame) bool {
+			return inst.subMac.IsCurrentTransmitCompletion(frame)
+		},
 	}
 
 	inst.subMac = submac.New(submac.Config{

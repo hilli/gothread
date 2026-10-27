@@ -27,7 +27,7 @@ func TestStandardFragmentedCounterExhaustionDoesNotWrap(t *testing.T) {
 		if ctx.Security.FrameCounter != math.MaxUint32-10+i {
 			t.Fatalf("fragment counter at exhaustion=%d", ctx.Security.FrameCounter)
 		}
-		completeNativeFrame(t, src, nil)
+		completeNativeFrame(t, src, frame, nil)
 	}
 	waitUDPCondition(t, src.inst, func() bool {
 		return src.inst.forwarder.GetBufferUsage().TxBytes == 0

@@ -118,6 +118,11 @@ const (
 
 // TxInfo contains metadata for a frame to be transmitted.
 type TxInfo struct {
+	// SubmissionID is an opaque stack-assigned per-Radio.Transmit identity.
+	// Drivers capture it at submission and echo it unchanged in TX start/done
+	// callbacks. Frame/TxInfo value copies are allowed; reconstructing it from
+	// a current/reused staging buffer when dispatching an old event is not.
+	SubmissionID uint64
 	// MaxCsmaBackoffs is the maximum number of CSMA-CA backoffs.
 	MaxCsmaBackoffs uint8
 	// MaxFrameRetries is the maximum number of frame transmission retries.
@@ -197,9 +202,14 @@ type Radio interface {
 	Sleep() error
 	// Receive puts the radio into receive mode on the given channel.
 	Receive(channel uint8) error
-	// Transmit begins transmitting the given frame.
+	// Transmit begins transmitting the supplied owned submission snapshot.
+	// It need not be the GetTransmitBuffer object. Retain the submission's
+	// TxInfo.SubmissionID for its own callbacks, even across disable/re-enable.
+	// A driver may copy into DMA/native storage but must not substitute a newer
+	// submission's identity when an earlier completion is dispatched.
 	Transmit(frame *Frame) error
-	// GetTransmitBuffer returns the pre-allocated transmit frame buffer.
+	// GetTransmitBuffer returns the reusable stack staging buffer, not a TX
+	// completion identity. SubMac gives Transmit a distinct owned snapshot.
 	GetTransmitBuffer() *Frame
 
 	// --- Configuration ---
@@ -277,9 +287,9 @@ type Radio interface {
 type Callbacks interface {
 	// HandleReceiveDone is called when a frame has been received.
 	HandleReceiveDone(frame *Frame, err error)
-	// HandleTransmitStarted is called when transmission of a frame begins.
+	// HandleTransmitStarted echoes the frame's captured SubmissionID.
 	HandleTransmitStarted(frame *Frame)
-	// HandleTransmitDone is called when transmission completes.
+	// HandleTransmitDone echoes the completed submission's captured ID.
 	HandleTransmitDone(frame *Frame, ackFrame *Frame, err error)
 	// HandleEnergyScanDone is called when an energy scan completes.
 	HandleEnergyScanDone(maxRSSI int8)

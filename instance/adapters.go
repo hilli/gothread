@@ -69,8 +69,9 @@ import (
 // submacCallbackBridge implements submac.Callbacks by forwarding to a
 // target that is set after both SubMac and Mac are constructed.
 type submacCallbackBridge struct {
-	target               submac.Callbacks
-	scheduleTransmitDone func(func())
+	target                  submac.Callbacks
+	scheduleTransmitDone    func(func())
+	validTransmitCompletion func(*radio.Frame) bool
 }
 
 func (b *submacCallbackBridge) ReceiveDone(frame *radio.Frame, err error) {
@@ -84,7 +85,11 @@ func (b *submacCallbackBridge) TransmitDone(frame, ackFrame *radio.Frame, err er
 		if b.scheduleTransmitDone != nil {
 			// A radio can fail synchronously inside Mac's locked Send.
 			// The stack owns the TX buffer until MAC receives completion.
-			b.scheduleTransmitDone(func() { b.target.TransmitDone(frame, ackFrame, err) })
+			b.scheduleTransmitDone(func() {
+				if b.validTransmitCompletion == nil || b.validTransmitCompletion(frame) {
+					b.target.TransmitDone(frame, ackFrame, err)
+				}
+			})
 		} else {
 			b.target.TransmitDone(frame, ackFrame, err)
 		}
@@ -627,19 +632,20 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 			destinationShort = true
 		}
 	}
-	if macAddrs.SrcExtAddr == (types.ExtAddress{}) && sourceShort {
+	macAddrs.SrcShortValid, macAddrs.DstShortValid = sourceShort, destinationShort
+	scope.Source, scope.Destination = macAddrs.SrcExtAddr, macAddrs.DstExtAddr
+	if sourceShort {
 		if neighbor := inst.neighborTable.FindNeighborByShortAddress(uint16(macAddrs.SrcShort), routing.FilterValid); neighbor != nil {
-			macAddrs.SrcExtAddr = neighbor.ExtAddress
+			scope.Source = neighbor.ExtAddress
 		} else if parent := inst.mleService.Mle().GetParent(); parent.IsStateValid() &&
 			parent.RLOC16 == uint16(macAddrs.SrcShort) {
-			macAddrs.SrcExtAddr = parent.MacAddr
+			scope.Source = parent.MacAddr
 		}
 	}
 	if macAddrs.DstExtAddr == (types.ExtAddress{}) && destinationShort &&
 		macAddrs.DstShort == inst.subMac.GetShortAddress() {
-		macAddrs.DstExtAddr = inst.subMac.GetExtAddress()
+		scope.Destination = inst.subMac.GetExtAddress()
 	}
-	scope.Source, scope.Destination = macAddrs.SrcExtAddr, macAddrs.DstExtAddr
 
 	// Check for MAC Data Request (command frame type 0x04).
 	// Data polls are MAC command frames, not 6LoWPAN data frames,
@@ -670,13 +676,13 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 				// Look up the decryption key from the key manager.
 				curKey := [16]byte(inst.keyManager.GetCurrentMacKey())
 				if curKey != [16]byte{} {
-					if decrypted, err := mesh.DecryptFramePayload(frame.PSDU, offset, fctx, curKey, macAddrs.SrcExtAddr); err == nil {
+					if decrypted, err := mesh.DecryptFramePayload(frame.PSDU, offset, fctx, curKey, scope.Source); err == nil {
 						macPayload = decrypted
 						info.LinkSecurity = true
 					} else if seq := inst.keyManager.GetCurrentKeySequence(); seq > 0 {
 						// During key rotation a neighbor may still send with the previous key sequence.
 						prevKey := [16]byte(inst.keyManager.GetTemporaryMacKey(seq - 1))
-						if decrypted, err := mesh.DecryptFramePayload(frame.PSDU, offset, fctx, prevKey, macAddrs.SrcExtAddr); err == nil {
+						if decrypted, err := mesh.DecryptFramePayload(frame.PSDU, offset, fctx, prevKey, scope.Source); err == nil {
 							macPayload = decrypted
 							info.LinkSecurity = true
 						}
@@ -752,10 +758,10 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 			return
 		}
 	}
-	inst.dispatchIPv6Packet(packet, macAddrs, info)
+	inst.dispatchIPv6Packet(packet, macAddrs, info, scope.Source)
 }
 
-func (inst *Instance) dispatchIPv6Packet(packet []byte, macAddrs lowpan.AddressContext, info *mesh.ReceivedFrameInfo) {
+func (inst *Instance) dispatchIPv6Packet(packet []byte, macAddrs lowpan.AddressContext, info *mesh.ReceivedFrameInfo, sourceIdentity [8]byte) {
 	if len(packet) < ip6.HeaderSize || len(packet) > mesh.IPv6MTU {
 		inst.forwarder.RecordReceiveError(false)
 		return
@@ -771,7 +777,7 @@ func (inst *Instance) dispatchIPv6Packet(packet []byte, macAddrs lowpan.AddressC
 
 	// Learn source EID→RLOC16 mapping from every successfully decompressed
 	// frame so the address resolver cache stays warm.
-	if inst.addrResolver != nil && macAddrs.SrcShort != 0 {
+	if inst.addrResolver != nil && macAddrs.SrcShortValid {
 		inst.addrResolver.UpdateSnoopedEntry(hdr.GetSource(), uint16(macAddrs.SrcShort), time.Now())
 	}
 
@@ -799,7 +805,7 @@ func (inst *Instance) dispatchIPv6Packet(packet []byte, macAddrs lowpan.AddressC
 		dstPort := encoding.BigEndianReadUint16(remaining[2:4])
 		udpPayload := remaining[ip6.UDPHeaderSize:]
 		linkInfo := &ip6.LinkInfo{
-			SrcExtAddr: macAddrs.SrcExtAddr,
+			SrcExtAddr: sourceIdentity,
 			RSSI:       info.Rssi,
 		}
 		messageInfo := &ip6.MessageInfo{
@@ -820,7 +826,7 @@ func (inst *Instance) dispatchIPv6Packet(packet []byte, macAddrs lowpan.AddressC
 			SockAddr: hdr.GetDestination(),
 			HopLimit: hdr.GetHopLimit(),
 			LinkInfo: &ip6.LinkInfo{
-				SrcExtAddr: macAddrs.SrcExtAddr,
+				SrcExtAddr: sourceIdentity,
 				RSSI:       info.Rssi,
 			},
 		}

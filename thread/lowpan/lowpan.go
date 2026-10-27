@@ -153,6 +153,10 @@ type AddressContext struct {
 	DstExtAddr types.ExtAddress
 	SrcShort   types.ShortAddress
 	DstShort   types.ShortAddress
+	// Explicit encapsulating MAC forms; a valid short address can be zero.
+	// Extended EUI-64 identity resolved for security must not override these.
+	SrcShortValid bool
+	DstShortValid bool
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +431,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 
 		case HcSrcAddrElided: // fully elided from MAC ext addr
 			copy(header[ipv6OffsetSrc:], linkLocalPrefix[:])
-			writeIIDFromExtAddr(header[ipv6OffsetSrc+8:], macAddrs.SrcExtAddr)
+			writeIIDFromMAC(header[ipv6OffsetSrc+8:], macAddrs.SrcExtAddr, macAddrs.SrcShort, macAddrs.SrcShortValid)
 		}
 	} else {
 		// Stateful source address (context from SCI).
@@ -456,7 +460,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 		case HcSrcAddrElided: // SAC=1, SAM=11 → IID from MAC, prefix from context
 			ctx := lookupContext(contexts, sci)
 			copyContextPrefix(header[ipv6OffsetSrc:], ctx)
-			writeIIDFromExtAddr(header[ipv6OffsetSrc+8:], macAddrs.SrcExtAddr)
+			writeIIDFromMAC(header[ipv6OffsetSrc+8:], macAddrs.SrcExtAddr, macAddrs.SrcShort, macAddrs.SrcShortValid)
 		}
 	}
 
@@ -495,7 +499,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 
 			case HcDstAddrElided:
 				copy(header[ipv6OffsetDst:], linkLocalPrefix[:])
-				writeIIDFromExtAddr(header[ipv6OffsetDst+8:], macAddrs.DstExtAddr)
+				writeIIDFromMAC(header[ipv6OffsetDst+8:], macAddrs.DstExtAddr, macAddrs.DstShort, macAddrs.DstShortValid)
 			}
 		} else {
 			// Stateful unicast (context from DCI).
@@ -525,7 +529,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 			case HcDstAddrElided:
 				ctx := lookupContext(contexts, dci)
 				copyContextPrefix(header[ipv6OffsetDst:], ctx)
-				writeIIDFromExtAddr(header[ipv6OffsetDst+8:], macAddrs.DstExtAddr)
+				writeIIDFromMAC(header[ipv6OffsetDst+8:], macAddrs.DstExtAddr, macAddrs.DstShort, macAddrs.DstShortValid)
 			}
 		}
 	} else {
@@ -775,7 +779,7 @@ func CompressHeader(header [ipv6HeaderSize]byte, macAddrs AddressContext, contex
 	case srcCtxIdx >= 0:
 		iphc |= HcSrcAddrContext
 		switch {
-		case matchIIDExtAddr(srcIID, macAddrs.SrcExtAddr):
+		case matchIIDMAC(srcIID, macAddrs.SrcExtAddr, macAddrs.SrcShort, macAddrs.SrcShortValid):
 			iphc |= HcSrcAddrElided
 		case matchIIDShort(srcIID):
 			iphc |= HcSrcAddr16
@@ -792,7 +796,7 @@ func CompressHeader(header [ipv6HeaderSize]byte, macAddrs AddressContext, contex
 		iphc |= HcSrcAddr128
 	case isLinkLocal(srcAddr):
 		switch {
-		case matchIIDExtAddr(srcIID, macAddrs.SrcExtAddr):
+		case matchIIDMAC(srcIID, macAddrs.SrcExtAddr, macAddrs.SrcShort, macAddrs.SrcShortValid):
 			iphc |= HcSrcAddrElided
 		case matchIIDShort(srcIID):
 			iphc |= HcSrcAddr16
@@ -855,7 +859,7 @@ func CompressHeader(header [ipv6HeaderSize]byte, macAddrs AddressContext, contex
 		case dstCtxIdx >= 0:
 			iphc |= HcDstAddrContext
 			switch {
-			case matchIIDExtAddr(dstIID, macAddrs.DstExtAddr):
+			case matchIIDMAC(dstIID, macAddrs.DstExtAddr, macAddrs.DstShort, macAddrs.DstShortValid):
 				iphc |= HcDstAddrElided
 			case matchIIDShort(dstIID):
 				iphc |= HcDstAddr16
@@ -868,7 +872,7 @@ func CompressHeader(header [ipv6HeaderSize]byte, macAddrs AddressContext, contex
 			}
 		case isLinkLocal(dstAddr):
 			switch {
-			case matchIIDExtAddr(dstIID, macAddrs.DstExtAddr):
+			case matchIIDMAC(dstIID, macAddrs.DstExtAddr, macAddrs.DstShort, macAddrs.DstShortValid):
 				iphc |= HcDstAddrElided
 			case matchIIDShort(dstIID):
 				iphc |= HcDstAddr16
@@ -958,6 +962,28 @@ func CompressUDPHeader(header [udpHeaderSize]byte) ([]byte, error) {
 func writeIIDFromExtAddr(dst []byte, addr types.ExtAddress) {
 	copy(dst, addr[:])
 	dst[0] ^= 0x02 // toggle U/L bit
+}
+
+func writeIIDFromMAC(dst []byte, extended types.ExtAddress, short types.ShortAddress, shortValid bool) {
+	if shortValid {
+		writeIIDFromShort(dst, uint16(short))
+	} else {
+		writeIIDFromExtAddr(dst, extended)
+	}
+}
+
+func matchIIDMAC(iid []byte, extended types.ExtAddress, short types.ShortAddress, shortValid bool) bool {
+	if !shortValid {
+		return matchIIDExtAddr(iid, extended)
+	}
+	var expected [8]byte
+	writeIIDFromShort(expected[:], uint16(short))
+	for i := range expected {
+		if iid[i] != expected[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // writeIIDFromShort writes an IID derived from a 16-bit short address.

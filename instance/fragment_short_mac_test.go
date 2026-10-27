@@ -5,8 +5,10 @@
 package instance
 
 import (
+	"context"
 	"testing"
 
+	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/platform/simulation"
 	"github.com/hilli/gothread/radio"
 	"github.com/hilli/gothread/thread/mesh"
@@ -14,7 +16,19 @@ import (
 
 func TestStandardFragmentedShortMACSourceZeroIdentity(t *testing.T) {
 	dst := newFragmentEndpoint(t, udpPeerExt, fragmentSource, 0x0800, 0x0000, simulation.NewSimSettings())
-	first := []byte{0xc0, 0x86, 0x12, 0x34, 0x7e, 0x33, 0xf0, 0x15, 0xa4, 0x15, 0xa4, 0x61, 0x41}
+	// RFC 6282 section 3.2.2, actual SHORT/SHORT encapsulation:
+	// fe80::ff:fe00:0 -> fe80::ff:fe00:800. Independently calculated
+	// checksum 0xbba8, not the EUI-derived fixture's 0x6141.
+	first := []byte{0xc0, 0x86, 0x12, 0x34, 0x7e, 0x33, 0xf0, 0x15, 0xa4, 0x15, 0xa4, 0xbb, 0xa8}
+	wantSource := ip6.Address{0xfe, 0x80, 11: 0xff, 12: 0xfe}
+	wantDestination := wantSource
+	wantDestination[14] = 8
+	if err := dst.inst.Do(context.Background(), func() error {
+		dst.inst.netif.AddUnicastAddress(&ip6.UnicastAddress{Address: wantDestination, Valid: true})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for i := byte(0); i < 80; i++ {
 		first = append(first, i)
 	}
@@ -34,7 +48,8 @@ func TestStandardFragmentedShortMACSourceZeroIdentity(t *testing.T) {
 	}
 	select {
 	case packet := <-dst.incoming:
-		if len(packet.payload) != 86 || packet.info.LinkInfo == nil || packet.info.LinkInfo.SrcExtAddr != fragmentSource {
+		if len(packet.payload) != 86 || packet.info.PeerAddr != wantSource || packet.info.SockAddr != wantDestination ||
+			packet.info.LinkInfo == nil || packet.info.LinkInfo.SrcExtAddr != fragmentSource {
 			t.Fatal("short MAC source zero was not resolved to complete peer identity")
 		}
 	default:

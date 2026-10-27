@@ -18,10 +18,11 @@ func TestDisabledTransmitCompletionCannotRetryOldFragment(t *testing.T) {
 	if err := sm.Send(TxRequest{Channel: 20, MaxFrameRetries: 1}); err != nil {
 		t.Fatal(err)
 	}
+	submittedA := r.transmitFrame
 	if err := sm.Disable(); err != nil {
 		t.Fatal(err)
 	}
-	sm.HandleTransmitDone(sm.GetTransmitFrame(), nil, ErrNoAck)
+	sm.HandleTransmitDone(submittedA, nil, ErrNoAck)
 	if sm.GetState() != StateDisabled || r.transmitCount != 1 || callbacks.transmitDoneCount != 0 {
 		t.Fatal("late completion revived/retried a disabled frame")
 	}
