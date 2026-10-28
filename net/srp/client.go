@@ -73,7 +73,8 @@ const (
 	// TxFailureRetryJitter is the max jitter added to tx failure retries (ms).
 	TxFailureRetryJitter uint32 = 10
 
-	// MaxTxFailureRetries is the maximum number of tx failure retries.
+	// MaxTxFailureRetries is the existing bound on consecutive local build/send
+	// failures. A successful send resets it; server responses do not consume it.
 	MaxTxFailureRetries uint8 = 8
 
 	// MinRetryWaitInterval is the minimum retry wait interval (ms).
@@ -166,7 +167,8 @@ const (
 	StateToUpdate
 	// StateUpdating means an update message is in flight.
 	StateUpdating
-	// StateUpdated means the last update was successful.
+	// StateUpdated means the client is quiescent after success or a terminal
+	// error. Host/service ItemState and the callback distinguish these cases.
 	StateUpdated
 	// StateToRetry means we need to retry after a failure.
 	StateToRetry
@@ -320,6 +322,7 @@ type Timer interface {
 type Option func(*Client)
 
 // WithAfterFunc sets a custom timer factory for testing.
+// The factory must schedule the callback, not invoke it inline.
 func WithAfterFunc(af func(time.Duration, func()) Timer) Option {
 	return func(c *Client) {
 		c.afterFunc = af
@@ -381,6 +384,7 @@ type Client struct {
 	keyPair    *ecdsa.KeyPair
 
 	curMessageID         uint16
+	attemptEpoch         uint64
 	txFailureRetryCount  uint8
 	shouldRemoveKeyLease bool
 
@@ -394,6 +398,7 @@ type Client struct {
 	defaultKeyLease uint32
 
 	timer      Timer
+	timerEpoch uint64
 	afterFunc  func(time.Duration, func()) Timer
 	now        func() time.Time
 	randUint32 func(uint32) uint32
@@ -451,6 +456,7 @@ func (c *Client) Start(serverAddr ip6.SockAddr) error {
 	}
 
 	c.serverAddr = serverAddr
+	c.cancelAttempt()
 	c.retryWaitInterval = 0
 	c.txFailureRetryCount = 0
 
@@ -471,7 +477,7 @@ func (c *Client) Stop() {
 		return
 	}
 
-	c.stopTimer()
+	c.cancelAttempt()
 	c.changeHostAndServiceStates(&newStateOnStop, false)
 	c.setState(StateStopped)
 }
@@ -486,7 +492,7 @@ func (c *Client) Pause() {
 		return
 	}
 
-	c.stopTimer()
+	c.cancelAttempt()
 	c.changeHostAndServiceStates(&newStateOnPause, false)
 	c.setState(StatePaused)
 }
@@ -553,7 +559,12 @@ func (c *Client) GetServerAddress() ip6.SockAddr {
 func (c *Client) SetServerAddress(addr ip6.SockAddr) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.serverAddr == addr {
+		return
+	}
 	c.serverAddr = addr
+	c.changeHostAndServiceStates(&newStateOnStop, false)
+	c.restartPending()
 }
 
 // -------------------------------------------------------
@@ -717,6 +728,7 @@ func (c *Client) ClearService(svc *Service) error {
 	}
 
 	c.services = append(c.services[:idx], c.services[idx+1:]...)
+	c.restartPending()
 	return nil
 }
 
@@ -746,9 +758,14 @@ func (c *Client) RemoveHostAndServices(removeKeyLease, sendUnregToServer bool) e
 		}
 		c.handleHostInfoOrServiceChange()
 	} else {
+		c.cancelAttempt()
 		c.hostInfo.State = ItemStateRemoved
 		for _, svc := range c.services {
 			svc.State = ItemStateRemoved
+		}
+		c.leaseRenewTime = time.Time{}
+		if c.state != StateStopped && c.state != StatePaused {
+			c.setState(StateUpdated)
 		}
 	}
 
@@ -761,9 +778,16 @@ func (c *Client) ClearHostAndServices() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.cancelAttempt()
 	c.hostInfo = HostInfo{State: ItemStateRemoved}
 	c.services = nil
 	c.shouldRemoveKeyLease = false
+	c.lease, c.keyLease = 0, 0
+	c.leaseRenewTime = time.Time{}
+	c.txFailureRetryCount, c.retryWaitInterval = 0, 0
+	if c.state != StateStopped && c.state != StatePaused {
+		c.setState(StateUpdated)
+	}
 }
 
 // SetLeaseInterval sets the requested lease interval in seconds.
@@ -804,6 +828,7 @@ func (c *Client) SetDomainName(name string) error {
 	}
 
 	c.domainName = name
+	c.handleHostInfoOrServiceChange()
 	return nil
 }
 
@@ -827,6 +852,7 @@ func (c *Client) setState(s State) {
 // resume moves the client from Paused/Stopped to Updated and
 // triggers updateState. Must be called with c.mu held.
 func (c *Client) resume() {
+	c.txFailureRetryCount, c.retryWaitInterval = 0, 0
 	c.setState(StateUpdated)
 	c.updateState()
 }
@@ -834,6 +860,7 @@ func (c *Client) resume() {
 // stopTimer stops the current timer if one is running.
 // Must be called with c.mu held.
 func (c *Client) stopTimer() {
+	c.timerEpoch++
 	if c.timer != nil {
 		c.timer.Stop()
 		c.timer = nil
@@ -872,23 +899,25 @@ func (c *Client) changeHostAndServiceStates(newStates *[8]ItemState, forAppended
 // invokeCallback calls the user callback if one is set.
 // Must be called with c.mu held.
 func (c *Client) invokeCallback(err error) {
-	if c.callback == nil {
-		return
-	}
-
-	// Collect removed services and prune them from the list.
+	// Only acknowledged removal can prune or publish removed services. This
+	// cleanup is independent of whether an application installed a callback.
 	var removed []*Service
 	remaining := c.services[:0]
 	for _, svc := range c.services {
-		if svc.State == ItemStateRemoved {
+		if err == nil && svc.State == ItemStateRemoved {
 			removed = append(removed, svc)
 		} else {
 			remaining = append(remaining, svc)
 		}
 	}
+	clear(c.services[len(remaining):])
 	c.services = remaining
+	if c.callback == nil {
+		return
+	}
 
 	info := c.hostInfo
+	info.Addresses = append([]ip6.Address(nil), c.hostInfo.Addresses...)
 	cb := c.callback
 	svcs := make([]*Service, len(c.services))
 	copy(svcs, c.services)
@@ -902,10 +931,7 @@ func (c *Client) invokeCallback(err error) {
 // handleHostInfoOrServiceChange is called whenever host info or
 // services change. It triggers an update if appropriate.
 func (c *Client) handleHostInfoOrServiceChange() {
-	if c.state == StateStopped || c.state == StatePaused {
-		return
-	}
-	c.updateState()
+	c.restartPending()
 }
 
 // updateState evaluates whether an update needs to be sent and
@@ -954,19 +980,13 @@ func (c *Client) updateState() {
 // scheduleUpdate schedules the update timer with the given delay
 // plus random jitter. Must be called with c.mu held.
 func (c *Client) scheduleUpdate(baseDelayMs uint32) {
-	c.stopTimer()
-
 	jitter := c.randUint32(MaxTxJitterDefault)
 	if jitter < MinTxJitter {
 		jitter = MinTxJitter
 	}
 
 	delayMs := baseDelayMs + jitter
-	c.timer = c.afterFunc(time.Duration(delayMs)*time.Millisecond, func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.handleTimer()
-	})
+	c.armTimer(time.Duration(delayMs)*time.Millisecond, c.handleTimer)
 }
 
 // scheduleLeaseRenewal schedules a timer to renew the lease before
@@ -995,12 +1015,7 @@ func (c *Client) scheduleLeaseRenewal() {
 		return
 	}
 
-	c.stopTimer()
-	c.timer = c.afterFunc(delay, func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.handleLeaseRenewalTimer()
-	})
+	c.armTimer(delay, c.handleLeaseRenewalTimer)
 }
 
 // handleLeaseRenewalTimer fires when the lease needs renewal.
@@ -1022,11 +1037,11 @@ func (c *Client) handleLeaseRenewalTimer() {
 
 // handleTimer fires when the update timer expires.
 func (c *Client) handleTimer() {
-	c.timer = nil
-
 	switch c.state {
 	case StateToUpdate:
 		c.sendUpdate()
+	case StateUpdating:
+		c.responseTimedOut()
 	case StateToRetry:
 		c.setState(StateToUpdate)
 		c.sendUpdate()
@@ -1062,38 +1077,34 @@ func (c *Client) sendUpdate() {
 	// Transition states for items included in this message.
 	c.changeHostAndServiceStates(&newStateOnMessageTx, info.singleServiceMode)
 	c.setState(StateUpdating)
+	c.attemptEpoch++
+	attempt := c.attemptEpoch
 
-	// Send the message.
-	sendErr := c.sender.Send(info.buf, c.serverAddr)
+	// A sender may synchronously deliver a response or call lifecycle APIs.
+	// Snapshot ownership before releasing the lock, not when it returns.
+	sender, destination := c.sender, c.serverAddr
+	c.mu.Unlock()
+	var sendErr error = errors.ErrInvalidState
+	if sender != nil {
+		sendErr = sender.Send(info.buf, destination)
+	}
+	c.mu.Lock()
+	if c.attemptEpoch != attempt || c.state != StateUpdating {
+		return // Response/Stop/Pause/clear superseded this send.
+	}
 	if sendErr != nil {
 		c.handleSendFailure()
 		return
 	}
 
 	c.txFailureRetryCount = 0
+	c.scheduleResponseDeadline()
 }
 
 // handleSendFailure handles a failed message send or build.
 func (c *Client) handleSendFailure() {
-	c.txFailureRetryCount++
-
-	if c.txFailureRetryCount >= MaxTxFailureRetries {
-		// Too many failures; give up and invoke callback.
-		c.txFailureRetryCount = 0
-		c.setState(StateUpdated)
-		c.invokeCallback(errors.ErrFailed)
-		return
-	}
-
-	c.setState(StateToUpdate)
-	baseDelay := TxFailureRetryInterval
-	jitter := c.randUint32(TxFailureRetryJitter)
-	c.stopTimer()
-	c.timer = c.afterFunc(time.Duration(baseDelay+jitter)*time.Millisecond, func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.handleTimer()
-	})
+	// Preserve the baseline terminal callback for local build/send failures.
+	c.failAttempt(errors.ErrFailed, false)
 }
 
 // prepareUpdateMessage builds the DNS Update message in info.buf.
@@ -1734,7 +1745,8 @@ func (c *Client) processResponse(data []byte) {
 		return
 	}
 
-	if header.GetType() != dns.TypeResponse {
+	if header.GetType() != dns.TypeResponse || header.GetOpCode() != dns.OpcodeUpdate ||
+		header.IsTruncated() || header.QDCount > 1 {
 		return
 	}
 
@@ -1742,19 +1754,20 @@ func (c *Client) processResponse(data []byte) {
 
 	if rc == dns.RcodeSuccess {
 		// Process OPT record to extract granted lease.
-		c.processResponseRecords(data, &header)
+		if err := c.processResponseRecords(data, &header); err != nil {
+			return // Malformed input cannot cancel the actual response deadline.
+		}
 		c.handleUpdateDone()
 		return
 	}
 
 	// Server rejected the update.
-	c.handleUpdateDone()
-	c.invokeCallback(dns.ResponseCodeToError(rc))
+	c.failAttempt(dns.ResponseCodeToError(rc), true)
 }
 
 // processResponseRecords scans the additional section for an OPT
 // record containing lease information.
-func (c *Client) processResponseRecords(data []byte, header *dns.Header) {
+func (c *Client) processResponseRecords(data []byte, header *dns.Header) error {
 	// Skip past question/zone, answer/prerequisite, and authority/update
 	// sections to reach the additional section.
 	offset := dns.HeaderSize
@@ -1763,11 +1776,11 @@ func (c *Client) processResponseRecords(data []byte, header *dns.Header) {
 	for i := uint16(0); i < header.QDCount; i++ {
 		newOff, err := dns.SkipName(data, offset)
 		if err != nil {
-			return
+			return errors.ErrParse
 		}
 		offset = newOff + int(dns.QuestionSize)
 		if offset > len(data) {
-			return
+			return errors.ErrParse
 		}
 	}
 
@@ -1775,7 +1788,7 @@ func (c *Client) processResponseRecords(data []byte, header *dns.Header) {
 	for i := uint16(0); i < header.ANCount; i++ {
 		offset = c.skipRecord(data, offset)
 		if offset < 0 {
-			return
+			return errors.ErrParse
 		}
 	}
 
@@ -1783,28 +1796,29 @@ func (c *Client) processResponseRecords(data []byte, header *dns.Header) {
 	for i := uint16(0); i < header.NSCount; i++ {
 		offset = c.skipRecord(data, offset)
 		if offset < 0 {
-			return
+			return errors.ErrParse
 		}
 	}
 
-	// Parse additional (AR) section looking for OPT record.
+	// Validate the full response before committing any granted lease state.
+	var leaseOption *dns.LeaseOption
 	for i := uint16(0); i < header.ARCount; i++ {
 		savedOffset := offset
 
 		// Skip name.
 		newOff, err := dns.SkipName(data, offset)
 		if err != nil {
-			return
+			return errors.ErrParse
 		}
 		offset = newOff
 
 		if offset+int(dns.ResourceRecordSize) > len(data) {
-			return
+			return errors.ErrParse
 		}
 
 		var rr dns.ResourceRecord
 		if err := rr.UnmarshalBinary(data[offset:]); err != nil {
-			return
+			return errors.ErrParse
 		}
 
 		if rr.Type == dns.RRTypeOpt {
@@ -1812,28 +1826,57 @@ func (c *Client) processResponseRecords(data []byte, header *dns.Header) {
 			rdataStart := offset + int(dns.ResourceRecordSize)
 			rdataEnd := rdataStart + int(rr.RDLength)
 			if rdataEnd > len(data) {
-				return
+				return errors.ErrParse
 			}
-			c.processLeaseOption(data[rdataStart:rdataEnd])
+			// Check option framing even when no lease option is present.
+			for optionOffset := rdataStart; optionOffset < rdataEnd; {
+				if rdataEnd-optionOffset < dns.OptionSize {
+					return errors.ErrParse
+				}
+				var option dns.Option
+				if err := option.UnmarshalBinary(data[optionOffset:rdataEnd]); err != nil {
+					return errors.ErrParse
+				}
+				if option.GetSize() > rdataEnd-optionOffset {
+					return errors.ErrParse
+				}
+				if option.Code == dns.OptionCodeUpdateLease {
+					if leaseOption != nil {
+						return errors.ErrParse
+					}
+					leaseOption = &dns.LeaseOption{}
+					if err := leaseOption.UnmarshalBinary(data[optionOffset:rdataEnd]); err != nil ||
+						!leaseOption.IsValid() {
+						return errors.ErrParse
+					}
+				}
+				optionOffset += option.GetSize()
+			}
 		}
 
 		offset = savedOffset
 		offset = c.skipRecord(data, offset)
 		if offset < 0 {
-			return
+			return errors.ErrParse
 		}
 	}
+	if offset != len(data) {
+		return errors.ErrParse
+	}
+	if leaseOption == nil {
+		// A successful bare response accepts the requested/default lease.
+		c.setGrantedLease(c.determineLeaseInterval(c.lease, c.defaultLease),
+			c.determineLeaseInterval(c.keyLease, c.defaultKeyLease))
+	} else {
+		c.setGrantedLease(leaseOption.LeaseInterval, leaseOption.KeyLeaseInterval)
+	}
+	return nil
 }
 
-// processLeaseOption extracts lease values from OPT record RDATA.
-func (c *Client) processLeaseOption(rdata []byte) {
-	lo, err := dns.FindLeaseOption(rdata)
-	if err != nil || lo == nil {
-		return
-	}
-
-	c.lease = lo.LeaseInterval
-	c.keyLease = lo.KeyLeaseInterval
+func (c *Client) setGrantedLease(lease, keyLease uint32) {
+	c.lease = lease
+	c.keyLease = keyLease
+	c.leaseRenewTime = time.Time{}
 
 	// Cap lease values.
 	if c.lease > MaxLease {
@@ -1887,9 +1930,9 @@ func (c *Client) skipRecord(data []byte, offset int) int {
 // Internal — update completion and retry
 // -------------------------------------------------------
 
-// handleUpdateDone is called when a response is received (success or error).
+// handleUpdateDone applies ONLY an accepted, matching, valid update response.
 func (c *Client) handleUpdateDone() {
-	c.stopTimer()
+	c.cancelAttempt()
 
 	// Apply state transitions for successful update.
 	c.changeHostAndServiceStates(&newStateOnUpdateDone, false)
@@ -1897,9 +1940,14 @@ func (c *Client) handleUpdateDone() {
 	c.retryWaitInterval = 0
 	c.txFailureRetryCount = 0
 	c.setState(StateUpdated)
+	if c.hostInfo.State == ItemStateRemoved {
+		c.leaseRenewTime = time.Time{}
+	}
 
 	// Check if there are more items to update.
-	c.updateState()
+	if c.hostInfo.State != ItemStateRemoved {
+		c.updateState()
+	}
 
 	// Invoke callback with success.
 	c.invokeCallback(nil)
@@ -1922,9 +1970,19 @@ func (c *Client) growRetryWaitInterval() {
 // Internal — helpers
 // -------------------------------------------------------
 
-// selectNewMessageID generates a new random message ID.
+// selectNewMessageID preserves random nonzero IDs and excludes only the previous
+// ID, as in OpenThread. A deterministic RNG collision uses one bounded fallback
+// rather than spinning. Local epochs protect callbacks, not indefinite stale
+// wire replies after a 16-bit ID is eventually reused.
 func (c *Client) selectNewMessageID() {
-	c.curMessageID = uint16(c.randUint32(0xFFFF)) + 1
+	previous := c.curMessageID
+	c.curMessageID = uint16(c.randUint32(0xffff)) + 1
+	if c.curMessageID == previous {
+		c.curMessageID++
+		if c.curMessageID == 0 {
+			c.curMessageID = 1
+		}
+	}
 }
 
 // determineLeaseInterval returns the lease interval to use, taking

@@ -876,6 +876,66 @@ const HeaderSize         = 4
 const MaxTokenLength     = 8
 ```
 
+## 9. SRP Client Response and Retry State — `net/srp`
+
+`Client` keeps its existing lifecycle, callback, sender and timer APIs. A
+successful `UDPSender.Send` means only local send/queue acceptance. Registration,
+refresh and withdrawal change to `Registered`/`Removed` only after a matching,
+valid DNS UPDATE success response. A rejected update never calls the success
+path, grants a lease, prunes a removed service, or emits a nil callback first.
+RCODE errors retain the exact existing `dns.ResponseCodeToError` sentinel.
+
+On rejection, timeout or immediate send failure, in-flight item states return to
+their pending operations (`Adding -> ToAdd`, `Refreshing -> ToRefresh`,
+`Removing -> ToRemove`). Each rejection/response timeout produces one error
+callback for that attempt, with no removal-success list. Immediate build/send
+errors preserve the baseline terminal-only `errors.ErrFailed` callback rather
+than being relabeled as a response timeout. Nil callbacks do not
+change acknowledgement semantics; successful removal still releases ownership.
+
+Every successful send now arms an owned response deadline: this is **new wiring
+for the missing baseline timer**, not pre-existing executed behavior. Response
+deadline/retry waits use the existing, previously unused backoff scaffolding
+(1800-ms minimum, 17/10 growth, 1,036,800-ms maximum, bounded jitter at most
+interval/5 or 2000 ms) with the pinned OpenThread rejection/timeout retry
+approach. Local build/send retries retain
+the existing 250-ms base and up-to-10-ms jitter. There is no new shared
+failure-count limit: the baseline eight-attempt `MaxTxFailureRetries`
+budget applies **only to consecutive local build/send failures**, and a successful
+send resets it as before. Response timeouts/rejections notify an error once per
+attempt and remain pending/retryable with capped waits, without a new permanent
+response-count hard stop. One owned timer and one in-flight update bound resources;
+Stop/Pause/clear can explicitly stop retries. A matching ACK resets the response
+backoff and schedules ordinary lease renewal. At the existing terminal **local
+send** failure bound, the client is quiescent in `StateUpdated` with pending item
+flags and no timer; the final error callback and item flags, not `StateUpdated`
+alone, identify that failure. No response-count/lifetime registration exhaustion
+policy has been introduced.
+
+Timer callbacks carry their scheduling generation, and sender calls capture
+attempt ownership before releasing the mutex. Matching responses,
+Stop/Pause/clear, server or operation changes invalidate earlier deadlines and
+queued callbacks. A stale/wrong ID, non-UPDATE/query/truncated header or malformed
+success response cannot acknowledge the current attempt or cancel its deadline.
+Only a completely parsed successful response commits granted lease data.
+Callbacks and the sender execute without the client mutex, so they can call
+lifecycle APIs; an old sender return or callback cannot attach a timer/outcome
+to a replacement operation.
+
+DNS has a 16-bit response ID, with no local generation carried on the wire.
+IDs remain random and nonzero; only immediate reuse of the previous ID is avoided
+(as in the pinned OpenThread implementation). There is **no lifetime uniqueness
+or permanent ID-exhaustion counter**. Local timer/sender generations protect
+queued callbacks, not indefinite late wire replies after an ID is eventually
+reused. Current-message-ID matching cannot solve that protocol limitation.
+`HandleResponse` receives bytes only: this repair does **not** validate the
+network peer tuple, bind a native socket, or introduce server selection.
+
+These are library state/timer guarantees, **not operational native SRP
+publication**. Instance socket/RX/executor/key/entropy/lifecycle wiring, server
+auto-selection, DiscoveryAdvertiser, DNS-SD/mDNS proxying, routing, physical
+hardware and root/server startup remain separate unresolved integration gates.
+
 ## Further Reading
 
 - Full godoc: `go doc github.com/hilli/gothread/...`
