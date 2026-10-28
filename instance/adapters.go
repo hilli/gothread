@@ -18,6 +18,7 @@ import (
 	"github.com/hilli/gothread/backbone"
 	borderinfra "github.com/hilli/gothread/border"
 	"github.com/hilli/gothread/border/dhcp6pd"
+	"github.com/hilli/gothread/checksum"
 	"github.com/hilli/gothread/common/log"
 	csettings "github.com/hilli/gothread/common/settings"
 	"github.com/hilli/gothread/diags"
@@ -68,7 +69,9 @@ import (
 // submacCallbackBridge implements submac.Callbacks by forwarding to a
 // target that is set after both SubMac and Mac are constructed.
 type submacCallbackBridge struct {
-	target submac.Callbacks
+	target                  submac.Callbacks
+	scheduleTransmitDone    func(func())
+	validTransmitCompletion func(*radio.Frame) bool
 }
 
 func (b *submacCallbackBridge) ReceiveDone(frame *radio.Frame, err error) {
@@ -79,7 +82,17 @@ func (b *submacCallbackBridge) ReceiveDone(frame *radio.Frame, err error) {
 
 func (b *submacCallbackBridge) TransmitDone(frame, ackFrame *radio.Frame, err error) {
 	if b.target != nil {
-		b.target.TransmitDone(frame, ackFrame, err)
+		if b.scheduleTransmitDone != nil {
+			// A radio can fail synchronously inside Mac's locked Send.
+			// The stack owns the TX buffer until MAC receives completion.
+			b.scheduleTransmitDone(func() {
+				if b.validTransmitCompletion == nil || b.validTransmitCompletion(frame) {
+					b.target.TransmitDone(frame, ackFrame, err)
+				}
+			})
+		} else {
+			b.target.TransmitDone(frame, ackFrame, err)
+		}
 	}
 }
 
@@ -519,12 +532,21 @@ func (inst *Instance) HandleFrameRequest(frame *radio.Frame) bool {
 	if msg == nil {
 		return false
 	}
+	if msg.ValidateFrame != nil {
+		if err := msg.ValidateFrame(); err != nil {
+			inst.forwarder.HandleSentFrame(msg, false)
+			inst.scheduleNextDirectFrame()
+			log.Warn(log.RegionMesh, "Retire outbound datagram after admission change: %v", err)
+			return false
+		}
+	}
 	if msg.HasMetadata() {
 		if msg.Metadata.SecurityEnabled {
 			counter, err := inst.allocateMacFrameCounter()
 			if err != nil {
 				log.Warn(log.RegionMac, "Allocate secured frame counter: %v", err)
 				inst.forwarder.HandleSentFrame(msg, false)
+				inst.scheduleNextDirectFrame()
 				return false
 			}
 			msg.Metadata.Security.FrameCounter = counter
@@ -537,10 +559,12 @@ func (inst *Instance) HandleFrameRequest(frame *radio.Frame) bool {
 			// Report the failure to the forwarder so the message is
 			// not silently lost after being dequeued.
 			inst.forwarder.HandleSentFrame(msg, false)
+			inst.scheduleNextDirectFrame()
 			log.Warn(log.RegionMac, "Build transmit frame: %v", err)
 			return false
 		}
 		inst.macSeqNum++
+		inst.forwarder.FramePrepared(msg)
 		frame.PSDU = built
 		if frame.TxInfo == nil {
 			frame.TxInfo = &radio.TxInfo{}
@@ -565,6 +589,35 @@ func (inst *Instance) HandleSentFrame(frame *radio.Frame, err error) {
 	msg := inst.pendingTxMsg
 	inst.pendingTxMsg = nil
 	inst.forwarder.HandleSentFrame(msg, err == nil)
+	inst.scheduleNextDirectFrame()
+}
+
+// FrameTransmissionValidator captures changing prerequisites of the exact
+// current datagram for delayed radio submission/retry, not a future owner.
+func (inst *Instance) FrameTransmissionValidator() func() error {
+	msg := inst.pendingTxMsg
+	if msg == nil || msg.ValidateFrame == nil {
+		return nil
+	}
+	validate := msg.ValidateFrame
+	return func() error {
+		if msg.Metadata == nil {
+			return goterrors.ErrAbort // The forwarder retired this owner.
+		}
+		if err := validate(); err != nil {
+			log.Warn(log.RegionMesh, "Retire delayed outbound frame after admission change: %v", err)
+			return err
+		}
+		return nil
+	}
+}
+
+func (inst *Instance) scheduleNextDirectFrame() {
+	if inst.mac != nil && inst.forwarder != nil && inst.forwarder.HasPendingDirect() {
+		// Mac invokes this callback while holding its mutex. Defer the next
+		// request so a burst queued before the first TX cannot be stranded.
+		inst.timers.schedule(0, inst.mac.RequestDirectFrameTransmission)
+	}
 }
 
 // HandleReceivedFrame is called by the MAC layer when a frame is received.
@@ -588,12 +641,15 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 	// when the IPv6 addresses are elided (SAM=11 or DAM=11) and the
 	// IID must be derived from the MAC extended address.
 	var macAddrs lowpan.AddressContext
+	scope := mesh.FragmentScope{Channel: frame.Channel}
+	var sourceShort, destinationShort bool
 	mf := macframe.NewFrame(frame.PSDU)
 	if srcAddr, err := mf.GetSrcAddr(); err == nil {
 		if srcAddr.IsExtended() {
 			macAddrs.SrcExtAddr = srcAddr.GetExtended()
 		} else if srcAddr.IsShort() {
 			macAddrs.SrcShort = srcAddr.GetShort()
+			sourceShort = true
 		}
 	}
 	if dstAddr, err := mf.GetDstAddr(); err == nil {
@@ -601,7 +657,22 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 			macAddrs.DstExtAddr = dstAddr.GetExtended()
 		} else if dstAddr.IsShort() {
 			macAddrs.DstShort = dstAddr.GetShort()
+			destinationShort = true
 		}
+	}
+	macAddrs.SrcShortValid, macAddrs.DstShortValid = sourceShort, destinationShort
+	scope.Source, scope.Destination = macAddrs.SrcExtAddr, macAddrs.DstExtAddr
+	if sourceShort {
+		if neighbor := inst.neighborTable.FindNeighborByShortAddress(uint16(macAddrs.SrcShort), routing.FilterValid); neighbor != nil {
+			scope.Source = neighbor.ExtAddress
+		} else if parent := inst.mleService.Mle().GetParent(); parent.IsStateValid() &&
+			parent.RLOC16 == uint16(macAddrs.SrcShort) {
+			scope.Source = parent.MacAddr
+		}
+	}
+	if macAddrs.DstExtAddr == (types.ExtAddress{}) && destinationShort &&
+		macAddrs.DstShort == inst.subMac.GetShortAddress() {
+		scope.Destination = inst.subMac.GetExtAddress()
 	}
 
 	// Check for MAC Data Request (command frame type 0x04).
@@ -622,24 +693,34 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 	// (common in unit tests), we use the PSDU directly.
 	var macPayload []byte
 	if mf.GetType() == macframe.TypeData && (mf.GetSrcAddrMode() != 0 || mf.GetDstAddrMode() != 0) {
+		if len(frame.PSDU) > mesh.MaxPsduSize-mesh.FCSSize {
+			inst.forwarder.RecordReceiveError(false)
+			return
+		}
 		framer := mesh.NewFramer()
 		if fctx, offset, err := framer.ParseFrameHeader(frame.PSDU); err == nil {
+			scope.PanID = fctx.PanId
 			if fctx.SecurityEnabled {
 				// Look up the decryption key from the key manager.
 				curKey := [16]byte(inst.keyManager.GetCurrentMacKey())
 				if curKey != [16]byte{} {
-					if decrypted, err := mesh.DecryptFramePayload(frame.PSDU, offset, fctx, curKey, macAddrs.SrcExtAddr); err == nil {
+					if decrypted, err := mesh.DecryptFramePayload(frame.PSDU, offset, fctx, curKey, scope.Source); err == nil {
 						macPayload = decrypted
 						info.LinkSecurity = true
 					} else if seq := inst.keyManager.GetCurrentKeySequence(); seq > 0 {
 						// During key rotation a neighbor may still send with the previous key sequence.
 						prevKey := [16]byte(inst.keyManager.GetTemporaryMacKey(seq - 1))
-						if decrypted, err := mesh.DecryptFramePayload(frame.PSDU, offset, fctx, prevKey, macAddrs.SrcExtAddr); err == nil {
+						if decrypted, err := mesh.DecryptFramePayload(frame.PSDU, offset, fctx, prevKey, scope.Source); err == nil {
 							macPayload = decrypted
 							info.LinkSecurity = true
 						}
 					}
+					if macPayload == nil {
+						inst.forwarder.RecordReceiveError(false)
+						return // Never interpret unauthenticated ciphertext as plaintext.
+					}
 				}
+				scope.Secured = info.LinkSecurity
 			}
 			if macPayload == nil && offset < len(frame.PSDU) {
 				macPayload = frame.PSDU[offset:]
@@ -665,89 +746,94 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 		inst.supervisionListener.UpdateOnReceive()
 	}
 
-	// Step 2a: Check for 6LoWPAN fragment dispatch.
-	// Fragment headers (first=0xC0, subsequent=0xE0) are not IPHC, so they
-	// must be detected before the IPHC check. On reassembly completion the
-	// returned buffer starts with the IPHC dispatch bytes and falls through
-	// to normal decompression below.
+	// FRAG1 expands into ORIGINAL IPv6 coordinates before reassembly. FRAGN
+	// already uses those coordinates and must never be treated as IPHC.
+	var packet []byte
 	if lowpan.IsFragment(payload) {
 		fh, consumed, err := lowpan.ParseFragmentHeader(payload)
-		if err != nil {
+		if err != nil || !scope.Secured || scope.Source == ([8]byte{}) || scope.Destination == ([8]byte{}) {
+			if err != nil && scope.Secured && len(payload) >= 4 {
+				inst.forwarder.RejectFragment(mesh.FragmentKey{
+					Scope: scope, Tag: encoding.BigEndianReadUint16(payload[2:4]),
+					Size: uint16(payload[0]&7)<<8 | uint16(payload[1]),
+				})
+			} else {
+				inst.forwarder.RecordReceiveError(true)
+			}
 			return
 		}
 		fragPayload := payload[consumed:]
-		reassembled, err := inst.forwarder.HandleFragment(
-			macAddrs.SrcExtAddr, fh.DatagramTag, fh.DatagramSize,
-			fh.DatagramOffset, fragPayload,
-		)
-		if err != nil || reassembled == nil {
-			return // waiting for more fragments or error
+		key := mesh.FragmentKey{Scope: scope, Tag: fh.DatagramTag, Size: fh.DatagramSize}
+		if fh.IsFirst {
+			fragPayload, err = lowpan.DecompressDatagram(fragPayload, macAddrs, fh.DatagramSize)
+			if err != nil {
+				inst.forwarder.RejectFragment(key)
+				return
+			}
 		}
-		// Reassembly complete — the reassembled datagram starts with IPHC.
-		payload = reassembled
+		packet, err = inst.forwarder.HandleScopedFragment(key, fh.DatagramOffset, fragPayload)
+		if err != nil || packet == nil {
+			return
+		}
+	} else {
+		if !lowpan.IsLowpanHc(payload) && payload[0] != lowpan.IPv6Dispatch {
+			inst.droppedNonIPHC++
+			return
+		}
+		packet, err = lowpan.DecompressDatagram(payload, macAddrs, 0)
+		if err != nil {
+			inst.forwarder.RecordReceiveError(false)
+			return
+		}
 	}
+	inst.dispatchIPv6Packet(packet, macAddrs, info, scope.Source)
+}
 
-	// Step 2b: Check for 6LoWPAN IPHC dispatch.
-	if !lowpan.IsLowpanHc(payload) {
-		inst.droppedNonIPHC++
-		return // not a 6LoWPAN-compressed frame; drop for now
-	}
-
-	// Step 3: Decompress the IPv6 header using the MAC addresses
-	// extracted above. When addresses are fully inline (SAM=00,
-	// DAM=00) the AddressContext is unused; when elided (SAM=11,
-	// DAM=11) the IID is derived from the extended MAC address.
-	ipv6Raw, consumed, nhCompressed, err := lowpan.DecompressHeader(payload, macAddrs, nil)
-	if err != nil {
+func (inst *Instance) dispatchIPv6Packet(packet []byte, macAddrs lowpan.AddressContext, info *mesh.ReceivedFrameInfo, sourceIdentity [8]byte) {
+	if len(packet) < ip6.HeaderSize || len(packet) > mesh.IPv6MTU {
+		inst.forwarder.RecordReceiveError(false)
 		return
 	}
-
+	var ipv6Raw [ip6.HeaderSize]byte
+	copy(ipv6Raw[:], packet)
 	hdr := ip6.HeaderFromBytes(ipv6Raw)
-	remaining := payload[consumed:]
+	if int(hdr.GetPayloadLength()) != len(packet)-ip6.HeaderSize {
+		inst.forwarder.RecordReceiveError(false)
+		return
+	}
+	remaining := packet[ip6.HeaderSize:]
 
 	// Learn source EID→RLOC16 mapping from every successfully decompressed
 	// frame so the address resolver cache stays warm.
-	if inst.addrResolver != nil && macAddrs.SrcShort != 0 {
+	if inst.addrResolver != nil && macAddrs.SrcShortValid {
 		inst.addrResolver.UpdateSnoopedEntry(hdr.GetSource(), uint16(macAddrs.SrcShort), time.Now())
 	}
 
-	// Step 4: Determine if the next header is UDP.
-	// NextHeader == ProtoUDP (17) means UDP was carried inline.
-	// nhCompressed (from IPHC NH flag) means the next header was
-	// compressed using NHC; attempt UDP decompression from the
-	// remaining data.
 	nextHdr := hdr.GetNextHeader()
-	isUDP := nextHdr == ip6.ProtoUDP
-	isNhCompressed := nhCompressed
-
-	if !isUDP && !isNhCompressed && nextHdr != ip6.ProtoICMPv6 {
-		return // unsupported protocol
-	}
-
-	// Dispatch based on next header protocol.
-	switch {
-	case isUDP || isNhCompressed:
-		// UDP path (existing code, unchanged)
-		var srcPort, dstPort uint16
-		var udpPayload []byte
-		if isNhCompressed {
-			udpHdr, udpConsumed, err := lowpan.DecompressUDPHeader(remaining)
-			if err != nil {
-				return
-			}
-			srcPort = encoding.BigEndianReadUint16(udpHdr[0:2])
-			dstPort = encoding.BigEndianReadUint16(udpHdr[2:4])
-			udpPayload = remaining[udpConsumed:]
-		} else {
-			if len(remaining) < 8 {
-				return
-			}
-			srcPort = encoding.BigEndianReadUint16(remaining[0:2])
-			dstPort = encoding.BigEndianReadUint16(remaining[2:4])
-			udpPayload = remaining[8:]
+	switch nextHdr {
+	case ip6.ProtoUDP:
+		if len(remaining) < ip6.UDPHeaderSize ||
+			int(encoding.BigEndianReadUint16(remaining[4:6])) != len(remaining) ||
+			encoding.BigEndianReadUint16(remaining[6:8]) == 0 {
+			inst.forwarder.RecordReceiveError(false)
+			return
 		}
+		var sum checksum.Checksum
+		sum.AddData(packet[8:40])
+		sum.AddUint16(0)
+		sum.AddUint16(uint16(len(remaining)))
+		sum.AddUint16(0)
+		sum.AddUint16(uint16(ip6.ProtoUDP))
+		sum.AddData(remaining)
+		if sum.Value() != 0xffff {
+			inst.forwarder.RecordReceiveError(false)
+			return
+		}
+		srcPort := encoding.BigEndianReadUint16(remaining[:2])
+		dstPort := encoding.BigEndianReadUint16(remaining[2:4])
+		udpPayload := remaining[ip6.UDPHeaderSize:]
 		linkInfo := &ip6.LinkInfo{
-			SrcExtAddr: macAddrs.SrcExtAddr,
+			SrcExtAddr: sourceIdentity,
 			RSSI:       info.Rssi,
 		}
 		messageInfo := &ip6.MessageInfo{
@@ -762,13 +848,13 @@ func (inst *Instance) HandleReceivedFrame(frame *radio.Frame) {
 			inst.udpManager.HandleMessage(udpPayload, messageInfo)
 		}
 
-	case nextHdr == ip6.ProtoICMPv6:
+	case ip6.ProtoICMPv6:
 		messageInfo := &ip6.MessageInfo{
 			PeerAddr: hdr.GetSource(),
 			SockAddr: hdr.GetDestination(),
 			HopLimit: hdr.GetHopLimit(),
 			LinkInfo: &ip6.LinkInfo{
-				SrcExtAddr: macAddrs.SrcExtAddr,
+				SrcExtAddr: sourceIdentity,
 				RSSI:       info.Rssi,
 			},
 		}
@@ -1248,10 +1334,17 @@ func (inst *Instance) scheduleTimerDirect(delay time.Duration, fn func()) {
 // Helper: postTask — lowercase wrapper for internal use
 // --------------------------------------------------------------------------
 
-// postTask is a lowercase wrapper around PostTask for passing to module
-// Config structs. It schedules a function to run on the event loop.
+// postTask coalesces the MAC operation tasklet on the event loop. Posting back
+// into a full external task queue from that loop would deadlock its consumer.
 func (inst *Instance) postTask(fn func()) {
-	inst.PostTask(fn)
+	if inst.macTaskPending {
+		return
+	}
+	inst.macTaskPending = true
+	inst.timers.schedule(0, func() {
+		inst.macTaskPending = false
+		fn()
+	})
 }
 
 // sendViaForwarder enqueues a TxMessage through the mesh forwarder and
@@ -1261,6 +1354,9 @@ func (inst *Instance) postTask(fn func()) {
 func (inst *Instance) sendViaForwarder(msg *mesh.TxMessage) error {
 	if err := inst.PersistenceError(); err != nil {
 		return err
+	}
+	if inst.forwarder == nil {
+		return goterrors.ErrInvalidState
 	}
 	if err := inst.forwarder.SendMessage(msg); err != nil {
 		return err
@@ -1328,11 +1424,19 @@ func (inst *Instance) sendCoAP(data []byte, info coap.MessageInfo) error {
 // the same framing logic as sendCoAP but is not restricted to TMF ports.
 func (inst *Instance) sendUDP(payload []byte, srcAddr [16]byte, srcPort uint16, dstAddr [16]byte, dstPort uint16) error {
 	if inst.forwarder == nil {
-		return nil
+		return goterrors.ErrInvalidState
 	}
+	return inst.sendViaForwarder(inst.newUDPMessage(payload, ip6.MessageInfo{
+		SockAddr: srcAddr, SockPort: srcPort, PeerAddr: dstAddr, PeerPort: dstPort,
+	}))
+}
+
+// newUDPMessage shares the existing secured framing path with protocol senders.
+// Forwarder takes payload/metadata ownership transactionally on admission;
+// counter allocation remains at actual frame construction.
+func (inst *Instance) newUDPMessage(payload []byte, info ip6.MessageInfo) *mesh.TxMessage {
 	// Derive destination RLOC16 from the destination address.
-	var dst ip6.Address
-	copy(dst[:], dstAddr[:])
+	dst := info.PeerAddr
 	var dstRLOC uint16 = 0xFFFF // broadcast default
 	if dst.IsRoutingLocator() {
 		iid := dst.GetIid()
@@ -1340,7 +1444,11 @@ func (inst *Instance) sendUDP(payload []byte, srcAddr [16]byte, srcPort uint16, 
 	}
 
 	// Build TxMetadata for proper 6LoWPAN frame construction.
-	meta := mesh.BuildUDPMetadata(srcAddr, dstAddr, srcPort, dstPort, 64)
+	hopLimit := info.HopLimit
+	if hopLimit == 0 {
+		hopLimit = 64
+	}
+	meta := mesh.BuildUDPMetadata(info.SockAddr, info.PeerAddr, info.SockPort, info.PeerPort, hopLimit)
 	meta.SrcExtAddr = inst.GetExtAddress()
 	meta.UseSrcShort = true
 	meta.UseDstShort = (dstRLOC != 0xFFFF) // short for unicast
@@ -1357,7 +1465,7 @@ func (inst *Instance) sendUDP(payload []byte, srcAddr [16]byte, srcPort uint16, 
 
 	txMsg := mesh.NewTxMessageWithMetadata(payload, dstRLOC, inst.rloc16, meta)
 	txMsg.Priority = uint8(mesh.PriorityNormal)
-	return inst.sendViaForwarder(txMsg)
+	return txMsg
 }
 
 // --------------------------------------------------------------------------

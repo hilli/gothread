@@ -297,6 +297,7 @@ func (m *Mac) Disable() error {
 	}
 	m.stopTimer()
 	m.pendingOps = 0
+	m.transmitPending = false
 	m.currentOp = OperationIdle
 	m.scanning = false
 	m.energyScanning = false
@@ -620,6 +621,7 @@ func (m *Mac) startOperation(op Operation) {
 
 func (m *Mac) finishOperation() {
 	m.currentOp = OperationIdle
+	m.updateIdleMode()
 }
 
 func (m *Mac) performNextOperation() {
@@ -884,6 +886,7 @@ func (m *Mac) performTransmitData() {
 
 	m.transmitPending = true
 	err := m.subMac.Send(submac.TxRequest{
+		BeforeTransmit:  m.frameTransmissionValidator(),
 		Channel:         m.radioChannel,
 		CsmaCaEnabled:   true,
 		AckRequest:      true,
@@ -896,6 +899,15 @@ func (m *Mac) performTransmitData() {
 		m.finishOperation()
 		m.scheduleNextOperation()
 	}
+}
+
+// Validation is optional for upper-layer callers. Capture the current frame
+// owner once, so delayed backoff/retry cannot select a newer owner's predicate.
+func (m *Mac) frameTransmissionValidator() func() error {
+	if owner, ok := m.callbacks.(interface{ FrameTransmissionValidator() func() error }); ok {
+		return owner.FrameTransmissionValidator()
+	}
+	return nil
 }
 
 func (m *Mac) performTransmitPoll() {
@@ -1183,7 +1195,7 @@ func (m *Mac) GetPendingOperations() Operation {
 // --------------------------------------------------------------------------
 
 func (m *Mac) updateIdleMode() {
-	if m.subMac == nil {
+	if m.subMac == nil || m.subMac.IsTransmittingOrScanning() {
 		return
 	}
 	if m.rxOnWhenIdle {

@@ -13,6 +13,7 @@ package submac
 
 import (
 	"math/rand/v2"
+	"sync/atomic"
 	"time"
 
 	"github.com/hilli/gothread/mac/types"
@@ -149,6 +150,10 @@ type Callbacks interface {
 // TxRequest holds the per-frame transmission parameters that the upper
 // MAC sets before calling Send.
 type TxRequest struct {
+	// BeforeTransmit optionally revalidates owner prerequisites immediately
+	// before each radio attempt, including delayed CSMA and software retries.
+	// It must not re-enter the upper MAC mutex.
+	BeforeTransmit func() error
 	// MaxCsmaBackoffs is the maximum number of CSMA-CA backoff attempts.
 	MaxCsmaBackoffs uint8
 	// MaxFrameRetries is the maximum number of frame retransmission attempts.
@@ -178,6 +183,7 @@ type SubMac struct {
 	// Addresses
 	shortAddress types.ShortAddress
 	extAddress   types.ExtAddress
+	panID        uint16
 
 	// Radio capabilities (cached)
 	radioCaps radio.Caps
@@ -194,8 +200,13 @@ type SubMac struct {
 	energyScanChannel uint8
 
 	// Transmit state
-	txRequest TxRequest
-	txFrame   *radio.Frame
+	txRequest      TxRequest
+	txFrame        *radio.Frame
+	activeFrame    *radio.Frame
+	activeID       uint64
+	completedFrame *radio.Frame
+	completedID    uint64
+	epoch          uint64
 
 	// Configuration
 	rxOnWhenIdle bool
@@ -265,6 +276,10 @@ func (sm *SubMac) Enable() error {
 
 // Disable disables the radio and transitions to Disabled state.
 func (sm *SubMac) Disable() error {
+	sm.epoch++
+	sm.activeFrame, sm.completedFrame = nil, nil
+	sm.activeID, sm.completedID = 0, 0
+	sm.txRequest.BeforeTransmit = nil
 	sm.stopTimer()
 	if sm.radio != nil {
 		_ = sm.radio.Sleep()
@@ -337,15 +352,19 @@ func (sm *SubMac) Send(req TxRequest) error {
 	default:
 		return ErrInvalidState
 	}
-	if sm.txFrame == nil {
+	if sm.txFrame == nil || len(sm.txFrame.PSDU) > radio.FrameMaxSize {
 		return ErrInvalidState
 	}
 
 	sm.txRequest = req
+	sm.epoch++
+	sm.activeFrame, sm.completedFrame = nil, nil
+	sm.activeID, sm.completedID = 0, 0
 	sm.txFrame.Channel = req.Channel
 	if sm.txFrame.TxInfo == nil {
 		sm.txFrame.TxInfo = &radio.TxInfo{}
 	}
+	sm.txFrame.TxInfo.SubmissionID = 0 // The staging buffer proves no origin.
 	sm.txFrame.TxInfo.CsmaCaEnabled = req.CsmaCaEnabled
 	sm.csmaBackoffs = 0
 	sm.transmitRetries = 0
@@ -385,6 +404,7 @@ func (sm *SubMac) EnergyScan(channel uint8, durationMs uint16) error {
 	}
 
 	sm.state = StateEnergyScan
+	sm.epoch++
 	sm.energyScanChannel = channel
 	if hardwareScan {
 		return nil
@@ -403,10 +423,15 @@ func (sm *SubMac) EnergyScan(channel uint8, durationMs uint16) error {
 
 // SetPanID sets the radio PAN ID for frame filtering.
 func (sm *SubMac) SetPanID(panID uint16) {
+	sm.panID = panID
 	if sm.radio != nil {
 		sm.radio.SetPanID(panID)
 	}
 }
+
+// GetPanID returns the configured PAN without re-entering the upper MAC.
+// Like other SubMac state, access is serialized by the instance event loop.
+func (sm *SubMac) GetPanID() uint16 { return sm.panID }
 
 // GetShortAddress returns the short address.
 func (sm *SubMac) GetShortAddress() types.ShortAddress {
@@ -438,6 +463,9 @@ func (sm *SubMac) SetExtAddress(addr types.ExtAddress) {
 func (sm *SubMac) SetRxOnWhenIdle(rxOnWhenIdle bool) {
 	sm.rxOnWhenIdle = rxOnWhenIdle
 }
+
+// GetRxOnWhenIdle returns the configured receiver-on-when-idle mode.
+func (sm *SubMac) GetRxOnWhenIdle() bool { return sm.rxOnWhenIdle }
 
 // GetRSSI returns the current RSSI reading from the radio.
 func (sm *SubMac) GetRSSI() int8 {
@@ -504,8 +532,8 @@ func (sm *SubMac) HandleReceiveDone(frame *radio.Frame, err error) {
 }
 
 // HandleTransmitStarted is called by the radio when transmission begins.
-func (sm *SubMac) HandleTransmitStarted(_ *radio.Frame) {
-	if sm.state != StateTransmit {
+func (sm *SubMac) HandleTransmitStarted(frame *radio.Frame) {
+	if sm.state != StateTransmit || !sm.isActiveSubmission(frame) {
 		return
 	}
 	// Start ACK timeout if needed.
@@ -516,8 +544,40 @@ func (sm *SubMac) HandleTransmitStarted(_ *radio.Frame) {
 
 // HandleTransmitDone is called by the radio when transmission completes.
 func (sm *SubMac) HandleTransmitDone(frame, ackFrame *radio.Frame, err error) {
+	if sm.state != StateTransmit || !sm.isActiveSubmission(frame) {
+		return // A late completion must not retry/revive a disabled transmitter.
+	}
 	sm.stopTimer()
-	sm.handleTransmitResult(frame, ackFrame, err)
+	if len(frame.PSDU) > radio.FrameMaxSize || (ackFrame != nil && len(ackFrame.PSDU) > radio.FrameMaxSize) {
+		sm.finishTransmit(sm.activeFrame, nil, ErrInvalidState)
+		return
+	}
+	// Callback data is borrowed. Retain the actual radio-updated frame for
+	// software retries and for any deferred upper-layer completion.
+	owned := ownRadioFrame(frame)
+	sm.activeFrame = owned
+	if ackFrame != nil {
+		ackFrame = ownRadioFrame(ackFrame)
+	}
+	sm.handleTransmitResult(owned, ackFrame, err)
+}
+
+func (sm *SubMac) isActiveSubmission(frame *radio.Frame) bool {
+	return frame != nil && frame.TxInfo != nil && frame.TxInfo.SubmissionID != 0 &&
+		frame.TxInfo.SubmissionID == sm.activeID
+}
+
+// IsCurrentTransmitCompletion protects an upper-layer completion deferred after
+// SubMac has already authenticated its submission identity. New sends/disable
+// invalidate the marker. It is not a way to stamp identity onto a driver event.
+func (sm *SubMac) IsCurrentTransmitCompletion(frame *radio.Frame) bool {
+	if frame == nil || sm.completedFrame == nil {
+		return false
+	}
+	if frame.TxInfo != nil && frame.TxInfo.SubmissionID != 0 {
+		return frame.TxInfo.SubmissionID == sm.completedID
+	}
+	return frame == sm.completedFrame // Unique internal failure snapshot.
 }
 
 // HandleEnergyScanDone is called by the radio when a hardware energy
@@ -563,6 +623,24 @@ func (sm *SubMac) startCsmaBackoff() {
 
 func (sm *SubMac) beginTransmit() {
 	sm.state = StateTransmit
+	template := sm.txFrame
+	if sm.activeFrame != nil {
+		template = sm.activeFrame // Preserve radio-updated retry bytes/metadata.
+	}
+	frame := snapshotTransmitFrame(template)
+	if sm.txRequest.BeforeTransmit != nil {
+		if err := sm.txRequest.BeforeTransmit(); err != nil {
+			sm.finishTransmit(frame, nil, err)
+			return
+		}
+	}
+	id, ok := allocateSubmissionID()
+	if !ok {
+		sm.finishTransmit(frame, nil, ErrInvalidState)
+		return
+	}
+	frame.TxInfo.SubmissionID = id
+	sm.activeFrame, sm.activeID = frame, id
 
 	// Ensure radio is in receive before transmit (if radio doesn't
 	// support sleep-to-tx).
@@ -570,9 +648,9 @@ func (sm *SubMac) beginTransmit() {
 		_ = sm.radio.Receive(sm.txRequest.Channel)
 	}
 
-	if err := sm.radio.Transmit(sm.txFrame); err != nil {
+	if err := sm.radio.Transmit(frame); err != nil {
 		// Transmit failed immediately — report as channel access failure.
-		sm.handleTransmitResult(sm.txFrame, nil, ErrChannelAccessFailure)
+		sm.handleTransmitResult(frame, nil, ErrChannelAccessFailure)
 	}
 }
 
@@ -608,10 +686,20 @@ func (sm *SubMac) handleTransmitResult(frame, ackFrame *radio.Frame, err error) 
 		}
 	}
 
-	// Final result — no more retries.
+	sm.finishTransmit(frame, ackFrame, err)
+}
+
+func (sm *SubMac) finishTransmit(frame, ackFrame *radio.Frame, err error) {
 	sm.recordStatus(frame, err, false)
 	sm.state = StateReceive
 	_ = sm.radio.Receive(sm.txRequest.Channel)
+	sm.completedFrame = frame
+	sm.completedID = 0
+	if frame != nil && frame.TxInfo != nil {
+		sm.completedID = frame.TxInfo.SubmissionID
+	}
+	sm.activeFrame, sm.activeID = nil, 0
+	sm.txRequest.BeforeTransmit = nil
 
 	if sm.callbacks != nil {
 		sm.callbacks.TransmitDone(frame, ackFrame, err)
@@ -634,7 +722,7 @@ func (sm *SubMac) handleAckTimeout() {
 	}
 	// Switch radio back to receive and report no-ack.
 	_ = sm.radio.Receive(sm.txRequest.Channel)
-	sm.handleTransmitResult(sm.txFrame, nil, ErrNoAck)
+	sm.handleTransmitResult(sm.activeFrame, nil, ErrNoAck)
 }
 
 // --------------------------------------------------------------------------
@@ -687,8 +775,51 @@ func (sm *SubMac) shouldHandleAckTimeout() bool {
 
 func (sm *SubMac) scheduleTimer(delay time.Duration, fn func()) {
 	if sm.timerFn != nil {
-		sm.timerFn(delay, fn)
+		epoch, submission := sm.epoch, sm.activeID
+		sm.timerFn(delay, func() {
+			if sm.epoch == epoch && sm.activeID == submission {
+				fn()
+			}
+		})
 	}
+
+}
+
+var submissionIDs atomic.Uint64
+
+func allocateSubmissionID() (uint64, bool) {
+	for {
+		previous := submissionIDs.Load()
+		if previous == ^uint64(0) {
+			return 0, false
+		}
+		if submissionIDs.CompareAndSwap(previous, previous+1) {
+			return previous + 1, true
+		}
+	}
+}
+
+func snapshotTransmitFrame(source *radio.Frame) *radio.Frame {
+	frame := ownRadioFrame(source)
+	if frame.TxInfo == nil {
+		frame.TxInfo = &radio.TxInfo{}
+	}
+	frame.TxInfo.SubmissionID = 0
+	return frame
+}
+
+func ownRadioFrame(source *radio.Frame) *radio.Frame {
+	frame := *source
+	frame.PSDU = append([]byte(nil), source.PSDU...)
+	if source.TxInfo != nil {
+		info := *source.TxInfo
+		frame.TxInfo = &info
+	}
+	if source.RxInfo != nil {
+		rx := *source.RxInfo
+		frame.RxInfo = &rx
+	}
+	return &frame
 }
 
 func (sm *SubMac) stopTimer() {

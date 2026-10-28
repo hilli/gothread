@@ -173,6 +173,14 @@ type timer struct {
 type timerScheduler struct {
 	mu     sync.Mutex // protects timers and their cancelled flags
 	timers []*timer
+	now    func() time.Time
+}
+
+func (ts *timerScheduler) nowTime() time.Time {
+	if ts.now != nil {
+		return ts.now()
+	}
+	return time.Now()
 }
 
 // schedule adds a timer that fires after delay, calling fn.
@@ -185,7 +193,7 @@ func (ts *timerScheduler) schedule(delay time.Duration, fn func()) {
 // from firing if it has not yet been dispatched. Cancellation does not wait
 // for an already-dispatched callback. Calling cancel more than once is safe.
 func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) func() {
-	fireAt := time.Now().Add(delay)
+	fireAt := ts.nowTime().Add(delay)
 	t := &timer{fireAt: fireAt, fn: fn}
 	ts.mu.Lock()
 	// Insert in sorted order (earliest first).
@@ -200,6 +208,14 @@ func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) fun
 	return func() {
 		ts.mu.Lock()
 		t.cancelled = true
+		for i, pending := range ts.timers {
+			if pending == t {
+				copy(ts.timers[i:], ts.timers[i+1:])
+				ts.timers[len(ts.timers)-1] = nil
+				ts.timers = ts.timers[:len(ts.timers)-1]
+				break
+			}
+		}
 		ts.mu.Unlock()
 	}
 }
@@ -209,7 +225,7 @@ func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) fun
 // Called on the event loop; callbacks run outside the lock so they can
 // schedule timers or cancel timers that have not yet been dispatched.
 func (ts *timerScheduler) processExpired() int {
-	now := time.Now()
+	now := ts.nowTime()
 	fired := 0
 	for {
 		ts.mu.Lock()
@@ -236,7 +252,7 @@ func (ts *timerScheduler) nextDeadline() (time.Duration, bool) {
 	if len(ts.timers) == 0 {
 		return 0, false
 	}
-	d := time.Until(ts.timers[0].fireAt)
+	d := ts.timers[0].fireAt.Sub(ts.nowTime())
 	if d < 0 {
 		d = 0
 	}
@@ -308,8 +324,11 @@ type Instance struct {
 	notifier *notifier
 
 	// running tracks whether the event loop is active.
-	running   bool
-	runningMu sync.Mutex
+	running            bool
+	stopping           bool
+	runningMu          sync.Mutex
+	periodicTickCancel func()
+	macTaskPending     bool
 
 	// ifConfigUp tracks whether the IP6/MAC interface is enabled
 	// (equivalent to otIp6SetEnabled).
@@ -486,7 +505,9 @@ type Instance struct {
 	srpServer *srp.Server
 
 	// srpClient registers services via SRP.
-	srpClient *srp.Client
+	srpClient  *srp.Client
+	srpKeyErr  error
+	srpBinding *SRPBinding
 
 	// ephemeralKeyMgr manages ephemeral key commissioning sessions.
 	ephemeralKeyMgr *border.EphemeralKeyManager
@@ -809,7 +830,12 @@ func (inst *Instance) wireModules() {
 	// SubMac needs Callbacks at construction, Mac needs SubMac at
 	// construction. The bridge starts empty and gets populated after
 	// both are created.
-	bridge := &submacCallbackBridge{}
+	bridge := &submacCallbackBridge{
+		scheduleTransmitDone: func(fn func()) { inst.timers.schedule(0, fn) },
+		validTransmitCompletion: func(frame *radio.Frame) bool {
+			return inst.subMac.IsCurrentTransmitCompletion(frame)
+		},
+	}
 
 	inst.subMac = submac.New(submac.Config{
 		Radio:     inst.platRadio,
@@ -984,7 +1010,7 @@ func (inst *Instance) wireModules() {
 		// Update SLAAC addresses based on the new on-mesh prefixes.
 		inst.updateSlaacAddresses()
 	})
-	inst.forwarder = mesh.NewForwarder()
+	inst.forwarder = mesh.NewForwarderWithTag(uint16(inst.keyManager.GetMacFrameCounter()))
 
 	// TMF services — register handlers with the TMF agent for
 	// Address Solicit/Release (Leader), Server Data (network data
@@ -1448,6 +1474,16 @@ func (inst *Instance) wireModules() {
 	})
 	_ = inst.udpManager.AddReceiver(coapReceiver)
 
+	// A bound native client owns its exact local port, including replies from
+	// DNS port53. Keep this ahead of broad standalone protocol interceptors.
+	_ = inst.udpManager.AddReceiver(udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		if binding := inst.srpBinding; binding != nil && mi.SockPort == binding.config.Local.Port {
+			binding.receive(payload, mi)
+			return true
+		}
+		return false
+	}))
+
 	// DHCPv6 client receiver intercepts UDP messages on port 546.
 	dhcp6ClientReceiver := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
 		if mi.SockPort != dhcp6.ClientPort {
@@ -1506,18 +1542,19 @@ func (inst *Instance) wireModules() {
 // Start launches the event loop goroutine. It is an error to call Start
 // on an already-running Instance.
 func (inst *Instance) Start() error {
+	inst.runningMu.Lock()
+	defer inst.runningMu.Unlock()
+	if inst.running {
+		return errAlreadyRunning
+	}
 	if err := inst.PersistenceError(); err != nil {
 		return err
 	}
-	inst.runningMu.Lock()
-	if inst.running {
-		inst.runningMu.Unlock()
-		return errAlreadyRunning
-	}
+	inst.stopCh = make(chan struct{})
+	inst.doneCh = make(chan struct{})
 	inst.running = true
-	inst.runningMu.Unlock()
 
-	go inst.eventLoop()
+	go inst.eventLoop(inst.stopCh, inst.doneCh)
 	return nil
 }
 
@@ -1528,17 +1565,13 @@ func (inst *Instance) Stop() {
 		inst.runningMu.Unlock()
 		return
 	}
+	done := inst.doneCh
+	if !inst.stopping {
+		inst.stopping = true
+		close(inst.stopCh)
+	}
 	inst.runningMu.Unlock()
-
-	close(inst.stopCh)
-	<-inst.doneCh
-
-	inst.runningMu.Lock()
-	inst.running = false
-	// Reset channels for potential restart.
-	inst.stopCh = make(chan struct{})
-	inst.doneCh = make(chan struct{})
-	inst.runningMu.Unlock()
+	<-done
 }
 
 // --------------------------------------------------------------------------
@@ -1549,8 +1582,8 @@ func (inst *Instance) Stop() {
 // enabled so frames can be sent and received. This is the equivalent of
 // OpenThread's otIp6SetEnabled(true).
 //
-// Must be called before ThreadStart. Safe to call from any goroutine;
-// the work is posted to the event loop.
+// Must be called before ThreadStart, either before Start or on the event loop.
+// External callers of a running instance must use Do.
 func (inst *Instance) IfConfigUp() error {
 	if err := inst.PersistenceError(); err != nil {
 		return err
@@ -1582,6 +1615,9 @@ func (inst *Instance) IfConfigDown() error {
 	}
 	if inst.threadEnabled {
 		return errThreadStillRunning
+	}
+	if inst.srpBinding != nil {
+		inst.srpBinding.close(goterrors.ErrInvalidState)
 	}
 	if inst.slaacManager != nil {
 		inst.slaacManager.Disable()
@@ -1689,14 +1725,24 @@ func (inst *Instance) ThreadStop() error {
 	if !inst.threadEnabled {
 		return errAlready
 	}
+	if inst.srpBinding != nil {
+		inst.srpBinding.close(goterrors.ErrInvalidState)
+	}
 	m := inst.mleService.Mle()
 	_ = m.Disable()
+	inst.abortFragmentedTraffic()
 	inst.threadEnabled = false
 	return nil
 }
 
 // IsThreadRunning reports whether the Thread protocol is enabled.
 func (inst *Instance) IsThreadRunning() bool { return inst.threadEnabled }
+
+func (inst *Instance) abortFragmentedTraffic() {
+	if inst.forwarder != nil {
+		inst.forwarder.AbortFragments()
+	}
+}
 
 // IsRunning reports whether the event loop is active.
 func (inst *Instance) IsRunning() bool {
@@ -2272,7 +2318,10 @@ const periodicTickInterval = 1 * time.Second
 // startPeriodicTick schedules the first periodic tick. Subsequent ticks
 // are self-re-arming via handlePeriodicTick.
 func (inst *Instance) startPeriodicTick() {
-	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
+	if inst.periodicTickCancel != nil {
+		inst.periodicTickCancel()
+	}
+	inst.periodicTickCancel = inst.timers.scheduleWithCancel(periodicTickInterval, inst.handlePeriodicTick)
 }
 
 // handlePeriodicTick is called once per second from the timer scheduler.
@@ -2463,7 +2512,7 @@ func (inst *Instance) handlePeriodicTick() {
 	}
 
 	// Re-arm for the next tick.
-	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
+	inst.startPeriodicTick()
 }
 
 // applyPublisherAction applies a single PublisherAction from the
@@ -2568,13 +2617,32 @@ func (inst *Instance) sendLinkRequestToRouter(r *routing.Router) {
 
 // eventLoop is the main processing loop. It runs in a single goroutine
 // and processes tasks, timers, and notifier events cooperatively.
-func (inst *Instance) eventLoop() {
-	defer close(inst.doneCh)
+func (inst *Instance) eventLoop(stop <-chan struct{}, done chan struct{}) {
+	defer func() {
+		if inst.srpBinding != nil {
+			inst.srpBinding.close(goterrors.ErrInvalidState)
+		}
+		if inst.periodicTickCancel != nil {
+			inst.periodicTickCancel()
+		}
+		inst.runningMu.Lock()
+		inst.running = false
+		inst.stopping = false
+		close(done)
+		inst.runningMu.Unlock()
+	}()
 
 	// Start the 1-second periodic tick.
 	inst.startPeriodicTick()
 
 	for {
+		select {
+		case <-stop:
+			inst.drainTasks()
+			inst.abortFragmentedTraffic()
+			return
+		default:
+		}
 		// Determine how long to wait for the next timer.
 		var timerCh <-chan time.Time
 		if d, ok := inst.timers.nextDeadline(); ok {
@@ -2582,13 +2650,21 @@ func (inst *Instance) eventLoop() {
 		}
 
 		select {
-		case <-inst.stopCh:
+		case <-stop:
 			// Drain remaining tasks before exit.
 			inst.drainTasks()
+			inst.abortFragmentedTraffic()
 			return
 
 		case fn := <-inst.taskCh:
 			fn()
+			select {
+			case <-stop:
+				inst.drainTasks()
+				inst.abortFragmentedTraffic()
+				return
+			default:
+			}
 			// After running a task, process any timers and notifier events.
 			inst.timers.processExpired()
 			inst.notifier.process()
@@ -2604,7 +2680,9 @@ func (inst *Instance) eventLoop() {
 
 // drainTasks processes any remaining tasks in the channel.
 func (inst *Instance) drainTasks() {
-	for {
+	// Bound shutdown even if legacy PostTask producers continue posting.
+	// Do requests in the stopped generation are cancelled, not executed.
+	for remaining := len(inst.taskCh); remaining > 0; remaining-- {
 		select {
 		case fn := <-inst.taskCh:
 			fn()

@@ -1401,9 +1401,9 @@ func TestMessageMultipleAddresses(t *testing.T) {
 	header.UnmarshalBinary(pkt.data)
 
 	// Should have update records for:
-	// 1 PTR + 1 SRV + 1 TXT + 1 delete-all + 3 AAAA + 1 KEY = 8
-	if header.NSCount != 8 {
-		t.Errorf("expected 8 update records, got %d", header.NSCount)
+	// PTR + service delete-all + SRV + TXT + host delete-all + 3 AAAA + KEY.
+	if header.NSCount != 9 {
+		t.Errorf("expected 9 update records, got %d", header.NSCount)
 	}
 }
 
@@ -1510,9 +1510,9 @@ func TestMultipleServices(t *testing.T) {
 	var header dns.Header
 	header.UnmarshalBinary(pkt.data)
 
-	// 5 services * (PTR + SRV + TXT) + delete-all + AAAA + KEY = 18
-	if header.NSCount != 18 {
-		t.Errorf("expected 18 update records, got %d", header.NSCount)
+	// 5 * (PTR + service delete-all + SRV + TXT) + host delete-all + AAAA + KEY.
+	if header.NSCount != 23 {
+		t.Errorf("expected 23 update records, got %d", header.NSCount)
 	}
 }
 

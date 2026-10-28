@@ -5,6 +5,7 @@
 package submac
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"testing"
@@ -512,11 +513,18 @@ func TestSendPropagatesRadioMetadata(t *testing.T) {
 					if observed.Channel != 26 {
 						t.Errorf("transmit channel = %d, want request channel 26", observed.Channel)
 					}
-					if observed.TxInfo == nil || *observed.TxInfo != expected {
+					if observed.TxInfo == nil || observed.TxInfo.SubmissionID == 0 {
+						t.Fatal("radio submission has no immutable origin ID")
+					}
+					expected.SubmissionID = observed.TxInfo.SubmissionID
+					if *observed.TxInfo != expected {
 						t.Errorf("transmit metadata = %+v, want %+v", observed.TxInfo, expected)
 					}
-					if existingInfo && observed.TxInfo != original {
-						t.Error("existing TxInfo was replaced")
+					if existingInfo && frame.TxInfo != original {
+						t.Error("existing staging TxInfo was replaced")
+					}
+					if observed.TxInfo == frame.TxInfo || frame.TxInfo.SubmissionID != 0 {
+						t.Error("submission identity aliased the reusable staging metadata")
 					}
 				})
 			}
@@ -681,7 +689,7 @@ func TestCsmaRetryOnChannelAccessFailure(t *testing.T) {
 	}
 
 	// Simulate CCA failure from radio.
-	sm.HandleTransmitDone(sm.txFrame, nil, ErrChannelAccessFailure)
+	sm.HandleTransmitDone(sm.activeFrame, nil, ErrChannelAccessFailure)
 
 	// Should be in CsmaBackoff for retry #1.
 	if sm.GetState() != StateCsmaBackoff {
@@ -701,14 +709,14 @@ func TestCsmaRetryOnChannelAccessFailure(t *testing.T) {
 	}
 
 	// Another CCA failure => retry #2.
-	sm.HandleTransmitDone(sm.txFrame, nil, ErrChannelAccessFailure)
+	sm.HandleTransmitDone(sm.activeFrame, nil, ErrChannelAccessFailure)
 	if sm.GetState() != StateCsmaBackoff {
 		t.Errorf("state = %v, want CsmaBackoff (retry 2)", sm.GetState())
 	}
 
 	timer.fire()
 	// Third CCA failure — max backoffs exhausted (0,1,2 = 3 attempts, MaxCsmaBackoffs=2).
-	sm.HandleTransmitDone(sm.txFrame, nil, ErrChannelAccessFailure)
+	sm.HandleTransmitDone(sm.activeFrame, nil, ErrChannelAccessFailure)
 
 	// Now at MaxFrameRetries=0, so should complete with failure.
 	if sm.GetState() != StateReceive {
@@ -744,7 +752,7 @@ func TestFrameRetryOnNoAck(t *testing.T) {
 	}
 
 	// Simulate no-ack.
-	sm.HandleTransmitDone(sm.txFrame, nil, ErrNoAck)
+	sm.HandleTransmitDone(sm.activeFrame, nil, ErrNoAck)
 
 	// Should retry — resets CSMA and goes back to CsmaBackoff/Transmit.
 	// CsmaCaEnabled=false so it will immediately transmit.
@@ -756,7 +764,7 @@ func TestFrameRetryOnNoAck(t *testing.T) {
 	}
 
 	// Another no-ack.
-	sm.HandleTransmitDone(sm.txFrame, nil, ErrNoAck)
+	sm.HandleTransmitDone(sm.activeFrame, nil, ErrNoAck)
 	if sm.GetState() != StateTransmit {
 		t.Errorf("state = %v, want Transmit (retry 2)", sm.GetState())
 	}
@@ -765,7 +773,7 @@ func TestFrameRetryOnNoAck(t *testing.T) {
 	}
 
 	// Third no-ack — retries exhausted.
-	sm.HandleTransmitDone(sm.txFrame, nil, ErrNoAck)
+	sm.HandleTransmitDone(sm.activeFrame, nil, ErrNoAck)
 	if sm.GetState() != StateReceive {
 		t.Errorf("state = %v, want Receive (retries exhausted)", sm.GetState())
 	}
@@ -802,7 +810,7 @@ func TestFrameRetrySkippedWithHardwareCap(t *testing.T) {
 	})
 
 	// Simulate error — radio handles retries, so SubMac should not retry.
-	sm.HandleTransmitDone(sm.txFrame, nil, ErrNoAck)
+	sm.HandleTransmitDone(sm.activeFrame, nil, ErrNoAck)
 
 	if sm.GetState() != StateReceive {
 		t.Errorf("state = %v, want Receive (hardware retries)", sm.GetState())
@@ -827,7 +835,7 @@ func TestSuccessfulTransmit(t *testing.T) {
 	})
 
 	ack := &radio.Frame{PSDU: []byte{0x02, 0x00, 0x42}}
-	sm.HandleTransmitDone(sm.txFrame, ack, nil)
+	sm.HandleTransmitDone(sm.activeFrame, ack, nil)
 
 	if sm.GetState() != StateReceive {
 		t.Errorf("state = %v, want Receive", sm.GetState())
@@ -838,8 +846,9 @@ func TestSuccessfulTransmit(t *testing.T) {
 	if cb.transmitDoneErr != nil {
 		t.Errorf("TransmitDone err = %v, want nil", cb.transmitDoneErr)
 	}
-	if cb.transmitDoneAck != ack {
-		t.Error("TransmitDone should receive the ACK frame")
+	if cb.transmitDoneAck == nil || !bytes.Equal(cb.transmitDoneAck.PSDU, ack.PSDU) ||
+		cb.transmitDoneAck.TxInfo != nil {
+		t.Error("TransmitDone should receive an owned copy of the exact ACK data")
 	}
 }
 
@@ -860,7 +869,7 @@ func TestAckTimeoutSoftware(t *testing.T) {
 	})
 
 	// Simulate radio starting TX.
-	sm.HandleTransmitStarted(sm.txFrame)
+	sm.HandleTransmitStarted(sm.activeFrame)
 
 	// Timer should be scheduled for ACK timeout.
 	if timer.scheduled < 1 {
@@ -892,7 +901,7 @@ func TestAckTimeoutNotSetWithHardwareCap(t *testing.T) {
 		AckRequest: true,
 	})
 
-	sm.HandleTransmitStarted(sm.txFrame)
+	sm.HandleTransmitStarted(sm.activeFrame)
 
 	// Timer should NOT be scheduled — radio handles ACK timeout.
 	if timer.scheduled != 0 {
@@ -910,7 +919,7 @@ func TestAckTimeoutNotSetWithoutAckRequest(t *testing.T) {
 		AckRequest: false,
 	})
 
-	sm.HandleTransmitStarted(sm.txFrame)
+	sm.HandleTransmitStarted(sm.activeFrame)
 
 	// No ACK requested => no timeout.
 	if timer.scheduled != 0 {
@@ -928,10 +937,10 @@ func TestAckTimeoutIgnoredIfNotInTransmitState(t *testing.T) {
 		AckRequest: true,
 	})
 
-	sm.HandleTransmitStarted(sm.txFrame)
+	sm.HandleTransmitStarted(sm.activeFrame)
 
 	// Complete transmit successfully before timeout fires.
-	sm.HandleTransmitDone(sm.txFrame, &radio.Frame{}, nil)
+	sm.HandleTransmitDone(sm.activeFrame, &radio.Frame{}, nil)
 
 	if sm.GetState() != StateReceive {
 		t.Fatalf("state = %v, want Receive", sm.GetState())
@@ -1060,10 +1069,10 @@ func TestEnergyScanStartFailurePreservesState(t *testing.T) {
 				if err := sm.Send(TxRequest{Channel: 15}); err != nil {
 					t.Fatalf("send after failed scan: %v", err)
 				}
-				if r.transmitCount != 1 || r.transmitFrame != sm.GetTransmitFrame() {
+				if r.transmitCount != 1 || r.transmitFrame == nil || r.transmitFrame.TxInfo.SubmissionID == 0 {
 					t.Fatal("send after failed scan did not reach Radio.Transmit")
 				}
-				sm.HandleTransmitDone(sm.GetTransmitFrame(), nil, nil)
+				sm.HandleTransmitDone(sm.activeFrame, nil, nil)
 				if err := sm.EnergyScan(20, 300); err != nil {
 					t.Fatalf("subsequent scan: %v", err)
 				}
@@ -1497,17 +1506,17 @@ func TestFrameRetryResetsCsmaBackoffs(t *testing.T) {
 	timer.fire()
 
 	// Simulate a CCA failure to bump csmaBackoffs.
-	sm.HandleTransmitDone(sm.txFrame, nil, ErrChannelAccessFailure)
+	sm.HandleTransmitDone(sm.activeFrame, nil, ErrChannelAccessFailure)
 	// csmaBackoffs should be 1.
 	timer.fire()
 
 	// Another CCA failure.
-	sm.HandleTransmitDone(sm.txFrame, nil, ErrChannelAccessFailure)
+	sm.HandleTransmitDone(sm.activeFrame, nil, ErrChannelAccessFailure)
 	// csmaBackoffs should be 2.
 	timer.fire()
 
 	// Now a no-ack error to trigger frame retry.
-	sm.HandleTransmitDone(sm.txFrame, nil, ErrNoAck)
+	sm.HandleTransmitDone(sm.activeFrame, nil, ErrNoAck)
 
 	// Frame retry should reset csmaBackoffs to 0.
 	if sm.csmaBackoffs != 0 {
@@ -1578,7 +1587,7 @@ func TestTransmitDoneWithNilCallbacks(t *testing.T) {
 	})
 
 	// Should not panic with nil callbacks.
-	sm.HandleTransmitDone(sm.txFrame, nil, nil)
+	sm.HandleTransmitDone(sm.activeFrame, nil, nil)
 
 	if sm.GetState() != StateReceive {
 		t.Errorf("state = %v, want Receive", sm.GetState())

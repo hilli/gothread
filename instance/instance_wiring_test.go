@@ -11,8 +11,10 @@ import (
 	"time"
 
 	borderinfra "github.com/hilli/gothread/border"
+	"github.com/hilli/gothread/checksum"
 	cnotifier "github.com/hilli/gothread/common/notifier"
 	"github.com/hilli/gothread/encoding"
+	goterrors "github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/mac"
 	"github.com/hilli/gothread/mac/filter"
 	macframe "github.com/hilli/gothread/mac/frame"
@@ -1766,13 +1768,8 @@ func build6LoWPANFrameInlineUDP(srcIP, dstIP ip6.Address, srcPort, dstPort uint1
 	d = append(d, srcIP[:]...) // 16 bytes source.
 	d = append(d, dstIP[:]...) // 16 bytes destination.
 	// 8-byte UDP header: src port, dst port, length, checksum (all big-endian)
-	udpLen := uint16(8 + len(payload))
-	d = append(d,
-		byte(srcPort>>8), byte(srcPort),
-		byte(dstPort>>8), byte(dstPort),
-		byte(udpLen>>8), byte(udpLen),
-		0x00, 0x00, // Checksum.
-	)
+	header := fixtureUDPHeader(srcIP, dstIP, srcPort, dstPort, payload)
+	d = append(d, header[:]...)
 	d = append(d, payload...)
 	return d
 }
@@ -1788,14 +1785,30 @@ func build6LoWPANFrameNHCUDP(srcIP, dstIP ip6.Address, srcPort, dstPort uint16, 
 	d = append(d, 0x00, 0x00, 0x00, 0x00, 0x40) // HL = 64  (no NH byte since compressed)
 	d = append(d, srcIP[:]...)                  // 16 bytes source.
 	d = append(d, dstIP[:]...)                  // 16 bytes destination.
-	d = append(d,
-		0xF0, // NHC UDP: PP=00 (both ports full), C=0 (checksum inline).
-		byte(srcPort>>8), byte(srcPort),
-		byte(dstPort>>8), byte(dstPort),
-		0x00, 0x00, // Checksum.
-	)
+	header := fixtureUDPHeader(srcIP, dstIP, srcPort, dstPort, payload)
+	d = append(d, 0xF0)
+	d = append(d, header[:4]...)
+	d = append(d, header[6:]...)
 	d = append(d, payload...)
 	return d
+}
+
+func fixtureUDPHeader(srcIP, dstIP ip6.Address, srcPort, dstPort uint16, payload []byte) [8]byte {
+	var header [8]byte
+	encoding.BigEndianWriteUint16(srcPort, header[:2])
+	encoding.BigEndianWriteUint16(dstPort, header[2:4])
+	encoding.BigEndianWriteUint16(uint16(8+len(payload)), header[4:6])
+	var sum checksum.Checksum
+	sum.AddData(srcIP[:])
+	sum.AddData(dstIP[:])
+	sum.AddUint16(0)
+	sum.AddUint16(uint16(8 + len(payload)))
+	sum.AddUint16(0)
+	sum.AddUint16(uint16(ip6.ProtoUDP))
+	sum.AddData(header[:])
+	sum.AddData(payload)
+	encoding.BigEndianWriteUint16(sum.Finalize(), header[6:8])
+	return header
 }
 
 func TestFullRxPath_InlineUDP_ToSocket(t *testing.T) {
@@ -3116,12 +3129,14 @@ func TestFullRxPath_FragmentReassembly_ToSocket(t *testing.T) {
 		appData[i] = byte(i)
 	}
 
-	// Build the complete IPHC+inline-UDP datagram (what would be sent unfragmented).
-	datagram := build6LoWPANFrameInlineUDP(srcIP, dstIP, 4444, 5683, appData)
-
-	// Fragment with a small fragment size. Fragment payload sizes must be
-	// multiples of 8 for correct offset encoding.
-	fragmentPayloadSize := 56 // bytes of datagram per fragment
+	// Fragment ORIGINAL IPv6 bytes. The old compressed-buffer fixture encoded
+	// the wrong datagram_size and offsets and was not an RFC 4944 wire packet.
+	ipv6 := ip6.NewHeader(srcIP, dstIP, ip6.ProtoUDP, 64, uint16(8+len(appData)))
+	header := ipv6.Bytes()
+	udpHeader := fixtureUDPHeader(srcIP, dstIP, 4444, 5683, appData)
+	datagram := append(header[:], udpHeader[:]...)
+	datagram = append(datagram, appData...)
+	fragmentPayloadSize := 56 // Entire adaptation payload, including FRAG header.
 	fragments, _, err := inst.forwarder.FragmentMessage(datagram, fragmentPayloadSize)
 	if err != nil {
 		t.Fatalf("FragmentMessage: %v", err)
@@ -3132,27 +3147,22 @@ func TestFullRxPath_FragmentReassembly_ToSocket(t *testing.T) {
 
 	// Source extended address for MAC frame construction.
 	srcExt := types.ExtAddress{0x00, 0x00, 0x5e, 0xef, 0x10, 0x22, 0x11, 0x00}
-
-	// Feed each fragment through HandleReceivedFrame wrapped in a proper
-	// 802.15.4 data frame. The MAC header provides a consistent source
-	// address so the forwarder's reassembly key is stable across fragments.
-	// Frame layout: FCF(2) + Seq(1) + SrcPanID(2) + SrcExtAddr(8) + payload + FCS(2).
-	fcf := uint16(macframe.FcfFrameData | macframe.FcfSrcAddrExt | macframe.FcfFrameVersion2006)
+	dstExt := types.ExtAddress{0x00, 0x00, 0x5e, 0xef, 0x10, 0xaa, 0xbb, 0xcc}
+	inst.keyManager.SetNetworkKey(threadkey.NetworkKey{0x42})
+	inst.mac.SetExtAddress(dstExt)
 	for i, frag := range fragments {
-		psdu := make([]byte, 0, 15+len(frag))
-		// FCF LE
-		// Sequence number
-		// Source PAN ID
-		psdu = append(psdu, byte(fcf), byte(fcf>>8), byte(i), 0xCE, 0xFA)
-		// Extended address in frame is reversed byte order.
-		for j := 7; j >= 0; j-- {
-			psdu = append(psdu, srcExt[j])
+		ctx := &mesh.FrameContext{
+			SrcExtAddr: srcExt, DstExtAddr: dstExt, PanId: 0xface,
+			SecurityEnabled: true, SequenceNumber: uint8(i),
+			Security: mesh.SecurityMaterial{
+				Key:       [16]byte(inst.keyManager.GetCurrentMacKey()),
+				KeyIdMode: 1, FrameCounter: uint32(i),
+			},
 		}
-		// 6LoWPAN fragment payload
-		// FCS placeholder
-		psdu = append(psdu, frag...)
-		psdu = append(psdu, 0x00, 0x00)
-
+		psdu, err := mesh.NewFramer().BuildDataFrame(ctx, frag)
+		if err != nil {
+			t.Fatal(err)
+		}
 		frame := &radio.Frame{PSDU: psdu, Channel: 15}
 		inst.HandleReceivedFrame(frame)
 	}
@@ -5626,10 +5636,10 @@ func TestSendUDP_NilForwarder(t *testing.T) {
 	inst := New(Config{})
 	inst.forwarder = nil
 
-	// sendUDP with nil forwarder should return nil (no panic).
+	// A missing outbound path must not look like successful admission.
 	err := inst.sendUDP([]byte{0x01}, [16]byte{}, 1234, [16]byte{}, 5678)
-	if err != nil {
-		t.Errorf("sendUDP() with nil forwarder = %v, want nil", err)
+	if err != goterrors.ErrInvalidState {
+		t.Errorf("sendUDP() with nil forwarder = %v, want ErrInvalidState", err)
 	}
 }
 
