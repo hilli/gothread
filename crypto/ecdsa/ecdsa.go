@@ -5,10 +5,12 @@
 package ecdsa
 
 import (
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
+	"io"
 	"math/big"
 )
 
@@ -41,6 +43,52 @@ func GenerateKeyPair() (*KeyPair, error) {
 	return &KeyPair{key: key}, nil
 }
 
+// GenerateKeyPairWithReader uses only the supplied entropy source. Rejection
+// sampling is bounded so a broken source cannot loop forever. Production readers
+// must provide cryptographic-quality independent bytes; success cannot prove
+// that physical precondition.
+func GenerateKeyPairWithReader(reader io.Reader) (*KeyPair, error) {
+	if reader == nil {
+		return nil, errors.New("ecdsa: missing entropy reader")
+	}
+	var scalar [MpiSize]byte
+	for range 128 {
+		if _, err := io.ReadFull(reader, scalar[:]); err != nil {
+			return nil, err
+		}
+		key, err := NewKeyPairFromScalar(scalar[:])
+		if err == nil {
+			return key, nil
+		}
+	}
+	return nil, errors.New("ecdsa: invalid entropy samples")
+}
+
+// NewKeyPairFromScalar validates and imports the canonical 32-byte P-256 secret.
+func NewKeyPairFromScalar(scalar []byte) (*KeyPair, error) {
+	if len(scalar) != MpiSize {
+		return nil, errors.New("ecdsa: invalid private scalar length")
+	}
+	private, err := ecdh.P256().NewPrivateKey(scalar)
+	if err != nil {
+		return nil, errors.New("ecdsa: invalid private scalar")
+	}
+	public := private.PublicKey().Bytes()
+	return &KeyPair{key: &ecdsa.PrivateKey{
+		PublicKey: ecdsa.PublicKey{Curve: elliptic.P256(),
+			X: new(big.Int).SetBytes(public[1:33]), Y: new(big.Int).SetBytes(public[33:])},
+		D: new(big.Int).SetBytes(scalar),
+	}}, nil
+}
+
+// PrivateScalar exports secret bytes for an access-controlled durable backend.
+// Callers must never log the returned value or expose it as a status field.
+func (kp *KeyPair) PrivateScalar() [MpiSize]byte {
+	var scalar [MpiSize]byte
+	kp.key.D.FillBytes(scalar[:])
+	return scalar
+}
+
 // NewKeyPairFromPrivateKey creates a KeyPair from an existing *ecdsa.PrivateKey.
 // The key must be on the P-256 curve.
 func NewKeyPairFromPrivateKey(key *ecdsa.PrivateKey) (*KeyPair, error) {
@@ -63,7 +111,16 @@ func (kp *KeyPair) GetPublicKey() PublicKey {
 
 // Sign signs a SHA-256 hash (must be 32 bytes) and returns the signature.
 func (kp *KeyPair) Sign(hash [32]byte) (Signature, error) {
-	r, s, err := ecdsa.Sign(rand.Reader, kp.key, hash[:])
+	return kp.SignWithReader(hash, rand.Reader)
+}
+
+// SignWithReader signs using the caller's qualified entropy source, without
+// replacing global crypto/rand state. Reader errors are returned unchanged.
+func (kp *KeyPair) SignWithReader(hash [32]byte, reader io.Reader) (Signature, error) {
+	if reader == nil {
+		return Signature{}, errors.New("ecdsa: missing entropy reader")
+	}
+	r, s, err := ecdsa.Sign(reader, kp.key, hash[:])
 	if err != nil {
 		return Signature{}, err
 	}

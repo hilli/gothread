@@ -56,6 +56,12 @@ func newFragmentEndpoint(t *testing.T, identity, peer types.ExtAddress, rloc, pe
 }
 
 func newFragmentEndpointCaps(t *testing.T, identity, peer types.ExtAddress, rloc, peerRLOC uint16, settings platform.Settings, caps radio.Caps) *fragmentEndpoint {
+	return newFragmentEndpointEntropy(t, identity, peer, rloc, peerRLOC, settings, caps, nil)
+}
+
+func newFragmentEndpointEntropy(t *testing.T, identity, peer types.ExtAddress, rloc, peerRLOC uint16,
+	settings platform.Settings, caps radio.Caps, entropy platform.Entropy,
+) *fragmentEndpoint {
 	t.Helper()
 	driver := &fragmentRadio{
 		boundedUDPRadio: &boundedUDPRadio{captures: make(chan udpRadioCapture, 2), settings: settings},
@@ -63,7 +69,7 @@ func newFragmentEndpointCaps(t *testing.T, identity, peer types.ExtAddress, rloc
 		caps:            caps,
 	}
 	node := &fragmentEndpoint{
-		inst: New(Config{Radio: driver, Settings: settings}), driver: driver,
+		inst: New(Config{Radio: driver, Settings: settings, Entropy: entropy}), driver: driver,
 		incoming: make(chan fragmentDelivery, 2),
 	}
 	if err := node.inst.Start(); err != nil {

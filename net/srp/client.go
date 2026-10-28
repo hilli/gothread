@@ -14,6 +14,7 @@ package srp
 
 import (
 	"encoding/binary"
+	"io"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -351,6 +352,20 @@ func WithKeyPair(kp *ecdsa.KeyPair) Option {
 	}
 }
 
+// WithEntropy directs key creation and every SIG(0) signature to the provided
+// qualified source. Standalone callers omitting this keep the existing default.
+func WithEntropy(reader io.Reader) Option {
+	return func(c *Client) { c.entropy = reader }
+}
+
+// WithSingleServiceUpdates limits each UPDATE to one pending service. The
+// remaining services stay pending until their own actual response. This bounds
+// native UDP datagrams without truncating registrations; standalone defaults
+// remain unchanged.
+func WithSingleServiceUpdates() Option {
+	return func(c *Client) { c.singleServiceUpdates = true }
+}
+
 // -------------------------------------------------------
 // msgInfo — internal state for DNS Update message construction
 // -------------------------------------------------------
@@ -378,10 +393,12 @@ type Client struct {
 	hostInfo HostInfo
 	services []*Service
 
-	domainName string
-	callback   Callback
-	sender     UDPSender
-	keyPair    *ecdsa.KeyPair
+	domainName           string
+	callback             Callback
+	sender               UDPSender
+	keyPair              *ecdsa.KeyPair
+	entropy              io.Reader
+	singleServiceUpdates bool
 
 	curMessageID         uint16
 	attemptEpoch         uint64
@@ -448,7 +465,13 @@ func (c *Client) Start(serverAddr ip6.SockAddr) error {
 	}
 
 	if c.keyPair == nil {
-		kp, err := ecdsa.GenerateKeyPair()
+		var kp *ecdsa.KeyPair
+		var err error
+		if c.entropy != nil {
+			kp, err = ecdsa.GenerateKeyPairWithReader(c.entropy)
+		} else {
+			kp, err = ecdsa.GenerateKeyPair()
+		}
 		if err != nil {
 			return err
 		}
@@ -546,6 +569,35 @@ func (c *Client) GetServices() []*Service {
 	out := make([]*Service, len(c.services))
 	copy(out, c.services)
 	return out
+}
+
+// ServiceUpdateSize measures a fresh registration using the actual encoder,
+// current host configuration and public KEY. It has no side effects on the
+// running client, signing entropy, timers, sender, or service argument. The
+// fixed-size SIG(0) placeholder has exactly the final signature's wire size.
+//
+//nolint:gocritic // The detached value is intentionally independent of live service ownership.
+func (c *Client) ServiceUpdateSize(service Service) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keyPair == nil {
+		return 0, errors.ErrInvalidState
+	}
+	service.State = ItemStateToAdd
+	host := c.hostInfo
+	host.Addresses = append([]ip6.Address(nil), host.Addresses...)
+	host.State = ItemStateToAdd
+	snapshot := &Client{
+		keyPair: c.keyPair, domainName: c.domainName,
+		hostInfo: host, services: []*Service{&service},
+		defaultLease: c.defaultLease, defaultKeyLease: c.defaultKeyLease,
+		ttl: c.ttl, singleServiceUpdates: true,
+	}
+	info := &msgInfo{}
+	if err := snapshot.encodeUpdateMessage(info, false); err != nil {
+		return 0, err
+	}
+	return len(info.buf), nil
 }
 
 // GetServerAddress returns the server address.
@@ -664,7 +716,7 @@ func (c *Client) AddService(svc *Service) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.state == StateUpdating {
+	if c.state == StateUpdating || c.hostInfo.State == ItemStateToRemove || c.hostInfo.State == ItemStateRemoving {
 		return errors.ErrInvalidState
 	}
 
@@ -1109,10 +1161,17 @@ func (c *Client) handleSendFailure() {
 
 // prepareUpdateMessage builds the DNS Update message in info.buf.
 func (c *Client) prepareUpdateMessage(info *msgInfo) error {
+	return c.encodeUpdateMessage(info, true)
+}
+
+func (c *Client) encodeUpdateMessage(info *msgInfo, sign bool) error {
 	// --- Header ---
 	header := dns.NewUpdateHeader()
 	header.MessageID = c.curMessageID
 	header.SetZoneCount(1)
+	// SIG(0) covers the header before adding SIG itself: the OPT already
+	// counts as one additional record (RFC2931 section 3.1).
+	header.ARCount = 1
 	headerBytes := header.MarshalBinary()
 	info.buf = append(info.buf, headerBytes[:]...)
 
@@ -1163,9 +1222,11 @@ func (c *Client) prepareUpdateMessage(info *msgInfo) error {
 	}
 
 	// SIG(0) record — second pass: compute and overwrite signature.
-	err = c.appendSignature(info, true)
-	if err != nil {
-		return err
+	if sign {
+		err = c.appendSignature(info, true)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Set AR count to 2 (OPT + SIG).
@@ -1177,13 +1238,26 @@ func (c *Client) prepareUpdateMessage(info *msgInfo) error {
 // appendServiceInstructions appends PTR, SRV, and TXT records for
 // all services that need updating.
 func (c *Client) appendServiceInstructions(info *msgInfo) error {
+	info.singleServiceMode = c.singleServiceUpdates
 	for _, svc := range c.services {
 		svc.appendedInMessage = false
+	}
+	if c.hostInfo.State == ItemStateToRemove || c.hostInfo.State == ItemStateRemoving {
+		// Host lease zero withdraws all its services. The ACK covers every
+		// owned service even though no individual service record is needed.
+		for _, svc := range c.services {
+			svc.appendedInMessage = true
+		}
+		return nil
 	}
 
 	for _, svc := range c.services {
 		if !c.canAppendService(svc) {
 			continue
+		}
+		if c.singleServiceUpdates {
+			c.lease = c.determineLeaseInterval(svc.Lease, c.defaultLease)
+			c.keyLease = c.determineLeaseInterval(svc.KeyLease, c.defaultKeyLease)
 		}
 
 		// Try to append the service. If the message gets too large,
@@ -1215,6 +1289,9 @@ func (c *Client) appendServiceInstructions(info *msgInfo) error {
 		}
 
 		svc.appendedInMessage = true
+		if c.singleServiceUpdates {
+			break
+		}
 	}
 
 	return nil
@@ -1246,7 +1323,19 @@ func (c *Client) appendServiceInstruction(svc *Service, info *msgInfo) error {
 	serviceNameOffset := uint16(len(info.buf))
 	info.buf = appendServiceName(info.buf, svc.Name, info.domainNameOffset)
 
-	// Instance name full: "InstanceName.ServiceName"
+	// PTR owner is followed immediately by the RR header, then its RDATA.
+	var ptr dns.ResourceRecord
+	ptr.Init(dns.RRTypePtr, dns.ClassInternet)
+	ptr.TTL = c.determineTTL()
+	if isRemove {
+		ptr.Class = dns.ClassNone
+		ptr.TTL = 0
+	}
+	ptrOffset := len(info.buf)
+	ptrBytes := ptr.MarshalBinary()
+	info.buf = append(info.buf, ptrBytes[:]...)
+
+	// Instance name full: "InstanceName.ServiceName", in the PTR RDATA.
 	instanceNameOffset := uint16(len(info.buf))
 	var err error
 	info.buf, err = dns.AppendLabel(info.buf, svc.InstanceName)
@@ -1258,34 +1347,8 @@ func (c *Client) appendServiceInstruction(svc *Service, info *msgInfo) error {
 		return err
 	}
 
-	if !isRemove {
-		// PTR record: service name -> instance name
-		var rr dns.ResourceRecord
-		rr.Init(dns.RRTypePtr, dns.ClassInternet)
-		rr.TTL = c.determineTTL()
-		rrOffset := len(info.buf)
-
-		// Owner name: compress to serviceNameOffset
-		info.buf, err = dns.AppendPointerLabel(info.buf, serviceNameOffset)
-		if err != nil {
-			return err
-		}
-
-		rrBytes := rr.MarshalBinary()
-		info.buf = append(info.buf, rrBytes[:]...)
-
-		// RDATA: pointer to instance name
-		info.buf, err = dns.AppendPointerLabel(info.buf, instanceNameOffset)
-		if err != nil {
-			return err
-		}
-
-		// Update RDLength.
-		rdataStart := rrOffset + 2 + int(dns.ResourceRecordSize) // 2 for owner pointer
-		rdataLen := uint16(len(info.buf) - rdataStart)
-		binary.BigEndian.PutUint16(info.buf[rdataStart-2:], rdataLen) // RDLength is at rrOffset+2+8
-		info.recordCount++
-	}
+	binary.BigEndian.PutUint16(info.buf[ptrOffset+8:], uint16(len(info.buf)-int(instanceNameOffset)))
+	info.recordCount++
 
 	if !isRemove {
 		// --- Sub-type PTR records ---
@@ -1321,6 +1384,19 @@ func (c *Client) appendServiceInstruction(svc *Service, info *msgInfo) error {
 			binary.BigEndian.PutUint16(info.buf[rrOffset+8:], rdataLen)
 			info.recordCount++
 		}
+	}
+
+	if !isRemove {
+		// RFC9665 service adds clear existing RRsets before SRV/TXT adds.
+		info.buf, err = dns.AppendPointerLabel(info.buf, instanceNameOffset)
+		if err != nil {
+			return err
+		}
+		var clearRecord dns.ResourceRecord
+		clearRecord.Init(dns.RRTypeAny, dns.ClassAny)
+		clearBytes := clearRecord.MarshalBinary()
+		info.buf = append(info.buf, clearBytes[:]...)
+		info.recordCount++
 	}
 
 	// --- SRV record ---
@@ -1550,6 +1626,9 @@ func (c *Client) appendUpdateLeaseOptRecord(info *msgInfo) error {
 	// Lease option.
 	leaseInterval := c.determineLeaseInterval(c.lease, c.defaultLease)
 	keyLeaseInterval := c.determineLeaseInterval(c.keyLease, c.defaultKeyLease)
+	if c.hostInfo.State == ItemStateToRemove || c.hostInfo.State == ItemStateRemoving {
+		leaseInterval = 0
+	}
 
 	if c.shouldRemoveKeyLease {
 		keyLeaseInterval = 0
@@ -1652,6 +1731,11 @@ func (c *Client) appendSignature(info *msgInfo, overwrite bool) error {
 	if err != nil {
 		return err
 	}
+	canonical, err := canonicalSignerName(sigRData, dns.SigRecordFixedSize)
+	if err != nil {
+		return err
+	}
+	sigRData = append(sigRData[:dns.SigRecordFixedSize], canonical...)
 
 	// Hash: SHA-256(SIG RDATA || message[0:sigRecordOffset])
 	var h sha256.Sha256
@@ -1662,7 +1746,12 @@ func (c *Client) appendSignature(info *msgInfo, overwrite bool) error {
 	h.Finish(&hash)
 
 	// Sign the hash.
-	signature, err := c.keyPair.Sign(hash)
+	var signature ecdsa.Signature
+	if c.entropy != nil {
+		signature, err = c.keyPair.SignWithReader(hash, c.entropy)
+	} else {
+		signature, err = c.keyPair.Sign(hash)
+	}
 	if err != nil {
 		return err
 	}

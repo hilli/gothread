@@ -173,6 +173,14 @@ type timer struct {
 type timerScheduler struct {
 	mu     sync.Mutex // protects timers and their cancelled flags
 	timers []*timer
+	now    func() time.Time
+}
+
+func (ts *timerScheduler) nowTime() time.Time {
+	if ts.now != nil {
+		return ts.now()
+	}
+	return time.Now()
 }
 
 // schedule adds a timer that fires after delay, calling fn.
@@ -185,7 +193,7 @@ func (ts *timerScheduler) schedule(delay time.Duration, fn func()) {
 // from firing if it has not yet been dispatched. Cancellation does not wait
 // for an already-dispatched callback. Calling cancel more than once is safe.
 func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) func() {
-	fireAt := time.Now().Add(delay)
+	fireAt := ts.nowTime().Add(delay)
 	t := &timer{fireAt: fireAt, fn: fn}
 	ts.mu.Lock()
 	// Insert in sorted order (earliest first).
@@ -200,6 +208,14 @@ func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) fun
 	return func() {
 		ts.mu.Lock()
 		t.cancelled = true
+		for i, pending := range ts.timers {
+			if pending == t {
+				copy(ts.timers[i:], ts.timers[i+1:])
+				ts.timers[len(ts.timers)-1] = nil
+				ts.timers = ts.timers[:len(ts.timers)-1]
+				break
+			}
+		}
 		ts.mu.Unlock()
 	}
 }
@@ -209,7 +225,7 @@ func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) fun
 // Called on the event loop; callbacks run outside the lock so they can
 // schedule timers or cancel timers that have not yet been dispatched.
 func (ts *timerScheduler) processExpired() int {
-	now := time.Now()
+	now := ts.nowTime()
 	fired := 0
 	for {
 		ts.mu.Lock()
@@ -236,7 +252,7 @@ func (ts *timerScheduler) nextDeadline() (time.Duration, bool) {
 	if len(ts.timers) == 0 {
 		return 0, false
 	}
-	d := time.Until(ts.timers[0].fireAt)
+	d := ts.timers[0].fireAt.Sub(ts.nowTime())
 	if d < 0 {
 		d = 0
 	}
@@ -489,7 +505,9 @@ type Instance struct {
 	srpServer *srp.Server
 
 	// srpClient registers services via SRP.
-	srpClient *srp.Client
+	srpClient  *srp.Client
+	srpKeyErr  error
+	srpBinding *SRPBinding
 
 	// ephemeralKeyMgr manages ephemeral key commissioning sessions.
 	ephemeralKeyMgr *border.EphemeralKeyManager
@@ -1456,6 +1474,16 @@ func (inst *Instance) wireModules() {
 	})
 	_ = inst.udpManager.AddReceiver(coapReceiver)
 
+	// A bound native client owns its exact local port, including replies from
+	// DNS port53. Keep this ahead of broad standalone protocol interceptors.
+	_ = inst.udpManager.AddReceiver(udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		if binding := inst.srpBinding; binding != nil && mi.SockPort == binding.config.Local.Port {
+			binding.receive(payload, mi)
+			return true
+		}
+		return false
+	}))
+
 	// DHCPv6 client receiver intercepts UDP messages on port 546.
 	dhcp6ClientReceiver := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
 		if mi.SockPort != dhcp6.ClientPort {
@@ -1588,6 +1616,9 @@ func (inst *Instance) IfConfigDown() error {
 	if inst.threadEnabled {
 		return errThreadStillRunning
 	}
+	if inst.srpBinding != nil {
+		inst.srpBinding.close(goterrors.ErrInvalidState)
+	}
 	if inst.slaacManager != nil {
 		inst.slaacManager.Disable()
 	}
@@ -1693,6 +1724,9 @@ func (inst *Instance) applyActiveDataset() error {
 func (inst *Instance) ThreadStop() error {
 	if !inst.threadEnabled {
 		return errAlready
+	}
+	if inst.srpBinding != nil {
+		inst.srpBinding.close(goterrors.ErrInvalidState)
 	}
 	m := inst.mleService.Mle()
 	_ = m.Disable()
@@ -2585,6 +2619,9 @@ func (inst *Instance) sendLinkRequestToRouter(r *routing.Router) {
 // and processes tasks, timers, and notifier events cooperatively.
 func (inst *Instance) eventLoop(stop <-chan struct{}, done chan struct{}) {
 	defer func() {
+		if inst.srpBinding != nil {
+			inst.srpBinding.close(goterrors.ErrInvalidState)
+		}
 		if inst.periodicTickCancel != nil {
 			inst.periodicTickCancel()
 		}

@@ -5,6 +5,16 @@ A curated guide to the most important public types in
 
 > Not a full godoc dump — highlights key types, relationships, and signatures.
 
+**Persistent numeric-key compatibility warning:** `platform.SettingsKeyBorderAgentID`
+is corrected from the conflicting `0x000b` to canonical `0x0011`;
+`platform.SettingsKeySRPECDSAKey` is canonical `0x000b`, matching
+`common/settings`. No existing record is migrated, relocated, erased, or silently
+regenerated. Backends that used the old public BorderAgent numeric alias require
+an explicit owner-reviewed compatibility decision before enabling durable SRP.
+Unrecognized/legacy data in the SRP slot fails validation closed, not "missing."
+A recognizable key record cannot establish an unknown external record's origin
+or universal backward compatibility. Other legacy platform aliases are unchanged.
+
 ## Package Dependency Graph
 
 ```
@@ -931,10 +941,136 @@ reused. Current-message-ID matching cannot solve that protocol limitation.
 `HandleResponse` receives bytes only: this repair does **not** validate the
 network peer tuple, bind a native socket, or introduce server selection.
 
-These are library state/timer guarantees, **not operational native SRP
-publication**. Instance socket/RX/executor/key/entropy/lifecycle wiring, server
-auto-selection, DiscoveryAdvertiser, DNS-SD/mDNS proxying, routing, physical
-hardware and root/server startup remain separate unresolved integration gates.
+These library guarantees alone do not establish native SRP or DNS publication.
+The explicit Instance binding below adds the supported native socket/key/loop
+path; server selection, consumer discovery integration, DNS-SD/mDNS proxying,
+upstream routing, physical hardware and full-node startup remain separate gates.
+
+## 10. Explicit durable native SRP — `instance`
+
+```go
+type SRPConfig struct {
+    Local, Server        ip6.SockAddr
+    HostName, DomainName string
+    Addresses           []ip6.Address
+    Lease, KeyLease      uint32
+}
+func (inst *Instance) StartSRP(config SRPConfig) (*SRPBinding, error)
+func (b *SRPBinding) UpsertService(service srp.Service) (uint64, error)
+func (b *SRPBinding) WithdrawService(name, instanceName string) (uint64, error)
+func (b *SRPBinding) WithdrawHost(removeKeyLease bool) (uint64, error)
+func (b *SRPBinding) Pause() error
+func (b *SRPBinding) Resume() error
+func (b *SRPBinding) Stop() error
+func (b *SRPBinding) Notices() <-chan SRPNotice
+func (b *SRPBinding) Err() error
+```
+
+Start and mutations are **loop-only**; external callers use one `Do`, without
+waiting for responses inside it. `Notices` and terminal `Err` can be read outside
+the loop. One live binding exclusively owns its private client/socket/timer.
+Do not mix it with the legacy standalone `Instance.SrpClient()` scaffold.
+
+```go
+var binding *instance.SRPBinding
+err := inst.Do(ctx, func() error {
+    var err error
+    binding, err = inst.StartSRP(instance.SRPConfig{
+        Local: localTuple, Server: configuredServer, HostName: hostLabel,
+        Addresses: assignedAdvertisedAddresses,
+    })
+    return err
+})
+if err != nil {
+    return err
+}
+err = inst.Do(ctx, func() error {
+    _, err := binding.UpsertService(service)
+    return err
+})
+// In the application's existing outside-loop result consumer, process
+// binding.Notices(); after channel closure ALWAYS inspect binding.Err().
+```
+
+Both ports are explicit/nonzero; local port collisions and intercepted protocol
+ports fail before key/socket side effects. The source must pass the existing
+public `SendUDP` qualified direct/awake-MTD-parent checks; no private broadcast
+fallback or local UDP reinjection is used. Advertised addresses are a separate,
+explicit nonempty list of valid non-link-local Netif assignments, not inferred
+OMRs or computed RLOCs. Assignment is not proof of end-to-end routability.
+Peer/local address+port, response header and current ID are checked before owned
+bounded RX admission. The loop defers RX work until outside MAC's receive lock.
+Source/route/network prerequisites are captured and revalidated, never silently
+retargeted. There is no auto server selection.
+
+Config/service inputs and nested notice data are deep-owned. Admission nil
+means queued intent, **not an ACK**. Services have identity `(Name,InstanceName)`;
+pre-send replacements coalesce, and superseded tokens have no promised outcome.
+Mutations during an in-flight attempt return `ErrInvalidState`. The returned
+`uint64` and `SRPNotice.Revision` are binding-local admission **high-waters**,
+not per-operation completions or generations shared across handles.
+Upsert/replace also rejects pending or completed **global host withdrawal**;
+stop and start a new binding to register a host again. This is distinct from
+coalescing a queued per-service withdrawal with its replacement.
+
+`SRPNotice` has `Err error`, `Revision uint64`, `State srp.State`,
+`Host srp.HostInfo`, and `Services, RemovedServices []srp.Service`. On nil Err,
+the service slices contain **only complete immutable inputs accepted by THIS
+response**, captured before its actual send. Other retained Registered services
+are excluded. A host-only ACK may contain no service ACKs. Consumers must match
+desired full content and actual accepted/removed subset, not assume a high-water
+acknowledges all pending work. For example, after a renewal error invalidates
+whole-advertisement health, a B-only ACK cannot restore A's health.
+
+Error notices preserve typed RCODE/timeout or the original terminal send cause,
+pending state and ownership. Response failures remain retryable/open. Eight
+consecutive local build/send failures close this binding with its final cause;
+standalone client callback behavior remains unchanged. Actual server-granted
+expiry is **unknown** to this interface: requested Lease and Registered flags
+do not establish future lease liveness. Conservatively invalidate consumer
+health on errors/pause/closure until fresh matching ACKs cover the desired set.
+
+Bounds are eight services, four advertised addresses, five subtypes/service,
+512 encoded TXT bytes/service, eight notices and eight queued RX payloads,
+using the Instance's existing bounded task admission. The binding selects
+single-service UPDATEs so six services (five fabrics plus one commissionable
+with five subtypes) can be retained without requiring one oversized datagram.
+The real encoder, public KEY and fixed 64-byte SIG placeholder measure each
+service's complete signed-update size before admission: over 1232 bytes or
+other limits return explicit errors, never truncation. Sizing does not sign,
+consume entropy, submit frames, or allocate counter/tag reservations.
+Single-service requested leases use that service's values or configured
+7200/604800-second defaults. Empty DomainName uses `default.service.arpa.`.
+
+A full notice/RX/task queue fail-closes with `ErrNoBufs`, releasing socket and
+timers; buffered earlier ACKs remain readable. Always inspect Err on closure,
+even after a previous nil notice. No dropped ACK is silently treated as success.
+Pause cancels the attempt but retains port/owned data. It queues an explicit
+deep-owned `StatePaused`, nil-Err notice with empty service ACK subsets: this is
+nonterminal health invalidation, **not an ACK** or backend failure. A full queue
+still fail-closes with ErrNoBufs. Resume revalidates the original prerequisites
+and re-admits retained registrations for fresh actual single-service ACKs;
+it never silently blesses old Registered states. Consumer health remains
+unknown until fresh ACKs cover the entire desired set. Standalone Client.Pause
+retains its existing behavior. Binding Stop, ThreadStop, interface down and
+Instance.Stop cancel timers, close the port and fence old queued work.
+**Stop is local cleanup, not remote withdrawal.** Withdraw and await the actual
+matching removal ACK before shutdown, or explicitly accept remote lease expiry.
+A failed withdrawal remains pending/retryable; it is not a successful close.
+
+Durable binding requires both Settings and qualified Entropy. The existing
+canonical SRP slot `0x000b` holds one 41-byte record: `SRPK`, version1, canonical
+32-byte P-256 secret scalar, and big-endian CRC32-IEEE over the first37 bytes.
+Backend atomic durable Set must succeed **before the first signed UPDATE**;
+only genuine missing-setting errors permit generation. Corrupt/wrong-version/
+invalid-scalar/read failures never erase/regenerate. An ambiguous write failure
+latches this Instance closed; a fresh Instance may reopen a complete validated
+record. CRC detects accidental corruption, not malicious tampering. Backend
+confidentiality/access control, atomicity, physical durability and entropy
+quality are preconditions, not claims established by software fakes. Key creation
+and every SIG0 signature use the supplied Entropy reader without global RNG
+replacement. MAC/MLE durable counter reservation remains independent/unchanged.
+See the numeric namespace compatibility warning at the top of this document.
 
 ## Further Reading
 

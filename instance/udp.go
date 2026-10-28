@@ -43,54 +43,65 @@ import (
 // before its next frame/counter or delayed radio attempt rather than retargeting
 // its accepted tuple. A frame already handed to a radio cannot be retracted.
 func (inst *Instance) SendUDP(payload []byte, info ip6.MessageInfo) error {
-	if err := inst.PersistenceError(); err != nil {
+	msg, err := inst.prepareUDPMessage(payload, info)
+	if err != nil {
 		return err
+	}
+	// Forwarder owns the single transactional preparation/admission step.
+	return inst.sendViaForwarder(msg)
+}
+
+// prepareUDPMessage qualifies the exact tuple/route without submitting frames
+// or reserving counters. The SRP binding uses it before socket/key side effects.
+func (inst *Instance) prepareUDPMessage(payload []byte, info ip6.MessageInfo) (*mesh.TxMessage, error) {
+	if err := inst.PersistenceError(); err != nil {
+		return nil, err
 	}
 	inst.runningMu.Lock()
 	running := inst.running && !inst.stopping
 	inst.runningMu.Unlock()
 	if !running || !inst.ifConfigUp || !inst.threadEnabled || inst.forwarder == nil ||
 		inst.platRadio == nil || inst.mac == nil || !inst.mac.IsEnabled() || inst.subMac.GetTransmitFrame() == nil {
-		return goterrors.ErrInvalidState
+		return nil, goterrors.ErrInvalidState
 	}
 	if !inst.forwarder.IsEnabled() {
-		return mesh.ErrForwarderDisabled
+		return nil, mesh.ErrForwarderDisabled
 	}
 	if !inst.mleService.Mle().IsAttached() {
-		return goterrors.ErrDetached
+		return nil, goterrors.ErrDetached
 	}
 	if info.SockPort == 0 || info.PeerPort == 0 || info.SockAddr.IsUnspecified() ||
 		info.PeerAddr.IsUnspecified() || info.SockAddr.IsMulticast() || info.SockAddr.IsLoopback() ||
 		info.PeerAddr.IsLoopback() {
-		return goterrors.ErrInvalidArgs
+		return nil, goterrors.ErrInvalidArgs
 	}
 	if info.Ecn != ip6.EcnNotCapable || info.MulticastLoop || info.IsHostInterface ||
 		info.AllowZeroHopLimit || info.LinkInfo != nil || info.PeerAddr.IsMulticast() {
-		return goterrors.ErrNotCapable
+		return nil, goterrors.ErrNotCapable
 	}
 	if !udpUnicastAddress(info.SockAddr) {
-		return goterrors.ErrInvalidSourceAddress
+		return nil, goterrors.ErrInvalidSourceAddress
 	}
 	ext := inst.GetExtAddress()
 	if ext == (types.ExtAddress{}) || ext.IsGroup() ||
 		inst.keyManager.GetCurrentMacKey() == ([16]byte{}) {
-		return goterrors.ErrSecurity
+		return nil, goterrors.ErrSecurity
 	}
 	if !inst.hasUDPSource(info.SockAddr) {
-		return goterrors.ErrInvalidSourceAddress
+		return nil, goterrors.ErrInvalidSourceAddress
 	}
 	if info.SockAddr.IsLinkLocal() != info.PeerAddr.IsLinkLocal() || inst.hasUDPSource(info.PeerAddr) {
-		return goterrors.ErrNoRoute
+		return nil, goterrors.ErrNoRoute
 	}
 	neighbor := inst.udpNeighbor(info.PeerAddr)
 	var parentRoute *udpParentRoute
 	if neighbor == nil && !info.PeerAddr.IsLinkLocal() {
 		if !udpUnicastAddress(info.PeerAddr) || info.PeerAddr.IsIidReserved() {
-			return goterrors.ErrNoRoute
+			return nil, goterrors.ErrNoRoute
 		}
 		parent, err := inst.currentUDPParentRoute(info)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		parentRoute = &parent
 		neighbor = &routing.Neighbor{ExtAddress: parent.parentExt, RLOC16: parent.parentRLOC, Mode: inst.mleService.Mle().GetParent().Mode}
@@ -98,10 +109,10 @@ func (inst *Instance) SendUDP(payload []byte, info ip6.MessageInfo) error {
 	if neighbor == nil || !neighbor.Mode.IsRxOnWhenIdle() || neighbor.RLOC16 >= 0xfc00 ||
 		neighbor.ExtAddress == (types.ExtAddress{}) ||
 		neighbor.ExtAddress.IsGroup() || neighbor.ExtAddress == ext {
-		return goterrors.ErrNoRoute
+		return nil, goterrors.ErrNoRoute
 	}
 	if len(payload) > mesh.IPv6MTU-ip6.HeaderSize-ip6.UDPHeaderSize {
-		return goterrors.ErrNoBufs
+		return nil, goterrors.ErrNoBufs
 	}
 	msg := inst.newUDPMessage(payload, info)
 	msg.MeshDest = neighbor.RLOC16
@@ -112,7 +123,7 @@ func (inst *Instance) SendUDP(payload []byte, info ip6.MessageInfo) error {
 	msg.Metadata.DstExtAddr = neighbor.ExtAddress
 	if parentRoute != nil {
 		if parentRoute.localExt != ext || parentRoute.panID != msg.Metadata.PanId {
-			return goterrors.ErrInvalidState
+			return nil, goterrors.ErrInvalidState
 		}
 		// Preserve the final IPv6 tuple; only the MAC next hop is the parent.
 		snapshot := *parentRoute
@@ -127,8 +138,7 @@ func (inst *Instance) SendUDP(payload []byte, info ip6.MessageInfo) error {
 			return nil
 		}
 	}
-	// Forwarder owns the single transactional preparation/admission step.
-	return inst.sendViaForwarder(msg)
+	return msg, nil
 }
 
 func udpUnicastAddress(addr ip6.Address) bool {

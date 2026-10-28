@@ -239,7 +239,8 @@ func TestSettingsKeyValues(t *testing.T) {
 		{SettingsKeySRPServerInfo, 0x0008},
 		{SettingsKeySLAACIIDSecretKey, 0x0009},
 		{SettingsKeyDADInfo, 0x000a},
-		{SettingsKeyBorderAgentID, 0x000b},
+		{SettingsKeySRPECDSAKey, 0x000b},
+		{SettingsKeyBorderAgentID, 0x0011},
 	}
 	for _, tt := range tests {
 		if uint16(tt.key) != tt.want {
