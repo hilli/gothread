@@ -10,6 +10,7 @@ import (
 	"github.com/hilli/gothread/backbone"
 	"github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/net/ip6"
+	"github.com/hilli/gothread/thread/mlr"
 )
 
 // ---------------------------------------------------------------------------
@@ -238,7 +239,7 @@ func (m *MlrManager) GetEntries() []MlrEntry {
 // ---------------------------------------------------------------------------
 
 // UpdateRegistration checks all tracked multicast addresses and collects
-// those in ToRegister state for registration. Returns the list of addresses
+// the first at most15 in ToRegister state for registration. Returns the addresses
 // that should be sent in an MLR.req message. Transitions them to
 // MlrStateRegistering.
 func (m *MlrManager) UpdateRegistration() [][16]byte {
@@ -257,6 +258,9 @@ func (m *MlrManager) UpdateRegistration() [][16]byte {
 		if m.entries[i].State == MlrStateToRegister {
 			addrs = append(addrs, [16]byte(m.entries[i].Address))
 			m.entries[i].State = MlrStateRegistering
+			if len(addrs) == mlr.MaxAddresses {
+				break
+			}
 		}
 	}
 	if len(addrs) > 0 {
@@ -326,7 +330,7 @@ func (m *MlrManager) HandleMlrResponse(status uint8, failedAddresses [][16]byte)
 
 		addrKey := [16]byte(m.entries[i].Address)
 
-		if status == MlrStatusSuccess && !failedSet[addrKey] {
+		if (status == MlrStatusSuccess || len(failedAddresses) > 0) && !failedSet[addrKey] {
 			m.entries[i].State = MlrStateRegistered
 			if m.leader != nil {
 				m.entries[i].Timeout = m.leader.GetConfig().MlrTimeout

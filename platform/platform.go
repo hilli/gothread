@@ -77,6 +77,15 @@ type Entropy interface {
 	Fill(buf []byte) error
 }
 
+// EntropyHealth is required by new qualified native Thread profiles. Err is a
+// readonly, nonblocking latched health observation (for example an atomic DRBG
+// error). It must not acquire stack/MAC locks, perform I/O or invoke app work.
+// Fill must never clear Err or replace a failed generator during its lifetime.
+type EntropyHealth interface {
+	Entropy
+	Err() error
+}
+
 // --------------------------------------------------------------------------
 // Settings — non-volatile storage (settings.h)
 // --------------------------------------------------------------------------
@@ -103,8 +112,12 @@ const (
 	SettingsKeySLAACIIDSecretKey SettingsKey = 0x0009
 	// SettingsKeyDADInfo stores the duplicate address detection info.
 	SettingsKeyDADInfo SettingsKey = 0x000a
-	// SettingsKeyBorderAgentID stores the border agent identifier.
-	SettingsKeyBorderAgentID SettingsKey = 0x000b
+	// SettingsKeySRPECDSAKey stores the canonical SRP client signing-key record.
+	SettingsKeySRPECDSAKey SettingsKey = 0x000b
+	// SettingsKeyBorderAgentID stores the canonical border agent identifier.
+	// This corrects the former conflicting numeric value 0x000b. Existing
+	// persisted data is never migrated, erased, or reinterpreted automatically.
+	SettingsKeyBorderAgentID SettingsKey = 0x0011
 )
 
 // Settings provides persistent non-volatile storage for Thread settings.

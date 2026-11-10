@@ -7,6 +7,9 @@ package mle
 import (
 	"fmt"
 	"time"
+
+	goterrors "github.com/hilli/gothread/errors"
+	"github.com/hilli/gothread/net/ip6"
 )
 
 // parentRequestType controls which devices should respond to a Parent Request.
@@ -43,7 +46,8 @@ type Attacher struct {
 	dispatcher *Dispatcher
 
 	// challenge is the random challenge sent in Parent Requests.
-	challenge Challenge
+	challenge    Challenge
+	registration []ip6.Address
 
 	// candidate is the best parent candidate received so far.
 	candidate ParentCandidate
@@ -78,6 +82,24 @@ func NewAttacher(mle *Mle, dispatcher *Dispatcher) *Attacher {
 // Start begins the attach process with the given mode.
 // It resets state, generates a challenge, and arms the timer.
 func (a *Attacher) Start(mode AttachMode) error {
+	return a.startWithChallenge(mode, nil)
+}
+
+// StartWithChallenge starts attachment with caller-supplied qualified entropy.
+// Standalone Start retains its existing default entropy behavior.
+func (a *Attacher) StartWithChallenge(mode AttachMode, challenge Challenge) error {
+	return a.startWithChallenge(mode, &challenge)
+}
+
+func (a *Attacher) startWithChallenge(mode AttachMode, challenge *Challenge) error {
+	var next Challenge
+	if challenge == nil {
+		if err := a.dispatcher.GenerateChallenge(&next); err != nil {
+			return err
+		}
+	} else {
+		next = *challenge
+	}
 	if err := a.mle.StartAttach(mode); err != nil {
 		return err
 	}
@@ -85,10 +107,20 @@ func (a *Attacher) Start(mode AttachMode) error {
 	a.hasCandidate = false
 	a.parentRequestCounter = 0
 	a.attachCounter++
-	a.challenge.GenerateChallenge()
+	a.challenge = next
 
 	// Start with a small delay before sending the first Parent Request.
 	a.NextTimerDelay = AttachStartJitter
+	return nil
+}
+
+// SetAddressRegistration owns the explicitly assigned addresses to include in
+// the next Child ID Request. Nil preserves the standalone client's behavior.
+func (a *Attacher) SetAddressRegistration(addresses []ip6.Address) error {
+	if len(addresses) > 15 {
+		return fmt.Errorf("mle: address registration exceeds basic TLV capacity: %w", goterrors.ErrNoBufs)
+	}
+	a.registration = append([]ip6.Address(nil), addresses...)
 	return nil
 }
 
@@ -432,6 +464,14 @@ func (a *Attacher) sendChildIDRequest() error {
 
 	// Version.
 	msg.AppendVersionTLV(ThreadVersion)
+
+	if len(a.registration) != 0 {
+		entries := make([]AddressRegistrationEntry, len(a.registration))
+		for i, address := range a.registration {
+			entries[i].Address = address
+		}
+		msg.AppendAddressRegistrationTLV(entries)
+	}
 
 	// TLV Request: ask for Address16, NetworkData, and Route64 (FTD).
 	requestedTLVs := []uint8{TLVAddress16, TLVNetworkData, TLVRoute64}

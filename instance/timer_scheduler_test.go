@@ -23,8 +23,8 @@ func TestTimerSchedulerCallbackReschedulesAndCancels(t *testing.T) {
 		ts.schedule(-4*time.Hour, func() { order = append(order, 2) })
 		// This new zero-delay timer's deadline is after this pass's cutoff.
 		ts.schedule(0, func() { order = append(order, 4) })
-		if count := ts.count(); count != 5 {
-			t.Errorf("callback count() = %d, want 5", count)
+		if count := ts.count(); count != 4 {
+			t.Errorf("callback count() = %d, want 4 (cancelled timer released)", count)
 		}
 		if d, ok := ts.nextDeadline(); !ok || d != 0 {
 			t.Errorf("callback nextDeadline() = (%v, %v), want (0, true)", d, ok)
@@ -91,8 +91,8 @@ func TestTimerSchedulerCancelDuringDispatch(t *testing.T) {
 		cancelPending()
 		cancelPending()
 		ts.schedule(-time.Hour, func() {})
-		if count := ts.count(); count != 2 {
-			t.Errorf("count during callback = %d, want 2", count)
+		if count := ts.count(); count != 1 {
+			t.Errorf("count during callback = %d, want 1 (cancelled timer released)", count)
 		}
 		if d, ok := ts.nextDeadline(); !ok || d != 0 {
 			t.Errorf("nextDeadline during callback = (%v, %v), want (0, true)", d, ok)
@@ -212,11 +212,11 @@ func TestTimerSchedulerConcurrentCancel(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if count := ts.count(); count != 1 {
-		t.Errorf("count() = %d, want 1 (cancelled timer still queued)", count)
+	if count := ts.count(); count != 0 {
+		t.Errorf("count() = %d, want 0 (cancelled timer released)", count)
 	}
-	if d, ok := ts.nextDeadline(); !ok || d != 0 {
-		t.Errorf("cancelled nextDeadline() = (%v, %v), want (0, true)", d, ok)
+	if d, ok := ts.nextDeadline(); ok || d != 0 {
+		t.Errorf("cancelled nextDeadline() = (%v, %v), want (0, false)", d, ok)
 	}
 	if fired := ts.processExpired(); fired != 0 {
 		t.Errorf("processExpired() = %d, want 0", fired)

@@ -32,6 +32,10 @@ const SecurityHeaderSize = 10
 // SecurityTagSize is the size of the AES-CCM authentication tag (MIC) in bytes.
 const SecurityTagSize = 4
 
+// ControlHopLimit is the link-local MLE hop limit, distinct from application
+// UDP's ordinary default64. Reference MLE rejects forwarded/wrong-hop control.
+const ControlHopLimit uint8 = 255
+
 // securityControl is the fixed value of the security control byte for MLE.
 // It encodes KeyIdMode 2 (0x10) + SecurityLevel 5 (0x05) = 0x15.
 const securityControl uint8 = 0x15

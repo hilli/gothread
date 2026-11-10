@@ -2,115 +2,94 @@
 // All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Package discover implements the MLE Discover Scanner for Thread networks.
-//
-// The Discover Scanner performs an active scan for Thread networks by sending
-// MLE Discovery Requests on each channel in a channel mask and collecting
-// Discovery Responses. This is a Go port of OpenThread's DiscoverScanner
-// from src/core/thread/discover_scanner.hpp and discover_scanner.cpp.
+// Package discover implements bounded MLE discovery, not network attachment.
 package discover
 
 import (
+	"errors"
 	"sync"
+	"unicode/utf8"
 
 	goterrors "github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/meshcop"
 )
 
-// IEEE 802.15.4 channel constants for the 2.4 GHz band.
 const (
-	// ChannelMin is the lowest 802.15.4 channel (2.4 GHz band).
+	// ChannelMin and ChannelMax bound the supported 2.4GHz channel numbers.
 	ChannelMin uint16 = 11
-	// ChannelMax is the highest 802.15.4 channel (2.4 GHz band).
+	// ChannelMax is the highest supported 2.4GHz channel.
 	ChannelMax uint16 = 26
-
-	// DefaultScanDuration is the default per-channel scan duration in milliseconds.
+	// DefaultScanDuration is milliseconds per channel.
 	DefaultScanDuration uint32 = 300
-
-	// PanIDBroadcast is the broadcast PAN ID used when no specific PAN ID filter is wanted.
-	PanIDBroadcast uint16 = 0xFFFF
-
-	// MaxNetworkNameLen is the maximum length of a Thread network name.
+	// PanIDBroadcast disables the PAN filter.
+	PanIDBroadcast uint16 = 0xffff
+	// MaxNetworkNameLen is the protocol byte bound.
 	MaxNetworkNameLen = 16
+	// MaxScanResults bounds retained unique channel/PAN/responder tuples.
+	MaxScanResults = 16
 )
 
-// state represents the scanner's internal state machine.
 type state uint8
 
 const (
-	stateIdle     state = iota // not scanning
-	stateScanning              // actively scanning channels
-	stateScanDone              // all channels scanned, finishing up
+	stateIdle state = iota
+	stateScanning
+	stateScanDone
 )
 
-// ScanResult represents a discovered Thread network.
+// ScanResult describes an observed, unauthenticated network advertisement.
 type ScanResult struct {
-	// ExtPanID is the Extended PAN ID of the discovered network.
-	ExtPanID [8]byte
-
-	// NetworkName is the Thread network name (max 16 chars).
-	NetworkName string
-
-	// SteeringData is the raw steering data bytes for Joiner filtering.
-	SteeringData []byte
-
-	// PanID is the IEEE 802.15.4 PAN ID of the network.
-	PanID uint16
-
-	// JoinerUDPPort is the UDP port for Joiner communication.
+	ExtPanID      [8]byte
+	NetworkName   string
+	SteeringData  []byte
+	PanID         uint16
 	JoinerUDPPort uint16
-
-	// Channel is the IEEE 802.15.4 channel where the network was found.
-	Channel uint16
-
-	// RSSI is the received signal strength indicator in dBm.
-	RSSI int8
-
-	// LQI is the link quality indicator (0-255).
-	LQI uint8
-
-	// Version is the Thread protocol version of the responder.
-	Version uint8
-
-	// IsNative indicates whether native commissioning is enabled.
-	IsNative bool
-
-	// IsJoinable indicates whether the network allows joining
-	// (steering data is present and not empty).
-	IsJoinable bool
-
-	// ExtAddress is the responder's IEEE 802.15.4 Extended MAC address.
-	ExtAddress [8]byte
+	Channel       uint16
+	RSSI          int8
+	LQI           uint8
+	Version       uint8
+	IsNative      bool
+	IsJoinable    bool
+	ExtAddress    [8]byte
 }
 
-// ScanHandler is called for each discovered network. A nil result
-// indicates the scan is complete.
-type ScanHandler func(result *ScanResult)
+// ScanHandler receives owned results; nil means terminal, not necessarily
+// success. Legacy callers read Err for the terminal cause.
+type ScanHandler func(*ScanResult)
 
-// DiscoverySender abstracts the low-level mechanism for sending an
-// MLE Discovery Request on a specific channel.
+// ScanOutcome owns bounded results, including explicitly partial error outcomes.
+type ScanOutcome struct {
+	ID      uint64
+	Results []ScanResult
+	Err     error
+}
+
+// DiscoverySender sends a real request and reports admission failure.
 type DiscoverySender interface {
-	// SendDiscoveryRequest sends an MLE Discovery Request on the given
-	// channel with the specified PAN ID. The enableFiltering flag indicates
-	// whether the request should include Joiner filtering information.
-	SendDiscoveryRequest(channel uint16, panID uint16, enableFiltering bool) error
+	SendDiscoveryRequest(channel uint16, panID uint16, joinerFlag bool) error
 }
 
-// Timer abstracts a one-shot timer for per-channel scan durations.
+// Timer is a bounded one-shot per-channel timer.
 type Timer interface {
-	// Start begins the timer with the given delay in milliseconds.
 	Start(delayMs uint32)
-	// Stop cancels the timer if it is running.
 	Stop()
-	// IsRunning reports whether the timer is currently active.
 	IsRunning() bool
 }
 
-// Option configures a Scanner via the functional options pattern.
+// IdentityTimer preserves event identity when canceled callbacks arrive late.
+type IdentityTimer interface {
+	StartFor(delayMs uint32, id uint64)
+	StopFor(id uint64)
+}
+
+// DiscoveryCleanup releases the sender's actual radio ownership. A failure
+// retains scanner ownership until RetryCleanup succeeds.
+type DiscoveryCleanup interface{ FinishDiscovery(id uint64) error }
+
+// Option configures a scanner before use.
 type Option func(*Scanner)
 
-// WithScanDuration sets the per-channel scan duration in milliseconds.
-// The default is DefaultScanDuration (300 ms).
+// WithScanDuration sets milliseconds per channel.
 func WithScanDuration(ms uint32) Option {
 	return func(s *Scanner) {
 		if ms > 0 {
@@ -119,302 +98,386 @@ func WithScanDuration(ms uint32) Option {
 	}
 }
 
-// WithFilterExtPanID restricts scan results to networks matching the
-// given Extended PAN ID.
-func WithFilterExtPanID(extPanID [8]byte) Option {
-	return func(s *Scanner) {
-		s.filterByExtPanID = true
-		s.extPanIDFilter = extPanID
-	}
+// WithFilterExtPanID selects an advertised extended PAN ID.
+func WithFilterExtPanID(id [8]byte) Option {
+	return func(s *Scanner) { s.filterByExtPanID, s.extPanIDFilter = true, id }
 }
 
-// WithFilterIndexes enables steering data filtering using the given
-// HashBitIndexes. When enabled, Discovery Responses whose steering data
-// does not contain the filter indexes are discarded.
+// WithFilterIndexes selects steering-data Bloom filter indexes.
 func WithFilterIndexes(indexes meshcop.HashBitIndexes) Option {
-	return func(s *Scanner) {
-		s.enableFiltering = true
-		s.filterIndexes = indexes
-	}
+	return func(s *Scanner) { s.enableFiltering, s.filterIndexes = true, indexes }
 }
 
-// Scanner performs MLE Discovery scans across IEEE 802.15.4 channels
-// to find Thread networks.
+// Scanner retains at most MaxScanResults owned advertisements.
 type Scanner struct {
-	mu sync.Mutex
-
-	// Configuration.
-	channelMask  uint32 // bitmask of channels to scan
-	panID        uint16 // PAN ID filter (PanIDBroadcast = any)
-	scanDuration uint32 // per-channel scan duration in ms
-	joinerFlag   bool   // include Joiner flag in Discovery Request
-
-	// Filtering.
+	mu               sync.Mutex
+	channelMask      uint32
+	panID            uint16
+	scanDuration     uint32
+	joinerFlag       bool
 	filterByExtPanID bool
 	extPanIDFilter   [8]byte
 	enableFiltering  bool
 	filterIndexes    meshcop.HashBitIndexes
-
-	// Runtime state.
-	state          state
-	currentChannel uint16
-	results        []ScanResult
-	handler        ScanHandler
-
-	// Interfaces.
-	sender DiscoverySender
-	timer  Timer
+	state            state
+	currentChannel   uint16
+	results          []ScanResult
+	handler          ScanHandler
+	complete         func(ScanOutcome)
+	sender           DiscoverySender
+	timer            Timer
+	id               uint64
+	strict           bool
+	lastErr          error
+	cleaning         bool
 }
 
-// NewScanner creates a new Scanner with the given sender and options.
+// NewScanner binds a sender/timer; missing backends are refused at admission.
 func NewScanner(sender DiscoverySender, timer Timer, opts ...Option) *Scanner {
-	s := &Scanner{
-		sender:       sender,
-		timer:        timer,
-		scanDuration: DefaultScanDuration,
-		panID:        PanIDBroadcast,
-	}
-	for _, opt := range opts {
-		opt(s)
+	s := &Scanner{sender: sender, timer: timer, scanDuration: DefaultScanDuration, panID: PanIDBroadcast}
+	for _, option := range opts {
+		option(s)
 	}
 	return s
 }
 
-// Discover starts a Thread Discovery Scan.
-//
-// channelMask is a bitmask of 802.15.4 channels to scan (bit N set means
-// scan channel N). If channelMask is 0, all channels 11-26 are scanned.
-//
-// panID filters responses to a specific PAN ID. Use PanIDBroadcast (0xFFFF)
-// to accept any PAN ID.
-//
-// joinerFlag sets the Joiner Flag in the Discovery Request TLV.
-//
-// handler is called for each discovered network. When the scan completes,
-// handler is called with a nil result.
-//
-// Returns ErrBusy if a scan is already in progress, or ErrInvalidArgs if
-// handler is nil.
-func (s *Scanner) Discover(channelMask uint32, panID uint16, joinerFlag bool, handler ScanHandler) error {
+// Discover preserves the legacy callback signature. Initial send failure now
+// releases ownership and reports both the returned cause and terminal callback.
+func (s *Scanner) Discover(mask uint32, pan uint16, joiner bool, handler ScanHandler) error {
 	if handler == nil {
 		return goterrors.ErrInvalidArgs
 	}
+	_, err := s.start(mask, pan, joiner, handler, nil, false)
+	return err
+}
 
+// DiscoverBounded additionally checks real tuple metadata and supplies a typed
+// terminal cause exactly once. Invalid admission returns no session/callback.
+func (s *Scanner) DiscoverBounded(mask uint32, pan uint16, joiner bool, handler ScanHandler, complete func(ScanOutcome)) (uint64, error) {
+	if complete == nil {
+		return 0, goterrors.ErrInvalidArgs
+	}
+	return s.start(mask, pan, joiner, handler, complete, true)
+}
+
+func (s *Scanner) start(mask uint32, pan uint16, joiner bool, handler ScanHandler, complete func(ScanOutcome), strict bool) (uint64, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.state != stateIdle {
-		return goterrors.ErrBusy
+		s.mu.Unlock()
+		return 0, goterrors.ErrBusy
 	}
-
-	s.channelMask = channelMask
-	if s.channelMask == 0 {
-		// Default: scan all channels 11-26.
-		for ch := ChannelMin; ch <= ChannelMax; ch++ {
-			s.channelMask |= 1 << ch
-		}
+	if s.sender == nil || s.timer == nil {
+		s.mu.Unlock()
+		return 0, goterrors.ErrNotCapable
 	}
-
-	s.panID = panID
-	s.joinerFlag = joinerFlag
-	s.handler = handler
-	s.results = nil
-
-	// Find the first channel to scan.
-	ch, ok := s.nextChannel(ChannelMin - 1)
-	if !ok {
-		// No channels in the mask — immediately complete.
-		s.state = stateScanDone
-		s.finishScan()
-		return nil
+	if strict && (s.scanDuration == 0 || s.scanDuration > 1000) {
+		s.mu.Unlock()
+		return 0, goterrors.ErrInvalidArgs
 	}
-
-	s.currentChannel = ch
+	if s.id == ^uint64(0) {
+		s.mu.Unlock()
+		return 0, goterrors.ErrNoBufs
+	}
+	const channels = uint32(0x07fff800)
+	if mask == 0 {
+		mask = channels
+	}
+	if strict && (mask&^channels != 0 || mask&channels == 0) {
+		s.mu.Unlock()
+		return 0, goterrors.ErrInvalidArgs
+	}
+	if !strict {
+		mask &= channels
+	}
+	s.id++
+	id := s.id
+	s.channelMask, s.panID, s.joinerFlag = mask, pan, joiner
+	s.handler, s.complete, s.strict = handler, complete, strict
+	s.results, s.lastErr = nil, nil
+	if mask == 0 {
+		s.currentChannel = 0
+		s.mu.Unlock()
+		handler(nil)
+		return id, nil
+	}
+	s.currentChannel, _ = s.nextChannel(ChannelMin - 1)
 	s.state = stateScanning
-
-	return s.scanCurrentChannel()
+	s.mu.Unlock()
+	err := s.send(id)
+	return id, err
 }
 
-// IsScanning reports whether a scan is currently in progress.
-func (s *Scanner) IsScanning() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.state != stateIdle
-}
+// IsScanning includes failed restoration whose ownership is still retained.
+func (s *Scanner) IsScanning() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.state != stateIdle }
 
-// Stop aborts the current scan. If a handler was registered, it is called
-// with a nil result to signal completion.
-func (s *Scanner) Stop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// Identity is the current monotonic component lifetime, not network authority.
+func (s *Scanner) Identity() uint64 { s.mu.Lock(); defer s.mu.Unlock(); return s.id }
 
-	if s.state == stateIdle {
-		return
-	}
+// Err reports the last terminal cause, including initial/later sender failure.
+func (s *Scanner) Err() error { s.mu.Lock(); defer s.mu.Unlock(); return s.lastErr }
 
-	s.timer.Stop()
-	s.finishScan()
-}
-
-// HandleDiscoveryResponse processes a received Discovery Response.
-// This should be called by the MLE layer when a Discovery Response is
-// received during an active scan.
-func (s *Scanner) HandleDiscoveryResponse(result *ScanResult) {
-	if result == nil {
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.state != stateScanning {
-		return
-	}
-
-	// Apply Extended PAN ID filter.
-	if s.filterByExtPanID && result.ExtPanID != s.extPanIDFilter {
-		return
-	}
-
-	// Apply steering data filter.
-	if s.enableFiltering {
-		if len(result.SteeringData) == 0 {
-			// No steering data and filtering is enabled — drop.
-			return
-		}
-		var sd meshcop.SteeringData
-		sdLen := uint8(len(result.SteeringData))
-		if sdLen > meshcop.SteeringDataMaxLength {
-			sdLen = meshcop.SteeringDataMaxLength
-		}
-		if err := sd.InitWithData(sdLen, result.SteeringData); err != nil {
-			return
-		}
-		if !sd.ContainsIndexes(s.filterIndexes) {
-			return
-		}
-	}
-
-	// Determine joinability from steering data presence.
-	if len(result.SteeringData) > 0 {
-		var sd meshcop.SteeringData
-		sdLen := uint8(len(result.SteeringData))
-		if sdLen > meshcop.SteeringDataMaxLength {
-			sdLen = meshcop.SteeringDataMaxLength
-		}
-		if err := sd.InitWithData(sdLen, result.SteeringData); err == nil {
-			result.IsJoinable = !sd.IsEmpty()
-		}
-	}
-
-	s.results = append(s.results, *result)
-
-	// Invoke the handler for this result.
-	if s.handler != nil {
-		s.handler(result)
-	}
-}
-
-// HandleTimer is called when the per-channel scan timer fires. It advances
-// to the next channel or completes the scan.
-func (s *Scanner) HandleTimer() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.state != stateScanning {
-		return
-	}
-
-	// Try to advance to the next channel.
-	ch, ok := s.nextChannel(s.currentChannel)
-	if !ok {
-		// No more channels — scan is complete.
-		s.state = stateScanDone
-		s.finishScan()
-		return
-	}
-
-	s.currentChannel = ch
-	if err := s.scanCurrentChannel(); err != nil {
-		// If we fail to send on this channel, finish the scan.
-		s.state = stateScanDone
-		s.finishScan()
-	}
-}
-
-// HandleScanComplete is called when all channels have been scanned.
-// It resets the scanner state and invokes the handler with nil to signal
-// completion. This is an alias for the internal finishScan behavior and
-// can be called externally if needed.
-func (s *Scanner) HandleScanComplete() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.state == stateIdle {
-		return
-	}
-	s.timer.Stop()
-	s.finishScan()
-}
-
-// Results returns a copy of all scan results collected so far.
-func (s *Scanner) Results() []ScanResult {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if len(s.results) == 0 {
-		return nil
-	}
-	out := make([]ScanResult, len(s.results))
-	copy(out, s.results)
-	return out
-}
-
-// CurrentChannel returns the channel currently being scanned.
-// Returns 0 if no scan is in progress.
+// CurrentChannel is zero when no channel is actively being scanned.
 func (s *Scanner) CurrentChannel() uint16 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if s.state != stateScanning {
 		return 0
 	}
 	return s.currentChannel
 }
 
-// --- internal helpers ---
-
-// nextChannel returns the next channel to scan after afterChannel.
-// It iterates through set bits in channelMask starting from afterChannel+1.
-// Returns the channel number and true, or 0 and false if no more channels.
-func (s *Scanner) nextChannel(afterChannel uint16) (uint16, bool) {
-	for ch := afterChannel + 1; ch <= ChannelMax; ch++ {
-		if s.channelMask&(1<<ch) != 0 {
-			return ch, true
-		}
-	}
-	return 0, false
+// Results deep-copies all retained advertisement payloads.
+func (s *Scanner) Results() []ScanResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneResults(s.results)
 }
 
-// scanCurrentChannel sends a Discovery Request on the current channel
-// and starts the scan timer.
-func (s *Scanner) scanCurrentChannel() error {
-	err := s.sender.SendDiscoveryRequest(s.currentChannel, s.panID, s.enableFiltering)
-	if err != nil {
+func cloneResult(result ScanResult) ScanResult {
+	result.SteeringData = append([]byte(nil), result.SteeringData...)
+	return result
+}
+func cloneResults(results []ScanResult) []ScanResult {
+	if len(results) == 0 {
+		return nil
+	}
+	out := make([]ScanResult, len(results))
+	for i := range results {
+		out[i] = cloneResult(results[i])
+	}
+	return out
+}
+
+// Stop aborts the current legacy scan; nil callback means terminal, not success.
+func (s *Scanner) Stop() { s.Cancel(s.Identity(), goterrors.ErrAbort) }
+
+// Cancel only affects its named lifetime.
+func (s *Scanner) Cancel(id uint64, cause error) {
+	if cause == nil {
+		cause = goterrors.ErrAbort
+	}
+	s.finish(id, cause)
+}
+
+// Fail terminates the named lifetime with an actual backend/receive cause.
+func (s *Scanner) Fail(id uint64, cause error) {
+	if cause != nil {
+		s.finish(id, cause)
+	}
+}
+
+// HandleScanComplete preserves the legacy hook; typed scans cannot use it to
+// manufacture successful completion before actual channel timers.
+func (s *Scanner) HandleScanComplete() {
+	s.mu.Lock()
+	id, strict := s.id, s.strict
+	s.mu.Unlock()
+	if strict {
+		s.finish(id, goterrors.ErrAbort)
+	} else {
+		s.finish(id, nil)
+	}
+}
+
+// HandleTimer is the legacy timer hook.
+func (s *Scanner) HandleTimer() { s.HandleTimerFor(s.Identity()) }
+
+// HandleTimerFor ignores timers from superseded scans.
+func (s *Scanner) HandleTimerFor(id uint64) {
+	s.mu.Lock()
+	if id != s.id || s.state != stateScanning {
+		s.mu.Unlock()
+		return
+	}
+	channel, more := s.nextChannel(s.currentChannel)
+	if more {
+		s.currentChannel = channel
+	}
+	s.mu.Unlock()
+	if !more {
+		s.finish(id, nil)
+		return
+	}
+	_ = s.send(id) // send reports its exact cause through finish.
+}
+
+func (s *Scanner) send(id uint64) error {
+	s.mu.Lock()
+	if s.id != id || s.state != stateScanning {
+		s.mu.Unlock()
+		return goterrors.ErrAbort
+	}
+	channel, pan, joiner, duration := s.currentChannel, s.panID, s.joinerFlag, s.scanDuration
+	s.mu.Unlock()
+	if err := s.sender.SendDiscoveryRequest(channel, pan, joiner); err != nil {
+		s.finish(id, err)
 		return err
 	}
-	s.timer.Start(s.scanDuration)
+	s.mu.Lock()
+	current := s.id == id && s.state == stateScanning && s.currentChannel == channel
+	s.mu.Unlock()
+	if current {
+		if timer, ok := s.timer.(IdentityTimer); ok {
+			timer.StartFor(duration, id)
+		} else {
+			s.timer.Start(duration)
+		}
+	}
 	return nil
 }
 
-// finishScan resets the scanner to idle and invokes the handler with nil.
-// Must be called with s.mu held.
-func (s *Scanner) finishScan() {
-	s.state = stateIdle
-	handler := s.handler
-	s.handler = nil
+// HandleDiscoveryResponse is the legacy delivery hook.
+func (s *Scanner) HandleDiscoveryResponse(result *ScanResult) {
+	s.mu.Lock()
+	id, strict := s.id, s.strict
+	s.mu.Unlock()
+	if strict {
+		return
+	} // Typed native delivery must carry admitted link identity.
+	s.HandleDiscoveryResponseFor(id, result)
+}
 
+// HandleDiscoveryResponseFor binds delivery to the admitted scan identity.
+func (s *Scanner) HandleDiscoveryResponseFor(id uint64, result *ScanResult) {
+	if result == nil {
+		return
+	}
+	s.mu.Lock()
+	if id != s.id || s.state != stateScanning {
+		s.mu.Unlock()
+		return
+	}
+	if len(result.NetworkName) > MaxNetworkNameLen || !utf8.ValidString(result.NetworkName) ||
+		len(result.SteeringData) > meshcop.SteeringDataMaxLength ||
+		s.strict && (result.Channel != s.currentChannel || result.PanID == PanIDBroadcast ||
+			result.ExtAddress == ([8]byte{}) || result.ExtAddress[0]&1 != 0 || result.Version == 0 || result.Version > 15) {
+		s.mu.Unlock()
+		s.finish(id, goterrors.ErrParse)
+		return
+	}
+	if s.filterByExtPanID && result.ExtPanID != s.extPanIDFilter {
+		s.mu.Unlock()
+		return
+	}
+	if s.strict && s.panID != PanIDBroadcast && result.PanID != s.panID {
+		s.mu.Unlock()
+		return
+	}
+	owned := cloneResult(*result)
+	if len(owned.SteeringData) > 0 {
+		var data meshcop.SteeringData
+		if err := data.InitWithData(uint8(len(owned.SteeringData)), owned.SteeringData); err != nil {
+			s.mu.Unlock()
+			s.finish(id, err)
+			return
+		}
+		owned.IsJoinable = !data.IsEmpty()
+		if s.enableFiltering && !data.ContainsIndexes(s.filterIndexes) {
+			s.mu.Unlock()
+			return
+		}
+	} else if s.enableFiltering {
+		s.mu.Unlock()
+		return
+	}
+	index := -1
+	for i := range s.results {
+		other := &s.results[i]
+		if other.ExtAddress == owned.ExtAddress && other.Channel == owned.Channel && other.PanID == owned.PanID &&
+			other.ExtPanID == owned.ExtPanID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		if len(s.results) == MaxScanResults {
+			s.mu.Unlock()
+			s.finish(id, goterrors.ErrNoBufs)
+			return
+		}
+		s.results = append(s.results, owned)
+	} else {
+		s.results[index] = owned
+	}
+	handler := s.handler
+	delivery := cloneResult(owned)
+	s.mu.Unlock()
+	if handler != nil {
+		handler(&delivery)
+	}
+}
+
+func (s *Scanner) finish(id uint64, cause error) {
+	s.mu.Lock()
+	if s.id != id || s.state != stateScanning {
+		s.mu.Unlock()
+		return
+	}
+	s.state = stateScanDone
+	s.cleaning = true
+	s.mu.Unlock()
+	if timer, ok := s.timer.(IdentityTimer); ok {
+		timer.StopFor(id)
+	} else {
+		s.timer.Stop()
+	}
+	var cleanup error
+	if sender, ok := s.sender.(DiscoveryCleanup); ok {
+		cleanup = sender.FinishDiscovery(id)
+	}
+	s.mu.Lock()
+	s.lastErr = errors.Join(cause, cleanup)
+	s.cleaning = false
+	outcome := ScanOutcome{ID: id, Results: cloneResults(s.results), Err: s.lastErr}
+	handler, complete := s.handler, s.complete
+	s.handler, s.complete = nil, nil
+	if cleanup == nil {
+		s.state = stateIdle
+	}
+	s.mu.Unlock()
+	if complete != nil {
+		complete(outcome)
+	}
 	if handler != nil {
 		handler(nil)
 	}
+}
+
+// RetryCleanup never repeats terminal callbacks or discards the original cause.
+func (s *Scanner) RetryCleanup(id uint64) error {
+	s.mu.Lock()
+	if s.id != id || s.state != stateScanDone {
+		s.mu.Unlock()
+		return goterrors.ErrInvalidState
+	}
+	if s.cleaning {
+		s.mu.Unlock()
+		return goterrors.ErrBusy
+	}
+	s.cleaning = true
+	s.mu.Unlock()
+	sender, ok := s.sender.(DiscoveryCleanup)
+	if !ok {
+		s.mu.Lock()
+		s.cleaning = false
+		s.mu.Unlock()
+		return goterrors.ErrNotCapable
+	}
+	err := sender.FinishDiscovery(id)
+	s.mu.Lock()
+	s.cleaning = false
+	if s.id == id && s.state == stateScanDone && err == nil {
+		s.state = stateIdle
+	}
+	s.mu.Unlock()
+	return err
+}
+
+func (s *Scanner) nextChannel(after uint16) (uint16, bool) {
+	for channel := after + 1; channel <= ChannelMax; channel++ {
+		if s.channelMask&(1<<channel) != 0 {
+			return channel, true
+		}
+	}
+	return 0, false
 }

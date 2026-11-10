@@ -159,7 +159,9 @@ func SendLinkAccept(
 
 	if router != nil && router.State == StateLinkRequest {
 		isAcceptAndRequest = true
-		challenge.GenerateChallenge()
+		if err := dispatcher.GenerateChallenge(&challenge); err != nil {
+			return err
+		}
 		router.PendingChallenge = challenge
 	}
 

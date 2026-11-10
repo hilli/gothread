@@ -42,6 +42,9 @@ type Transport interface {
 // address, key information, and the parsed message state needed by
 // individual command handlers.
 type RxInfo struct {
+	// Set internally only when the boot-installed owner validator supplies a
+	// stable authenticated neighbor before the ordinary lookup/copy path.
+	ownerNeighbor bool
 	// SrcAddr is the source extended MAC address of the sender.
 	SrcAddr types.ExtAddress
 

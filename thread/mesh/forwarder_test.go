@@ -113,6 +113,8 @@ func TestFragmentMessage_AndReassemble(t *testing.T) {
 	for i := range payload {
 		payload[i] = byte(i)
 	}
+	payload[0] = 0x60
+	payload[4], payload[5] = 0, byte(len(payload)-40)
 
 	fragments, tag, err := fwd.FragmentMessage(payload, 80)
 	if err != nil {
@@ -569,7 +571,9 @@ func TestFragmentTagWraparound(t *testing.T) {
 	fwd.nextFragTag = 0xFFFF
 	fwd.mu.Unlock()
 
-	_, tag1, err := fwd.FragmentMessage([]byte{0x01, 0x02}, 10)
+	packet := make([]byte, 80)
+	packet[0], packet[5] = 0x60, 40
+	_, tag1, err := fwd.FragmentMessage(packet, 56)
 	if err != nil {
 		t.Fatalf("FragmentMessage error: %v", err)
 	}
@@ -577,13 +581,13 @@ func TestFragmentTagWraparound(t *testing.T) {
 		t.Errorf("tag1=%d, want 0xFFFF", tag1)
 	}
 
-	// Next tag should wrap around, skipping 0.
-	_, tag2, err := fwd.FragmentMessage([]byte{0x01, 0x02}, 10)
+	// RFC 4944 explicitly wraps to zero.
+	_, tag2, err := fwd.FragmentMessage(packet, 56)
 	if err != nil {
 		t.Fatalf("FragmentMessage error: %v", err)
 	}
-	if tag2 != 1 {
-		t.Errorf("tag2=%d, want 1 (wrapped around, skipping 0)", tag2)
+	if tag2 != 0 {
+		t.Errorf("tag2=%d, want 0 (standard wraparound)", tag2)
 	}
 }
 

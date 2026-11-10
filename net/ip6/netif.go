@@ -208,9 +208,11 @@ const (
 	// MaxExternalUnicastAddresses is the maximum number of external unicast
 	// addresses that can be added.
 	MaxExternalUnicastAddresses = 8
-	// MaxExternalMulticastAddresses is the maximum number of external
-	// multicast addresses that can be subscribed.
+	// MaxExternalMulticastAddresses is the standalone/default external
+	// multicast capacity. Explicit owned profiles may reserve more.
 	MaxExternalMulticastAddresses = 8
+	// MaxReservedExternalMulticastAddresses bounds explicit capacity growth.
+	MaxReservedExternalMulticastAddresses = 80
 )
 
 // ---------------------------------------------------------------------------
@@ -224,8 +226,9 @@ type Netif struct {
 	multicastAddresses []MulticastAddress
 
 	// External address pools (index-based; nil entries are free).
-	extUnicast   [MaxExternalUnicastAddresses]*UnicastAddress
-	extMulticast [MaxExternalMulticastAddresses]*MulticastAddress
+	extUnicast        [MaxExternalUnicastAddresses]*UnicastAddress
+	extMulticast      [MaxExternalMulticastAddresses]*MulticastAddress
+	reservedMulticast *ExternalMulticastReservation
 
 	// subscribedAllNodes tracks whether the fixed all-nodes multicast chain
 	// has been appended.
@@ -263,6 +266,7 @@ func (n *Netif) AddUnicastAddress(addr *UnicastAddress) {
 		return
 	}
 	n.unicastAddresses = append(n.unicastAddresses, *addr)
+	n.fixExtUnicastPointers()
 	n.signalUnicastAddressChange(AddressAdded, addr)
 }
 
@@ -274,7 +278,7 @@ func (n *Netif) RemoveUnicastAddress(addr *UnicastAddress) {
 		return
 	}
 	removed := n.unicastAddresses[idx]
-	n.unicastAddresses = append(n.unicastAddresses[:idx], n.unicastAddresses[idx+1:]...)
+	n.removeUnicast(idx)
 	n.signalUnicastAddressChange(AddressRemoved, &removed)
 }
 
@@ -338,6 +342,7 @@ func (n *Netif) AddExternalUnicastAddress(addr *UnicastAddress) error {
 	entry.RLOC = false
 	entry.MeshLocal = false
 	n.unicastAddresses = append(n.unicastAddresses, entry)
+	n.fixExtUnicastPointers()
 	n.extUnicast[poolIdx] = &n.unicastAddresses[len(n.unicastAddresses)-1]
 	n.signalUnicastAddressChange(AddressAdded, &n.unicastAddresses[len(n.unicastAddresses)-1])
 	return nil
@@ -358,8 +363,7 @@ func (n *Netif) RemoveExternalUnicastAddress(addr Address) error {
 
 	removed := *entry
 	n.freeExtUnicast(entry)
-	n.unicastAddresses = append(n.unicastAddresses[:idx], n.unicastAddresses[idx+1:]...)
-	n.fixExtUnicastPointers()
+	n.removeUnicast(idx)
 	n.signalUnicastAddressChange(AddressRemoved, &removed)
 	return nil
 }
@@ -407,6 +411,7 @@ func (n *Netif) SubscribeMulticast(addr Address) {
 		return
 	}
 	n.multicastAddresses = append(n.multicastAddresses, MulticastAddress{Address: addr})
+	n.fixExtMulticastPointers()
 	n.signalMulticastAddressChange(AddressAdded, addr, OriginThread)
 }
 
@@ -417,8 +422,7 @@ func (n *Netif) UnsubscribeMulticast(addr Address) {
 	if idx < 0 {
 		return
 	}
-	n.multicastAddresses = append(n.multicastAddresses[:idx], n.multicastAddresses[idx+1:]...)
-	n.fixExtMulticastPointers()
+	n.removeMulticast(idx)
 	n.signalMulticastAddressChange(AddressRemoved, addr, OriginThread)
 }
 
@@ -432,6 +436,7 @@ func (n *Netif) SubscribeAllNodesMulticast() {
 	for _, addr := range fixedAllNodesChain {
 		if !n.IsMulticastSubscribed(addr) {
 			n.multicastAddresses = append(n.multicastAddresses, MulticastAddress{Address: addr})
+			n.fixExtMulticastPointers()
 			n.signalMulticastAddressChange(AddressAdded, addr, OriginThread)
 		}
 	}
@@ -447,8 +452,7 @@ func (n *Netif) UnsubscribeAllNodesMulticast() {
 	for _, addr := range fixedAllNodesChain {
 		idx := n.findMulticastByAddress(addr)
 		if idx >= 0 {
-			n.multicastAddresses = append(n.multicastAddresses[:idx], n.multicastAddresses[idx+1:]...)
-			n.fixExtMulticastPointers()
+			n.removeMulticast(idx)
 			n.signalMulticastAddressChange(AddressRemoved, addr, OriginThread)
 		}
 	}
@@ -465,6 +469,7 @@ func (n *Netif) SubscribeAllRoutersMulticast() {
 	for _, addr := range fixedAllRoutersChain {
 		if !n.IsMulticastSubscribed(addr) {
 			n.multicastAddresses = append(n.multicastAddresses, MulticastAddress{Address: addr})
+			n.fixExtMulticastPointers()
 			n.signalMulticastAddressChange(AddressAdded, addr, OriginThread)
 		}
 	}
@@ -480,8 +485,7 @@ func (n *Netif) UnsubscribeAllRoutersMulticast() {
 	for _, addr := range fixedAllRoutersChain {
 		idx := n.findMulticastByAddress(addr)
 		if idx >= 0 {
-			n.multicastAddresses = append(n.multicastAddresses[:idx], n.multicastAddresses[idx+1:]...)
-			n.fixExtMulticastPointers()
+			n.removeMulticast(idx)
 			n.signalMulticastAddressChange(AddressRemoved, addr, OriginThread)
 		}
 	}
@@ -509,6 +513,7 @@ func (n *Netif) SubscribeExternalMulticast(addr Address) error {
 	}
 
 	n.multicastAddresses = append(n.multicastAddresses, MulticastAddress{Address: addr})
+	n.fixExtMulticastPointers()
 	n.extMulticast[poolIdx] = &n.multicastAddresses[len(n.multicastAddresses)-1]
 	n.signalMulticastAddressChange(AddressAdded, addr, OriginManual)
 	return nil
@@ -529,8 +534,7 @@ func (n *Netif) UnsubscribeExternalMulticast(addr Address) error {
 	}
 
 	n.freeExtMulticast(entry)
-	n.multicastAddresses = append(n.multicastAddresses[:idx], n.multicastAddresses[idx+1:]...)
-	n.fixExtMulticastPointers()
+	n.removeMulticast(idx)
 	n.signalMulticastAddressChange(AddressRemoved, addr, OriginManual)
 	return nil
 }
@@ -552,7 +556,8 @@ func (n *Netif) IsMulticastAddressExternal(addr Address) bool {
 	if idx < 0 {
 		return false
 	}
-	return n.isMulticastExternal(&n.multicastAddresses[idx])
+	entry := &n.multicastAddresses[idx]
+	return n.isMulticastExternal(entry) || n.reservedMulticast != nil && n.reservedMulticast.owns(entry)
 }
 
 // ---------------------------------------------------------------------------
@@ -604,8 +609,24 @@ func (n *Netif) freeExtUnicast(addr *UnicastAddress) {
 	}
 }
 
-// fixExtUnicastPointers rebuilds the external unicast pool pointers after
-// the slice has been modified (elements may have moved).
+func (n *Netif) removeUnicast(index int) {
+	// Preserve ownership before compaction overwrites the pointed-to value.
+	for i, entry := range n.extUnicast {
+		for j := index; j < len(n.unicastAddresses); j++ {
+			if entry != &n.unicastAddresses[j] {
+				continue
+			}
+			n.extUnicast[i] = nil
+			if j > index {
+				n.extUnicast[i] = &n.unicastAddresses[j-1]
+			}
+			break
+		}
+	}
+	n.unicastAddresses = append(n.unicastAddresses[:index], n.unicastAddresses[index+1:]...)
+}
+
+// fixExtUnicastPointers rebuilds pool pointers after append/reallocation.
 func (n *Netif) fixExtUnicastPointers() {
 	for i, p := range n.extUnicast {
 		if p == nil {
@@ -665,9 +686,35 @@ func (n *Netif) freeExtMulticast(addr *MulticastAddress) {
 	}
 }
 
+func (n *Netif) removeMulticast(index int) {
+	// Retarget by identity before compaction overwrites the pointed-to address.
+	retarget := func(pool []*MulticastAddress) {
+		for i, entry := range pool {
+			for j := index; j < len(n.multicastAddresses); j++ {
+				if entry != &n.multicastAddresses[j] {
+					continue
+				}
+				pool[i] = nil
+				if j > index {
+					pool[i] = &n.multicastAddresses[j-1]
+				}
+				break
+			}
+		}
+	}
+	retarget(n.extMulticast[:])
+	if n.reservedMulticast != nil {
+		retarget(n.reservedMulticast.pool)
+	}
+	n.multicastAddresses = append(n.multicastAddresses[:index], n.multicastAddresses[index+1:]...)
+}
+
 // fixExtMulticastPointers rebuilds the external multicast pool pointers after
 // the slice has been modified.
 func (n *Netif) fixExtMulticastPointers() {
+	if n.reservedMulticast != nil {
+		n.reservedMulticast.fixPointers()
+	}
 	for i, p := range n.extMulticast {
 		if p == nil {
 			continue

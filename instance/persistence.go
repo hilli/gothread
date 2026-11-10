@@ -81,6 +81,9 @@ func (s *settingsDatasetStore) DeleteDataset(dt meshcop.DatasetType) error {
 }
 
 func (inst *Instance) restorePersistence() {
+	if inst.SecurityError() != nil {
+		return
+	}
 	for _, dm := range []*meshcop.DatasetManager{
 		inst.activeDataset.DatasetManager, inst.pendingDataset.DatasetManager,
 	} {
@@ -106,10 +109,13 @@ func (inst *Instance) restorePersistence() {
 // failures. Start and interface/Thread startup return this error too.
 // Dataset mutations return their own storage errors without changing state.
 func (inst *Instance) PersistenceError() error {
-	return errors.Join(inst.restoreErr, inst.keyManager.PersistenceError())
+	return errors.Join(inst.restoreErr, inst.datasetWriteErr, inst.keyManager.PersistenceError())
 }
 
 func (inst *Instance) allocateMacFrameCounter() (uint32, error) {
+	if err := inst.SecurityError(); err != nil {
+		return 0, err
+	}
 	if err := inst.PersistenceError(); err != nil {
 		return 0, err
 	}

@@ -116,7 +116,9 @@ func SendLinkRequest(m *Mle, dispatcher *Dispatcher, transport Transport, router
 
 	// Generate a fresh challenge.
 	var challenge Challenge
-	challenge.GenerateChallenge()
+	if err := dispatcher.GenerateChallenge(&challenge); err != nil {
+		return Challenge{}, err
+	}
 
 	neighborValid := false
 	if router != nil {

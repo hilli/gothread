@@ -6,6 +6,7 @@ package meshcop
 
 import (
 	"encoding/binary"
+	"math/bits"
 	"time"
 
 	goterrors "github.com/hilli/gothread/errors"
@@ -625,7 +626,7 @@ func InfoToDataset(info *Info) *Dataset {
 		buf := make([]byte, 6)
 		buf[0] = 0 // page 0
 		buf[1] = 4 // mask length
-		binary.BigEndian.PutUint32(buf[2:6], info.ChannelMask)
+		binary.BigEndian.PutUint32(buf[2:6], bits.Reverse32(info.ChannelMask))
 		_ = ds.WriteTLV(TLVChannelMask, buf)
 	}
 

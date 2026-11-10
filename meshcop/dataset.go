@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math/bits"
 
 	goterrors "github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/thread/key"
@@ -546,7 +547,7 @@ func (d *Dataset) ConvertToInfo() Info {
 					break
 				}
 				if page == 0 && maskLen >= 4 {
-					info.ChannelMask = binary.BigEndian.Uint32(v[offset : offset+4])
+					info.ChannelMask = bits.Reverse32(binary.BigEndian.Uint32(v[offset : offset+4]))
 					info.Components.MarkPresent(ComponentChannelMask)
 				}
 				offset += int(maskLen)

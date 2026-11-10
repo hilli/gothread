@@ -740,122 +740,102 @@ Custom radio EUI-64: 18B4300000000005
 
 ## 8. UDP Communication
 
-Send and receive UDP messages through the Thread network using the
-`net/udp` package.
+Use the real instance executor and outbound hook, not
+`UDPManager.HandleMessage` (ingress/local delivery). This function expects an
+already running, attached instance with a valid direct neighbor. It does not
+open an OS socket, fabricate a radio link, or establish a Matter session.
+Use explicit assigned addresses and a context with the application's deadline.
+See [native UDP limits](api-overview.md#external-executor-and-native-udp):
+direct-neighbor UDP through 1232 application bytes is supported using standard
+stack-owned fragmentation when necessary; general routes and multicast
+discovery are not. Do not split application/PASE messages into ad hoc chunks.
+An attached always-on MTD can also use the qualified
+[parent-unicast handoff](api-overview.md#minimal-always-on-mtd-parent-unicast-handoff)
+with an explicitly assigned, caller-verified routable source; local acceptance
+does not prove parent/upstream forwarding or a return route.
 
 ```go
-package main
+package example
 
 import (
-	"fmt"
-	"time"
+	"context"
+	"errors"
+	"sync/atomic"
 
+	goterrors "github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/instance"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/net/udp"
-	"github.com/hilli/gothread/platform/simulation"
 )
 
-func main() {
-	plat := simulation.NewPlatform()
-	inst := instance.New(instance.Config{
-		Alarm:    plat.Alarm,
-		Entropy:  plat.Entropy,
-		Settings: plat.Settings,
-		Logger:   plat.Logger,
-		Radio:    plat.Radio,
+func exchange(ctx context.Context, inst *instance.Instance, info ip6.MessageInfo, payload []byte) (response []byte, err error) {
+	type packet struct {
+		payload []byte
+		info    ip6.MessageInfo
+	}
+	incoming := make(chan packet, 4)
+	var dropped atomic.Uint64
+	manager := inst.UDPManager() // Borrowed; access its mutable state only via Do.
+	socket := &udp.Socket{}
+
+	err = inst.Do(ctx, func() error {
+		if err := manager.Open(socket, udp.NetifThreadInternal, func(data []byte, metadata *ip6.MessageInfo) {
+			// This callback runs on the stack loop; never block it on an app read.
+			copyInfo := *metadata
+			if metadata.LinkInfo != nil {
+				link := *metadata.LinkInfo
+				copyInfo.LinkInfo = &link
+			}
+			snapshot := packet{payload: append([]byte(nil), data...), info: copyInfo}
+			select {
+			case incoming <- snapshot:
+			default:
+				dropped.Add(1)
+			}
+		}); err != nil {
+			return err
+		}
+		if err := manager.Bind(socket, ip6.SockAddr{Address: info.SockAddr, Port: info.SockPort}); err != nil {
+			return errors.Join(err, manager.Close(socket))
+		}
+		if err := manager.Connect(socket, ip6.SockAddr{Address: info.PeerAddr, Port: info.PeerPort}); err != nil {
+			return errors.Join(err, manager.Close(socket))
+		}
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		// Use a live cleanup context; a cancelled queued close would not execute.
+		// Cleanup errors (including stopped/full executor) remain visible.
+		err = errors.Join(err, inst.Do(context.Background(), func() error {
+			return manager.Close(socket)
+		}))
+	}()
 
-	inst.Start()
-	time.Sleep(50 * time.Millisecond)
-
-	done := make(chan struct{})
-	inst.PostTask(func() {
-		defer close(done)
-
-		udpMgr := inst.UDPManager()
-
-		// --- Open and bind a server socket ---
-		serverSock := &udp.Socket{}
-		received := make(chan string, 1)
-
-		err := udpMgr.Open(serverSock, udp.NetifThreadInternal,
-			func(payload []byte, mi *ip6.MessageInfo) {
-				msg := string(payload)
-				fmt.Printf("Server received: %q from [%s]:%d\n",
-					msg, mi.PeerAddr.ToString(), mi.PeerPort)
-				received <- msg
-			},
-		)
-		if err != nil {
-			fmt.Printf("Open error: %v\n", err)
-			return
+	if err := inst.Do(ctx, func() error { return inst.SendUDP(payload, info) }); err != nil {
+		return nil, err
+	}
+	// Payload may now be reused. Nil above meant queue acceptance, not delivery.
+	// Application parsing and reads happen outside the stack loop.
+	select {
+	case received := <-incoming:
+		if dropped.Load() != 0 {
+			return nil, goterrors.ErrNoBufs
 		}
-
-		// Bind to port 12345.
-		bindAddr := ip6.SockAddr{Port: 12345}
-		if err := udpMgr.Bind(serverSock, bindAddr); err != nil {
-			fmt.Printf("Bind error: %v\n", err)
-			return
-		}
-		fmt.Printf("Server bound to port %d\n", serverSock.GetSockName().Port)
-
-		// --- Open a client socket ---
-		clientSock := &udp.Socket{}
-		err = udpMgr.Open(clientSock, udp.NetifThreadInternal,
-			func(payload []byte, mi *ip6.MessageInfo) {
-				fmt.Printf("Client received: %q\n", string(payload))
-			},
-		)
-		if err != nil {
-			fmt.Printf("Client open error: %v\n", err)
-			return
-		}
-
-		// Bind client to an ephemeral port.
-		if err := udpMgr.Bind(clientSock, ip6.SockAddr{}); err != nil {
-			fmt.Printf("Client bind error: %v\n", err)
-			return
-		}
-		fmt.Printf("Client bound to port %d\n", clientSock.GetSockName().Port)
-
-		// Verify socket state.
-		fmt.Printf("Server is bound: %v\n", serverSock.IsBound())
-		fmt.Printf("Client is bound: %v\n", clientSock.IsBound())
-		fmt.Printf("Server netif:    %d (ThreadInternal=%d)\n",
-			serverSock.GetNetifID(), udp.NetifThreadInternal)
-
-		// Connect client to the server's address.
-		peerAddr := ip6.SockAddr{Port: 12345}
-		if err := udpMgr.Connect(clientSock, peerAddr); err != nil {
-			fmt.Printf("Connect error: %v\n", err)
-			return
-		}
-		fmt.Printf("Client peer: port %d\n", clientSock.GetPeerName().Port)
-
-		// Close sockets.
-		udpMgr.Close(serverSock)
-		udpMgr.Close(clientSock)
-		fmt.Println("Sockets closed.")
-	})
-
-	<-done
-	inst.Stop()
-	fmt.Println("Done.")
+		return received.payload, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 ```
 
-**Expected output:**
-```
-Server bound to port 12345
-Client bound to port 49152
-Server is bound: true
-Client is bound: true
-Server netif:    2 (ThreadInternal=2)
-Client peer: port 12345
-Sockets closed.
-Done.
-```
+No response is synthesized locally. A receive callback requires actual injected
+or radio-delivered RX. Closing the UDP socket does not retract a datagram already
+accepted for transmission, and this example's small receive queue is not an
+application reliability or Matter MRP implementation. A production adapter must
+surface queue overflow and cleanup errors to its owner.
 
 ---
 

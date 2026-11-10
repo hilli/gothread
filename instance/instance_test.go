@@ -678,10 +678,10 @@ func TestTimerSchedulerCancelIdempotent(t *testing.T) {
 	cancel := ts.scheduleWithCancel(0, func() {})
 	cancel()
 	cancel() // second call should be safe
-	if ts.count() != 1 {
-		t.Errorf("count = %d, want 1 (cancelled timer still in list)", ts.count())
+	if ts.count() != 0 {
+		t.Errorf("count = %d, want 0 (cancelled timer released immediately)", ts.count())
 	}
-	// processExpired should skip it
+	// No retained cancelled timer should run.
 	count := ts.processExpired()
 	if count != 0 {
 		t.Errorf("processExpired() = %d, want 0 (cancelled)", count)
@@ -1317,8 +1317,8 @@ func TestSetCurrentKeySequence_UpdatesMacKeys(t *testing.T) {
 	}
 
 	// Verify MAC key ID matches.
-	if inst.keyManager.GetMacKeyId() != 5 {
-		t.Errorf("MAC key ID: got %d, want 5", inst.keyManager.GetMacKeyId())
+	if inst.keyManager.GetMacKeyId() != 6 {
+		t.Errorf("MAC key ID: got %d, want 6", inst.keyManager.GetMacKeyId())
 	}
 }
 

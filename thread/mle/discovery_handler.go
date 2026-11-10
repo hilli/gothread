@@ -96,7 +96,7 @@ func encodeDiscoveryResponse(d DiscoveryResponseData) [discoveryResponseDataSize
 
 // decodeDiscoveryResponse parses a DiscoveryResponseData from raw bytes.
 func decodeDiscoveryResponse(data []byte) (DiscoveryResponseData, error) {
-	if len(data) < discoveryResponseDataSize {
+	if len(data) != discoveryResponseDataSize {
 		return DiscoveryResponseData{}, fmt.Errorf("mle: DiscoveryResponse sub-TLV too short: %d", len(data))
 	}
 	return DiscoveryResponseData{
@@ -166,6 +166,25 @@ func (h *DiscoveryHandler) HandleDiscoveryResponse(rxInfo *RxInfo) error {
 		return nil // not scanning, ignore
 	}
 
+	return h.handleDiscoveryResponse(h.scanner.Identity(), rxInfo, DiscoveryLinkInfo{}, false)
+}
+
+// DiscoveryLinkInfo is observed MAC/PHY metadata, not network authority.
+type DiscoveryLinkInfo struct {
+	Channel, PanID uint16
+	RSSI           int8
+	LQI            uint8
+}
+
+// HandleDiscoveryResponseFor retains the actual scan lifetime and wire tuple.
+func (h *DiscoveryHandler) HandleDiscoveryResponseFor(id uint64, rxInfo *RxInfo, link DiscoveryLinkInfo) error {
+	return h.handleDiscoveryResponse(id, rxInfo, link, true)
+}
+
+func (h *DiscoveryHandler) handleDiscoveryResponse(id uint64, rxInfo *RxInfo, link DiscoveryLinkInfo, scoped bool) error {
+	if h.scanner == nil || !h.scanner.IsScanning() || h.scanner.Identity() != id {
+		return nil
+	}
 	parsed, err := ParseDiscoveryResponse(rxInfo.TLVs)
 	if err != nil {
 		return fmt.Errorf("mle: handle discovery response: %w", err)
@@ -178,9 +197,14 @@ func (h *DiscoveryHandler) HandleDiscoveryResponse(rxInfo *RxInfo) error {
 		Version:      uint8(parsed.Version),
 		IsNative:     parsed.IsNativeCommissioner,
 		ExtAddress:   rxInfo.SrcAddr,
+		Channel:      link.Channel, PanID: link.PanID, RSSI: link.RSSI, LQI: link.LQI,
 	}
 
-	h.scanner.HandleDiscoveryResponse(result)
+	if scoped {
+		h.scanner.HandleDiscoveryResponseFor(id, result)
+	} else {
+		h.scanner.HandleDiscoveryResponse(result)
+	}
 	return nil
 }
 
@@ -396,6 +420,13 @@ func ParseDiscoveryResponse(tlvs []TLV) (*ParsedDiscoveryResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mle: discovery response: parse sub-TLVs: %w", err)
 	}
+	for i := range subTLVs {
+		for j := 0; j < i; j++ {
+			if subTLVs[i].Type == subTLVs[j].Type {
+				return nil, fmt.Errorf("mle: duplicate discovery sub-TLV %d", subTLVs[i].Type)
+			}
+		}
+	}
 
 	result := &ParsedDiscoveryResponse{}
 
@@ -416,7 +447,7 @@ func ParseDiscoveryResponse(tlvs []TLV) (*ParsedDiscoveryResponse, error) {
 	if !ok {
 		return nil, fmt.Errorf("mle: discovery response missing ExtendedPanID sub-TLV")
 	}
-	if len(extPanIDValue) < 8 {
+	if len(extPanIDValue) != 8 {
 		return nil, fmt.Errorf("mle: ExtendedPanID sub-TLV too short: %d", len(extPanIDValue))
 	}
 	copy(result.ExtendedPanID[:], extPanIDValue[:8])
@@ -426,11 +457,17 @@ func ParseDiscoveryResponse(tlvs []TLV) (*ParsedDiscoveryResponse, error) {
 	if !ok {
 		return nil, fmt.Errorf("mle: discovery response missing NetworkName sub-TLV")
 	}
+	if len(networkNameValue) == 0 || len(networkNameValue) > discover.MaxNetworkNameLen {
+		return nil, fmt.Errorf("mle: discovery NetworkName length %d", len(networkNameValue))
+	}
 	result.NetworkName = string(networkNameValue)
 
 	// SteeringData sub-TLV (type 8) — optional.
 	if steeringValue, ok := findMeshCoPSubTLV(subTLVs, meshcop.TLVSteeringData); ok {
-		result.SteeringData = steeringValue
+		if len(steeringValue) > meshcop.SteeringDataMaxLength {
+			return nil, fmt.Errorf("mle: discovery SteeringData length %d", len(steeringValue))
+		}
+		result.SteeringData = append([]byte(nil), steeringValue...)
 	}
 
 	return result, nil

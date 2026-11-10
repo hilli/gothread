@@ -262,8 +262,38 @@ func (m *Manager) Update(prefixes []Prefix) {
 		if m.hasPrefixAddress(p) {
 			continue
 		}
-		m.addAddress(p)
+		_ = m.addAddress(p)
 	}
+}
+
+// UpdateChecked uses the same bounded manager while reporting generation and
+// capacity failures to owned native callers. Earlier changes are not rolled
+// back on failure. Update preserves legacy behavior.
+func (m *Manager) UpdateChecked(prefixes []Prefix) error {
+	if !m.enabled {
+		return errors.ErrInvalidState
+	}
+	m.removeStale(prefixes)
+	for _, prefix := range prefixes {
+		if !prefix.IsSlaacAllowed() {
+			continue
+		}
+		found := false
+		for i := range m.addresses {
+			if m.addresses[i].Valid && prefixesMatch(m.addresses[i].Prefix, prefix) {
+				m.addresses[i].Prefix = prefix
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		if err := m.addAddress(prefix); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetAddresses returns a slice of all valid SLAAC addresses.
@@ -361,17 +391,17 @@ func (m *Manager) hasPrefixAddress(p Prefix) bool {
 	return false
 }
 
-// addAddress generates and stores a SLAAC address for the given prefix.
-// If no free slot is available the prefix is silently skipped.
-func (m *Manager) addAddress(p Prefix) {
+// addAddress generates one bounded address. Legacy Update ignores its error;
+// UpdateChecked preserves the exact failure for its owner.
+func (m *Manager) addAddress(p Prefix) error {
 	idx := m.findFreeSlot()
 	if idx < 0 {
-		return // No room.
+		return errors.ErrNoBufs
 	}
 
 	addr, err := m.generateAddress(p, 0)
 	if err != nil {
-		return
+		return err
 	}
 
 	m.addresses[idx] = SlaacAddress{
@@ -380,6 +410,7 @@ func (m *Manager) addAddress(p Prefix) {
 		Valid:      true,
 		DadCounter: 0,
 	}
+	return nil
 }
 
 // findFreeSlot returns the index of the first unused address slot, or -1

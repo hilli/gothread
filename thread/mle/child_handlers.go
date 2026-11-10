@@ -508,7 +508,9 @@ func (ch *ChildHandlers) SendChildUpdateRequest(mode ChildUpdateRequestMode) err
 
 	// Optionally include Challenge.
 	if mode == ChildUpdateAppendChallenge {
-		ch.pendingChallenge.GenerateChallenge()
+		if err := ch.dispatcher.GenerateChallenge(&ch.pendingChallenge); err != nil {
+			return err
+		}
 		ch.hasPendingChallenge = true
 		msg.AppendChallengeTLV(ch.pendingChallenge)
 	}

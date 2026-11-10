@@ -5,8 +5,11 @@
 package mle
 
 import (
+	"crypto/rand"
 	"fmt"
+	"io"
 
+	goterrors "github.com/hilli/gothread/errors"
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/ip6"
 	"github.com/hilli/gothread/thread/key"
@@ -16,6 +19,10 @@ import (
 // It receives the parsed RxInfo which contains the command, TLVs,
 // source address, and neighbor state.
 type CommandHandler func(rxInfo *RxInfo) error
+
+// InitialAttachKeyCandidatePolicy permits only a bounded owned initial attach
+// to try the FULL inner-MLE sequence. Permission is not authentication/adoption.
+type InitialAttachKeyCandidatePolicy func(types.ExtAddress, ip6.Address, ip6.Address, uint32) bool
 
 // Dispatcher handles receiving, decrypting, and dispatching MLE messages
 // to the appropriate command handlers.
@@ -33,7 +40,15 @@ type Dispatcher struct {
 
 	// lookupNeighbor resolves a source extended address to a known neighbor.
 	// Returns nil if the neighbor is unknown.
-	lookupNeighbor func(addr types.ExtAddress) *Neighbor
+	lookupNeighbor       func(addr types.ExtAddress) *Neighbor
+	entropy              io.Reader
+	securityHealth       func() error
+	entropyConfigured    bool
+	healthConfigured     bool
+	activityStarted      bool
+	entropyErr           error
+	initialAttachPolicy  InitialAttachKeyCandidatePolicy
+	ownedAttachValidator func(*RxInfo) error
 }
 
 // NewDispatcher creates a new MLE message Dispatcher.
@@ -42,8 +57,90 @@ func NewDispatcher(mle *Mle, keyMgr KeyProvider, transport Transport) *Dispatche
 		mle:       mle,
 		keyMgr:    keyMgr,
 		transport: transport,
+		entropy:   rand.Reader,
 		handlers:  make(map[Command]CommandHandler),
 	}
+}
+
+// SetEntropyReader installs the lifetime's checked entropy source before use.
+// It must not be changed after protocol activity begins.
+func (d *Dispatcher) SetEntropyReader(reader io.Reader) error {
+	if reader == nil {
+		return goterrors.ErrInvalidArgs
+	}
+	if d.activityStarted || d.entropyConfigured {
+		return goterrors.ErrInvalidState
+	}
+	d.entropy, d.entropyConfigured = reader, true
+	return nil
+}
+
+// SetSecurityHealth installs a nonblocking, lock-safe failure observation.
+func (d *Dispatcher) SetSecurityHealth(check func() error) error {
+	if check == nil {
+		return goterrors.ErrInvalidArgs
+	}
+	if d.activityStarted || d.healthConfigured {
+		return goterrors.ErrInvalidState
+	}
+	d.securityHealth, d.healthConfigured = check, true
+	return nil
+}
+
+// SetInitialAttachKeyCandidatePolicy installs the owner's bootstrap policy
+// before any dispatcher activity. Known-neighbor/current-adjacent rules remain.
+func (d *Dispatcher) SetInitialAttachKeyCandidatePolicy(policy InitialAttachKeyCandidatePolicy) error {
+	if policy == nil {
+		return goterrors.ErrInvalidArgs
+	}
+	if d.activityStarted || d.initialAttachPolicy != nil {
+		return goterrors.ErrInvalidState
+	}
+	d.initialAttachPolicy = policy
+	return nil
+}
+
+// SetOwnedAttachReceiveValidator installs the current-operation command/tuple
+// fence. It runs only after MIC authentication/parsing and before any handler.
+func (d *Dispatcher) SetOwnedAttachReceiveValidator(validate func(*RxInfo) error) error {
+	if validate == nil {
+		return goterrors.ErrInvalidArgs
+	}
+	if d.activityStarted || d.ownedAttachValidator != nil {
+		return goterrors.ErrInvalidState
+	}
+	d.ownedAttachValidator = validate
+	return nil
+}
+
+func (d *Dispatcher) checkSecurity() error {
+	if d.entropyErr != nil {
+		return d.entropyErr
+	}
+	if d.securityHealth != nil {
+		return d.securityHealth()
+	}
+	return nil
+}
+
+// GenerateChallenge checks health and commits qualified entropy before callers
+// publish challenge/session state. Standalone dispatchers use crypto/rand.
+func (d *Dispatcher) GenerateChallenge(challenge *Challenge) error {
+	if err := d.checkSecurity(); err != nil {
+		return err
+	}
+	d.activityStarted = true
+	var next Challenge
+	if err := next.GenerateChallengeWithReader(d.entropy); err != nil {
+		d.entropyErr = err
+		return err
+	}
+	if err := d.checkSecurity(); err != nil {
+		d.entropyErr = err
+		return err
+	}
+	*challenge = next
+	return nil
 }
 
 // RegisterHandler registers a handler for the given MLE command.
@@ -64,6 +161,10 @@ func (d *Dispatcher) SetNeighborLookup(fn func(addr types.ExtAddress) *Neighbor)
 //
 // This is analogous to OpenThread's Mle::HandleUdpReceive.
 func (d *Dispatcher) HandleReceive(data []byte, srcAddr types.ExtAddress, srcIP, dstIP ip6.Address, linkMargin uint8) error {
+	if err := d.checkSecurity(); err != nil {
+		return err
+	}
+	d.activityStarted = true
 	// 1. Parse the wire message.
 	pm, err := ParseMessage(data)
 	if err != nil {
@@ -79,6 +180,7 @@ func (d *Dispatcher) HandleReceive(data []byte, srcAddr types.ExtAddress, srcIP,
 
 	// 2. Handle secured vs unsecured messages.
 	var payload []byte
+	initialCandidate := false
 
 	switch pm.SecuritySuite {
 	case SecuritySuiteEncMic32:
@@ -86,10 +188,23 @@ func (d *Dispatcher) HandleReceive(data []byte, srcAddr types.ExtAddress, srcIP,
 		rxInfo.KeySequence = pm.SecHeader.KeySource
 		rxInfo.FrameCounter = pm.SecHeader.FrameCounter
 
-		// Determine which MLE key to use based on key sequence.
+		if pm.SecHeader.KeyIndex != KeyIndexFromSequence(pm.SecHeader.KeySource) {
+			return fmt.Errorf("mle dispatch: inconsistent inner key index: %w", goterrors.ErrParse)
+		}
+		// Normal known-neighbor/current-adjacent handling stays unchanged.
 		mleKey, err := d.resolveKey(pm.SecHeader.KeySource)
 		if err != nil {
-			return fmt.Errorf("mle dispatch: resolve key: %w", err)
+			known := false
+			if d.lookupNeighbor != nil {
+				if neighbor := d.lookupNeighbor(srcAddr); neighbor != nil && neighbor.IsStateValid() {
+					known = true
+				}
+			}
+			if known || d.initialAttachPolicy == nil || !d.initialAttachPolicy(srcAddr, srcIP, dstIP, pm.SecHeader.KeySource) {
+				return fmt.Errorf("mle dispatch: resolve key: %w", err)
+			}
+			mleKey = d.keyMgr.GetTemporaryMleKey(pm.SecHeader.KeySource)
+			initialCandidate = true
 		}
 
 		// Decrypt the payload.
@@ -113,6 +228,9 @@ func (d *Dispatcher) HandleReceive(data []byte, srcAddr types.ExtAddress, srcIP,
 	}
 
 	rxInfo.Command = Command(payload[0])
+	if initialCandidate && rxInfo.Command != CommandParentResponse {
+		return fmt.Errorf("mle dispatch: far-sequence candidate is not an owned ParentResponse: %w", goterrors.ErrDrop)
+	}
 
 	if len(payload) > 1 {
 		rxInfo.TLVs, err = ParseTLVs(payload[1:])
@@ -120,9 +238,15 @@ func (d *Dispatcher) HandleReceive(data []byte, srcAddr types.ExtAddress, srcIP,
 			return fmt.Errorf("mle dispatch: parse TLVs: %w", err)
 		}
 	}
+	if d.ownedAttachValidator != nil {
+		if err := d.ownedAttachValidator(rxInfo); err != nil {
+			return err
+		}
+		rxInfo.ownerNeighbor = rxInfo.Neighbor != nil
+	}
 
 	// 4. Look up the neighbor.
-	if d.lookupNeighbor != nil {
+	if rxInfo.Neighbor == nil && d.lookupNeighbor != nil {
 		rxInfo.Neighbor = d.lookupNeighbor(srcAddr)
 	}
 
@@ -139,8 +263,14 @@ func (d *Dispatcher) HandleReceive(data []byte, srcAddr types.ExtAddress, srcIP,
 		return fmt.Errorf("mle dispatch: no handler for command %d", rxInfo.Command)
 	}
 
+	if err := d.checkSecurity(); err != nil {
+		return err
+	}
 	if err := handler(rxInfo); err != nil {
 		return fmt.Errorf("mle dispatch: handler for command %d: %w", rxInfo.Command, err)
+	}
+	if err := d.checkSecurity(); err != nil {
+		return err
 	}
 
 	// 7. For secured messages, update the neighbor's frame counter and key state.
@@ -179,8 +309,17 @@ func (d *Dispatcher) resolveKey(keySequence uint32) ([16]byte, error) {
 func (d *Dispatcher) validateFrameCounter(rxInfo *RxInfo) error {
 	n := rxInfo.Neighbor
 
-	// The frame counter must be greater than what we've previously seen.
-	if rxInfo.KeySequence == d.keyMgr.GetCurrentKeySequence() {
+	parent := d.mle.GetParent()
+	sameKey := rxInfo.KeySequence == d.keyMgr.GetCurrentKeySequence()
+	if d.mle.IsChild() && (n == &parent.Neighbor || rxInfo.ownerNeighbor) {
+		if rxInfo.KeySequence < n.KeySequence {
+			return fmt.Errorf("mle: parent key sequence replay: got %d, last seen %d", rxInfo.KeySequence, n.KeySequence)
+		}
+		// The actual parent's replay baseline cannot follow another router's
+		// global rotation. Other neighbor paths retain their existing policy.
+		sameKey = rxInfo.KeySequence == n.KeySequence
+	}
+	if sameKey {
 		if rxInfo.FrameCounter <= n.Counters.MleFrameCounter {
 			return fmt.Errorf("mle: frame counter replay: got %d, last seen %d",
 				rxInfo.FrameCounter, n.Counters.MleFrameCounter)
@@ -205,9 +344,16 @@ func (d *Dispatcher) processKeySequence(rxInfo *RxInfo) {
 
 	// Update the neighbor's MLE frame counter.
 	rxInfo.Neighbor.Counters.MleFrameCounter = rxInfo.FrameCounter
+	if d.mle.IsChild() && (rxInfo.Neighbor == &d.mle.GetParent().Neighbor || rxInfo.ownerNeighbor) {
+		rxInfo.Neighbor.KeySequence = rxInfo.KeySequence
+	}
 
 	// Classify the message to decide whether to advance key sequence.
 	msgClass := classifyMessage(rxInfo.Command)
+	if d.mle.IsChild() && d.mle.IsFullThreadDevice() && rxInfo.Command == CommandAdvertisement &&
+		rxInfo.Neighbor != &d.mle.GetParent().Neighbor {
+		msgClass = messageClassPeer
+	}
 
 	currentSeq := d.keyMgr.GetCurrentKeySequence()
 
@@ -265,6 +411,10 @@ func classifyMessage(cmd Command) messageClass {
 // It fills in the security header with the current key sequence and
 // frame counter, encrypts the payload, and sends via the transport.
 func (d *Dispatcher) SendMessage(msg *Message, dstIP ip6.Address) error {
+	if err := d.checkSecurity(); err != nil {
+		return err
+	}
+	d.activityStarted = true
 	if !msg.IsSecured() {
 		// Unsecured messages are sent as-is.
 		return d.transport.SendMLE(msg.Bytes(), dstIP)

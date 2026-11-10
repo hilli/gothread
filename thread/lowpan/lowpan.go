@@ -153,6 +153,10 @@ type AddressContext struct {
 	DstExtAddr types.ExtAddress
 	SrcShort   types.ShortAddress
 	DstShort   types.ShortAddress
+	// Explicit encapsulating MAC forms; a valid short address can be zero.
+	// Extended EUI-64 identity resolved for security must not override these.
+	SrcShortValid bool
+	DstShortValid bool
 }
 
 // ---------------------------------------------------------------------------
@@ -222,9 +226,8 @@ type FragmentHeader struct {
 	DatagramSize uint16
 	// DatagramTag identifies which datagram this fragment belongs to.
 	DatagramTag uint16
-	// DatagramOffset is the offset (in units of 8 bytes) of this
-	// fragment's payload within the original datagram. Zero for the
-	// first fragment.
+	// DatagramOffset is a BYTE offset in the original, uncompressed IPv6
+	// datagram. The wire field encodes this in eight-octet units.
 	DatagramOffset uint16
 	// IsFirst is true when this is a first-fragment header (dispatch 0xC0).
 	IsFirst bool
@@ -250,6 +253,9 @@ func ParseFragmentHeader(data []byte) (FragmentHeader, int, error) {
 	// datagram_size: 11 bits across bytes 0-1 (lower 3 bits of byte 0 + all 8 bits of byte 1).
 	size := uint16(data[0]&0x07)<<8 | uint16(data[1])
 	tag := uint16(data[2])<<8 | uint16(data[3])
+	if size < ipv6HeaderSize {
+		return FragmentHeader{}, 0, errors.ErrParse
+	}
 
 	if isFirst {
 		return FragmentHeader{
@@ -265,6 +271,9 @@ func ParseFragmentHeader(data []byte) (FragmentHeader, int, error) {
 		return FragmentHeader{}, 0, errors.ErrParse
 	}
 	offset := uint16(data[4]) * 8 // offset is in units of 8 octets
+	if offset == 0 || offset >= size {
+		return FragmentHeader{}, 0, errors.ErrParse
+	}
 
 	return FragmentHeader{
 		DatagramSize:   size,
@@ -422,7 +431,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 
 		case HcSrcAddrElided: // fully elided from MAC ext addr
 			copy(header[ipv6OffsetSrc:], linkLocalPrefix[:])
-			writeIIDFromExtAddr(header[ipv6OffsetSrc+8:], macAddrs.SrcExtAddr)
+			writeIIDFromMAC(header[ipv6OffsetSrc+8:], macAddrs.SrcExtAddr, macAddrs.SrcShort, macAddrs.SrcShortValid)
 		}
 	} else {
 		// Stateful source address (context from SCI).
@@ -451,7 +460,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 		case HcSrcAddrElided: // SAC=1, SAM=11 → IID from MAC, prefix from context
 			ctx := lookupContext(contexts, sci)
 			copyContextPrefix(header[ipv6OffsetSrc:], ctx)
-			writeIIDFromExtAddr(header[ipv6OffsetSrc+8:], macAddrs.SrcExtAddr)
+			writeIIDFromMAC(header[ipv6OffsetSrc+8:], macAddrs.SrcExtAddr, macAddrs.SrcShort, macAddrs.SrcShortValid)
 		}
 	}
 
@@ -490,7 +499,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 
 			case HcDstAddrElided:
 				copy(header[ipv6OffsetDst:], linkLocalPrefix[:])
-				writeIIDFromExtAddr(header[ipv6OffsetDst+8:], macAddrs.DstExtAddr)
+				writeIIDFromMAC(header[ipv6OffsetDst+8:], macAddrs.DstExtAddr, macAddrs.DstShort, macAddrs.DstShortValid)
 			}
 		} else {
 			// Stateful unicast (context from DCI).
@@ -520,7 +529,7 @@ func DecompressHeader(data []byte, macAddrs AddressContext, contexts []Context) 
 			case HcDstAddrElided:
 				ctx := lookupContext(contexts, dci)
 				copyContextPrefix(header[ipv6OffsetDst:], ctx)
-				writeIIDFromExtAddr(header[ipv6OffsetDst+8:], macAddrs.DstExtAddr)
+				writeIIDFromMAC(header[ipv6OffsetDst+8:], macAddrs.DstExtAddr, macAddrs.DstShort, macAddrs.DstShortValid)
 			}
 		}
 	} else {
@@ -770,7 +779,7 @@ func CompressHeader(header [ipv6HeaderSize]byte, macAddrs AddressContext, contex
 	case srcCtxIdx >= 0:
 		iphc |= HcSrcAddrContext
 		switch {
-		case matchIIDExtAddr(srcIID, macAddrs.SrcExtAddr):
+		case matchIIDMAC(srcIID, macAddrs.SrcExtAddr, macAddrs.SrcShort, macAddrs.SrcShortValid):
 			iphc |= HcSrcAddrElided
 		case matchIIDShort(srcIID):
 			iphc |= HcSrcAddr16
@@ -787,7 +796,7 @@ func CompressHeader(header [ipv6HeaderSize]byte, macAddrs AddressContext, contex
 		iphc |= HcSrcAddr128
 	case isLinkLocal(srcAddr):
 		switch {
-		case matchIIDExtAddr(srcIID, macAddrs.SrcExtAddr):
+		case matchIIDMAC(srcIID, macAddrs.SrcExtAddr, macAddrs.SrcShort, macAddrs.SrcShortValid):
 			iphc |= HcSrcAddrElided
 		case matchIIDShort(srcIID):
 			iphc |= HcSrcAddr16
@@ -850,7 +859,7 @@ func CompressHeader(header [ipv6HeaderSize]byte, macAddrs AddressContext, contex
 		case dstCtxIdx >= 0:
 			iphc |= HcDstAddrContext
 			switch {
-			case matchIIDExtAddr(dstIID, macAddrs.DstExtAddr):
+			case matchIIDMAC(dstIID, macAddrs.DstExtAddr, macAddrs.DstShort, macAddrs.DstShortValid):
 				iphc |= HcDstAddrElided
 			case matchIIDShort(dstIID):
 				iphc |= HcDstAddr16
@@ -863,7 +872,7 @@ func CompressHeader(header [ipv6HeaderSize]byte, macAddrs AddressContext, contex
 			}
 		case isLinkLocal(dstAddr):
 			switch {
-			case matchIIDExtAddr(dstIID, macAddrs.DstExtAddr):
+			case matchIIDMAC(dstIID, macAddrs.DstExtAddr, macAddrs.DstShort, macAddrs.DstShortValid):
 				iphc |= HcDstAddrElided
 			case matchIIDShort(dstIID):
 				iphc |= HcDstAddr16
@@ -953,6 +962,28 @@ func CompressUDPHeader(header [udpHeaderSize]byte) ([]byte, error) {
 func writeIIDFromExtAddr(dst []byte, addr types.ExtAddress) {
 	copy(dst, addr[:])
 	dst[0] ^= 0x02 // toggle U/L bit
+}
+
+func writeIIDFromMAC(dst []byte, extended types.ExtAddress, short types.ShortAddress, shortValid bool) {
+	if shortValid {
+		writeIIDFromShort(dst, uint16(short))
+	} else {
+		writeIIDFromExtAddr(dst, extended)
+	}
+}
+
+func matchIIDMAC(iid []byte, extended types.ExtAddress, short types.ShortAddress, shortValid bool) bool {
+	if !shortValid {
+		return matchIIDExtAddr(iid, extended)
+	}
+	var expected [8]byte
+	writeIIDFromShort(expected[:], uint16(short))
+	for i := range expected {
+		if iid[i] != expected[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // writeIIDFromShort writes an IID derived from a 16-bit short address.

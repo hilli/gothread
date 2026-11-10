@@ -13,6 +13,7 @@ package mac
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	macframe "github.com/hilli/gothread/mac/frame"
@@ -170,7 +171,8 @@ type EnergyScanHandler interface {
 // scheduling, active/energy scanning, beacon handling, and transmission
 // coordination on top of the SubMac.
 type Mac struct {
-	mu sync.Mutex
+	discoveryLease *DiscoveryRadioLease
+	mu             sync.Mutex
 
 	subMac    *submac.SubMac
 	callbacks Callbacks
@@ -190,10 +192,11 @@ type Mac struct {
 	panID        types.PanID
 
 	// Channel
-	panChannel    uint8
-	radioChannel  uint8
-	usingTempChan bool
-	rxOnWhenIdle  bool
+	panChannel         uint8
+	panChannelSnapshot atomic.Uint32
+	radioChannel       uint8
+	usingTempChan      bool
+	rxOnWhenIdle       bool
 
 	// Active scan state
 	scanChannelMask types.ChannelMask
@@ -261,6 +264,7 @@ func New(config Config) *Mac {
 		radioChannel:          radio.Channel24GHzMin,
 		waitingForDataTimeout: DataPollTimeout,
 	}
+	m.panChannelSnapshot.Store(uint32(m.panChannel))
 	if config.PostOperation != nil {
 		m.operationsFn = func() { config.PostOperation(m.performNextOperation) }
 	}
@@ -295,8 +299,12 @@ func (m *Mac) Disable() error {
 	if !m.enabled {
 		return nil
 	}
+	if m.discoveryLease != nil {
+		return submac.ErrInvalidState
+	}
 	m.stopTimer()
 	m.pendingOps = 0
+	m.transmitPending = false
 	m.currentOp = OperationIdle
 	m.scanning = false
 	m.energyScanning = false
@@ -395,6 +403,7 @@ func (m *Mac) SetPanChannel(channel uint8) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.panChannel = channel
+	m.panChannelSnapshot.Store(uint32(channel))
 	if !m.usingTempChan {
 		m.radioChannel = channel
 		m.updateIdleMode()
@@ -513,7 +522,7 @@ func (m *Mac) ActiveScan(channelMask types.ChannelMask, duration uint16, handler
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.scanning || m.energyScanning {
+	if m.discoveryLease != nil || m.scanning || m.energyScanning {
 		return submac.ErrInvalidState
 	}
 
@@ -547,7 +556,7 @@ func (m *Mac) EnergyScan(channelMask types.ChannelMask, duration uint16, handler
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.scanning || m.energyScanning {
+	if m.discoveryLease != nil || m.scanning || m.energyScanning {
 		return submac.ErrInvalidState
 	}
 
@@ -620,13 +629,14 @@ func (m *Mac) startOperation(op Operation) {
 
 func (m *Mac) finishOperation() {
 	m.currentOp = OperationIdle
+	m.updateIdleMode()
 }
 
 func (m *Mac) performNextOperation() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.currentOp != OperationIdle {
+	if m.discoveryLease != nil || m.currentOp != OperationIdle {
 		return
 	}
 	if !m.enabled {
@@ -884,6 +894,7 @@ func (m *Mac) performTransmitData() {
 
 	m.transmitPending = true
 	err := m.subMac.Send(submac.TxRequest{
+		BeforeTransmit:  m.frameTransmissionValidator(),
 		Channel:         m.radioChannel,
 		CsmaCaEnabled:   true,
 		AckRequest:      true,
@@ -896,6 +907,15 @@ func (m *Mac) performTransmitData() {
 		m.finishOperation()
 		m.scheduleNextOperation()
 	}
+}
+
+// Validation is optional for upper-layer callers. Capture the current frame
+// owner once, so delayed backoff/retry cannot select a newer owner's predicate.
+func (m *Mac) frameTransmissionValidator() func() error {
+	if owner, ok := m.callbacks.(interface{ FrameTransmissionValidator() func() error }); ok {
+		return owner.FrameTransmissionValidator()
+	}
+	return nil
 }
 
 func (m *Mac) performTransmitPoll() {
@@ -1183,7 +1203,7 @@ func (m *Mac) GetPendingOperations() Operation {
 // --------------------------------------------------------------------------
 
 func (m *Mac) updateIdleMode() {
-	if m.subMac == nil {
+	if m.discoveryLease != nil || m.subMac == nil || m.subMac.IsTransmittingOrScanning() {
 		return
 	}
 	if m.rxOnWhenIdle {

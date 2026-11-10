@@ -168,10 +168,10 @@ func (m *Manager) GetCurrentMacKey() MacKey {
 }
 
 // GetMacKeyId returns the key ID byte derived from the current key sequence.
-// Thread uses the low 7 bits of the key sequence as the Key ID (mod 128),
-// matching OpenThread's GetCurrentKeyId().
+// Thread wire indices are 1..128: (sequence & 0x7f)+1. An index is not a full
+// sequence and must never be used to guess/adopt a protocol key identity.
 func (m *Manager) GetMacKeyId() uint8 { //nolint:revive // Preserve the exported API spelling for existing callers.
-	return uint8(m.keySequence & 0x7F)
+	return uint8(m.keySequence&0x7F) + 1
 }
 
 // GetTemporaryMleKey computes and returns the MLE key for the given key sequence.

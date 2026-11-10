@@ -52,7 +52,10 @@ const (
 // ReceiveHandler
 // ---------------------------------------------------------------------------
 
-// ReceiveHandler is called when a UDP message is received on a socket.
+// ReceiveHandler is called synchronously when a UDP message is received.
+// Payload, MessageInfo, and its LinkInfo are borrowed for the callback duration.
+// Copy any data retained after return. On an Instance these callbacks run on
+// its event loop: do not block, call Do, or wait for application reads here.
 type ReceiveHandler func(payload []byte, messageInfo *ip6.MessageInfo)
 
 // ---------------------------------------------------------------------------
@@ -323,6 +326,10 @@ func (u *UDP) IsPortReserved(port uint16) bool {
 // returns true, the message is considered consumed and no further dispatch
 // occurs. If no receiver consumes the message, it is delivered to all
 // matching sockets.
+//
+// Payload and metadata are borrowed for the synchronous callbacks. This is
+// ingress/local delivery, NOT outbound transmission. Instance users send with
+// Instance.SendUDP on its event loop.
 //
 // This method mirrors OpenThread's Udp::HandleMessage().
 func (u *UDP) HandleMessage(payload []byte, messageInfo *ip6.MessageInfo) {

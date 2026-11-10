@@ -17,12 +17,23 @@ import (
 
 // HandleLinkAccept processes a received MLE Link Accept message.
 func (h *FtdLinkHandlers) HandleLinkAccept(rxInfo *RxInfo) error {
-	return h.handleLinkAcceptVariant(rxInfo, false)
+	return h.handleLinkAcceptVariant(rxInfo, false, false)
 }
 
 // HandleLinkAcceptAndRequest processes a received MLE Link Accept And Request message.
 func (h *FtdLinkHandlers) HandleLinkAcceptAndRequest(rxInfo *RxInfo) error {
-	return h.handleLinkAcceptVariant(rxInfo, true)
+	return h.handleLinkAcceptVariant(rxInfo, true, false)
+}
+
+// HandleChildLinkAccept is the explicit qualified FTD-child response path,
+// not permission for a child to handle unsolicited Link Requests.
+func (h *FtdLinkHandlers) HandleChildLinkAccept(rxInfo *RxInfo) error {
+	return h.handleLinkAcceptVariant(rxInfo, false, true)
+}
+
+// HandleChildLinkAcceptAndRequest completes the matching requested exchange.
+func (h *FtdLinkHandlers) HandleChildLinkAcceptAndRequest(rxInfo *RxInfo) error {
+	return h.handleLinkAcceptVariant(rxInfo, true, true)
 }
 
 // handleLinkAcceptVariant is the shared implementation for Link Accept and
@@ -32,14 +43,16 @@ func (h *FtdLinkHandlers) HandleLinkAcceptAndRequest(rxInfo *RxInfo) error {
 //
 // This is a Go port of OpenThread's Mle::HandleLinkAccept
 // (src/core/thread/mle_ftd.cpp, lines 849-1054).
-func (h *FtdLinkHandlers) handleLinkAcceptVariant(rxInfo *RxInfo, isAcceptAndRequest bool) error {
+func (h *FtdLinkHandlers) handleLinkAcceptVariant(rxInfo *RxInfo, isAcceptAndRequest, childResponse bool) error {
 	cmdName := "link accept"
 	if isAcceptAndRequest {
 		cmdName = "link accept and request"
 	}
 
 	// 1. Role check: must be Router or Leader.
-	if !h.mle.IsRouterOrLeader() {
+	childAllowed := childResponse && h.mle.IsChild() && h.mle.GetDeviceMode().IsFullThreadDevice() &&
+		h.mle.GetDeviceMode().IsRxOnWhenIdle() && !h.mle.IsRouterEligible() && rxInfo.IsSecured
+	if !h.mle.IsRouterOrLeader() && !childAllowed {
 		return fmt.Errorf("mle: %s received while not router or leader (role=%s)",
 			cmdName, h.mle.Role())
 	}
@@ -113,6 +126,9 @@ func (h *FtdLinkHandlers) handleLinkAcceptVariant(rxInfo *RxInfo, isAcceptAndReq
 		}
 
 	case StateValid:
+		if childResponse {
+			return fmt.Errorf("mle: %s has no outstanding child challenge", cmdName)
+		}
 		// Already-valid link — this is a link refresh/rekey. Accept it.
 
 	default:
@@ -121,6 +137,22 @@ func (h *FtdLinkHandlers) handleLinkAcceptVariant(rxInfo *RxInfo, isAcceptAndReq
 	}
 
 	// 5. Parse conditional TLVs.
+	var replyChallenge Challenge
+	var replyRequested []uint8
+	if isAcceptAndRequest {
+		value, ok := FindTLV(rxInfo.TLVs, TLVChallenge)
+		if !ok {
+			return fmt.Errorf("mle: %s missing Challenge TLV", cmdName)
+		}
+		var err error
+		replyChallenge, err = ReadChallengeTLV(value)
+		if err != nil {
+			return err
+		}
+		if value, ok := FindTLV(rxInfo.TLVs, TLVTLVRequest); ok {
+			replyRequested = append([]uint8(nil), value...)
+		}
+	}
 
 	// Link Margin — optional.
 	var linkMargin uint8
@@ -132,6 +164,9 @@ func (h *FtdLinkHandlers) handleLinkAcceptVariant(rxInfo *RxInfo, isAcceptAndReq
 		}
 		hasLinkMargin = true
 	}
+	if childResponse && !hasLinkMargin {
+		return fmt.Errorf("mle: %s missing Link Margin TLV", cmdName)
+	}
 
 	// Leader Data — optional. If present, update local leader data.
 	if ldVal, ok := FindTLV(rxInfo.TLVs, TLVLeaderData); ok {
@@ -139,7 +174,9 @@ func (h *FtdLinkHandlers) handleLinkAcceptVariant(rxInfo *RxInfo, isAcceptAndReq
 		if err != nil {
 			return fmt.Errorf("mle: %s: %w", cmdName, err)
 		}
-		h.mle.SetLeaderData(ld)
+		if !childResponse {
+			h.mle.SetLeaderData(ld)
+		}
 	}
 
 	// Route64 — optional.
@@ -159,10 +196,16 @@ func (h *FtdLinkHandlers) handleLinkAcceptVariant(rxInfo *RxInfo, isAcceptAndReq
 	}
 
 	// 6. Finalize router state.
+	if err := h.dispatcher.checkSecurity(); err != nil {
+		return err
+	}
 	router.RLOC16 = sourceAddr
 	router.Counters.LinkFrameCounter = linkFrameCounter
 	router.Counters.MleFrameCounter = mleFrameCounter
 	router.Version = version
+	if childResponse {
+		router.LinkInfo.SetQualityIn(link.QualityForLinkMargin(rxInfo.LinkMarginRaw))
+	}
 	router.Mode = NewDeviceMode(ModeRxOnWhenIdle | ModeFullThreadDevice | ModeFullNetworkData)
 
 	if hasLinkMargin {
@@ -176,26 +219,10 @@ func (h *FtdLinkHandlers) handleLinkAcceptVariant(rxInfo *RxInfo, isAcceptAndReq
 
 	// 7. If this is an Accept And Request, send a Link Accept reply.
 	if isAcceptAndRequest {
-		// Challenge TLV — required for Accept And Request.
-		challengeVal, ok := FindTLV(rxInfo.TLVs, TLVChallenge)
-		if !ok {
-			return fmt.Errorf("mle: %s missing Challenge TLV", cmdName)
-		}
-		challenge, err := ReadChallengeTLV(challengeVal)
-		if err != nil {
-			return fmt.Errorf("mle: %s: %w", cmdName, err)
-		}
-
-		// TLV Request — optional list of TLV types the peer wants in the reply.
-		var tlvRequestVal []uint8
-		if reqVal, ok := FindTLV(rxInfo.TLVs, TLVTLVRequest); ok {
-			tlvRequestVal = reqVal
-		}
-
 		acceptInfo := LinkAcceptInfo{
 			ExtAddress:    rxInfo.SrcAddr,
-			RxChallenge:   challenge,
-			RequestedTLVs: tlvRequestVal,
+			RxChallenge:   replyChallenge,
+			RequestedTLVs: replyRequested,
 			LinkMargin:    rxInfo.LinkMarginRaw,
 		}
 

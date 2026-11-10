@@ -14,6 +14,7 @@ package instance
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hilli/gothread/backbone"
@@ -71,7 +72,6 @@ import (
 	"github.com/hilli/gothread/thread/discover"
 	"github.com/hilli/gothread/thread/indirect"
 	"github.com/hilli/gothread/thread/key"
-	"github.com/hilli/gothread/thread/link"
 	"github.com/hilli/gothread/thread/linkmetrics"
 	"github.com/hilli/gothread/thread/mesh"
 	"github.com/hilli/gothread/thread/mgmt"
@@ -165,6 +165,7 @@ func (n *notifier) register(cb NotifierCallback) {
 type timer struct {
 	fireAt    time.Time
 	fn        func()
+	owner     *Instance
 	cancelled bool
 }
 
@@ -173,6 +174,14 @@ type timer struct {
 type timerScheduler struct {
 	mu     sync.Mutex // protects timers and their cancelled flags
 	timers []*timer
+	now    func() time.Time
+}
+
+func (ts *timerScheduler) nowTime() time.Time {
+	if ts.now != nil {
+		return ts.now()
+	}
+	return time.Now()
 }
 
 // schedule adds a timer that fires after delay, calling fn.
@@ -185,8 +194,12 @@ func (ts *timerScheduler) schedule(delay time.Duration, fn func()) {
 // from firing if it has not yet been dispatched. Cancellation does not wait
 // for an already-dispatched callback. Calling cancel more than once is safe.
 func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) func() {
-	fireAt := time.Now().Add(delay)
-	t := &timer{fireAt: fireAt, fn: fn}
+	return ts.scheduleTask(delay, loopTask{fn: fn})
+}
+
+func (ts *timerScheduler) scheduleTask(delay time.Duration, task loopTask) func() {
+	fireAt := ts.nowTime().Add(delay)
+	t := &timer{fireAt: fireAt, fn: task.fn, owner: task.owner}
 	ts.mu.Lock()
 	// Insert in sorted order (earliest first).
 	idx := 0
@@ -200,6 +213,14 @@ func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) fun
 	return func() {
 		ts.mu.Lock()
 		t.cancelled = true
+		for i, pending := range ts.timers {
+			if pending == t {
+				copy(ts.timers[i:], ts.timers[i+1:])
+				ts.timers[len(ts.timers)-1] = nil
+				ts.timers = ts.timers[:len(ts.timers)-1]
+				break
+			}
+		}
 		ts.mu.Unlock()
 	}
 }
@@ -209,7 +230,7 @@ func (ts *timerScheduler) scheduleWithCancel(delay time.Duration, fn func()) fun
 // Called on the event loop; callbacks run outside the lock so they can
 // schedule timers or cancel timers that have not yet been dispatched.
 func (ts *timerScheduler) processExpired() int {
-	now := time.Now()
+	now := ts.nowTime()
 	fired := 0
 	for {
 		ts.mu.Lock()
@@ -222,7 +243,7 @@ func (ts *timerScheduler) processExpired() int {
 		cancelled := t.cancelled
 		ts.mu.Unlock()
 		if !cancelled {
-			t.fn()
+			dispatchLoopTask(loopTask{fn: t.fn, owner: t.owner})
 			fired++
 		}
 	}
@@ -236,7 +257,7 @@ func (ts *timerScheduler) nextDeadline() (time.Duration, bool) {
 	if len(ts.timers) == 0 {
 		return 0, false
 	}
-	d := time.Until(ts.timers[0].fireAt)
+	d := ts.timers[0].fireAt.Sub(ts.nowTime())
 	if d < 0 {
 		d = 0
 	}
@@ -297,7 +318,7 @@ type Instance struct {
 	platRadio    radio.Radio
 
 	// Event loop
-	taskCh chan func()
+	taskCh chan loopTask
 	stopCh chan struct{}
 	doneCh chan struct{}
 
@@ -308,8 +329,11 @@ type Instance struct {
 	notifier *notifier
 
 	// running tracks whether the event loop is active.
-	running   bool
-	runningMu sync.Mutex
+	running            bool
+	stopping           bool
+	runningMu          sync.Mutex
+	periodicTickCancel func()
+	macTaskPending     bool
 
 	// ifConfigUp tracks whether the IP6/MAC interface is enabled
 	// (equivalent to otIp6SetEnabled).
@@ -453,7 +477,13 @@ type Instance struct {
 
 	// discoveryScanner performs Thread network discovery scans
 	// across specified channels.
-	discoveryScanner *discover.Scanner
+	discoveryScanner     *discover.Scanner
+	nativeDiscovery      *nativeDiscovery
+	discoveryCleanupOnly bool // runningMu protects stopped cleanup admission against Start.
+	radioOwner           radioLoopOwner
+	radioStopRequested   bool // runningMu protects the irreversible opt-in admission fence.
+	radioBridge          *discoveryRadioBridge
+	radioRestore         *radioRestoreScope // stopped cleanup barrier owns this scoped restorer.
 
 	// dhcp6Client manages DHCPv6 address solicitation from a DHCPv6 server.
 	dhcp6Client *dhcp6.Client
@@ -486,7 +516,28 @@ type Instance struct {
 	srpServer *srp.Server
 
 	// srpClient registers services via SRP.
-	srpClient *srp.Client
+	srpClient              *srp.Client
+	srpKeyErr              error
+	srpBinding             *SRPBinding
+	sourceLifetimeMu       sync.Mutex
+	sourceLifetimeNext     uint64
+	sourceLifetimes        [SourceLifetimeCapacity]sourceLifetimeRecord
+	datasetWriteErr        error
+	securityFailure        atomic.Pointer[securityFailure]
+	securityFenceRequested atomic.Bool
+	threadAttach           *ThreadAttachAttempt
+	ownedAttachment        *ownedThreadAttachment
+	threadEpoch            uint64
+	attachTimerEpoch       uint64
+	attachTimerCancel      func()
+	pendingOwnedMLE        int
+	mleAdmissionFailed     bool
+	initialMLEFragment     *initialMLEFragment
+	activeMLEFragment      *initialMLEFragment
+	receivedMLELink        nativeMLELink
+	activeMLELink          nativeMLELink
+	expectedMLE            [2]*ownedMLEResponse
+	ownedControlPeers      [maxOwnedControlPeers]*ownedControlPeer
 
 	// ephemeralKeyMgr manages ephemeral key commissioning sessions.
 	ephemeralKeyMgr *border.EphemeralKeyManager
@@ -544,6 +595,8 @@ type Instance struct {
 
 	// mlrManager manages MLR (Multicast Listener Registration) for BBR.
 	mlrManager *bbr.MlrManager
+	siteGroups *ownedSiteGroups
+	ownedTMF   *ownedMlrClient
 
 	// energyScanServer handles Thread Management energy scan requests.
 	energyScanServer *mgmt.EnergyScanServer
@@ -762,7 +815,7 @@ func New(config Config) *Instance {
 		platSettings:     config.Settings,
 		logger:           config.Logger,
 		platRadio:        config.Radio,
-		taskCh:           make(chan func(), 256),
+		taskCh:           make(chan loopTask, 256),
 		stopCh:           make(chan struct{}),
 		doneCh:           make(chan struct{}),
 		timers:           &timerScheduler{},
@@ -809,10 +862,23 @@ func (inst *Instance) wireModules() {
 	// SubMac needs Callbacks at construction, Mac needs SubMac at
 	// construction. The bridge starts empty and gets populated after
 	// both are created.
-	bridge := &submacCallbackBridge{}
+	bridge := &submacCallbackBridge{
+		discoveryReceive:         inst.receiveDiscoveryFrame,
+		discoveryTransmit:        inst.discoveryTransmitDone,
+		scheduleTransmitDone:     inst.deferRadioMaintenance,
+		postTransmitReceiveError: inst.retainPostTransmitReceiveError,
+		validTransmitCompletion: func(frame *radio.Frame) bool {
+			return inst.subMac.IsCurrentTransmitCompletion(frame)
+		},
+	}
 
+	subRadio := inst.platRadio
+	if subRadio != nil {
+		inst.radioBridge = &discoveryRadioBridge{Radio: subRadio, inst: inst}
+		subRadio = inst.radioBridge
+	}
 	inst.subMac = submac.New(submac.Config{
-		Radio:     inst.platRadio,
+		Radio:     subRadio,
 		Callbacks: bridge,
 		ScheduleTimer: func(delay time.Duration, fn func()) {
 			if inst.subMacTimerCancel != nil {
@@ -870,6 +936,7 @@ func (inst *Instance) wireModules() {
 	inst.neighborTable = routing.NewNeighborTable(inst.routerTable, inst.childTable)
 
 	inst.netif = ip6.NewNetif()
+	inst.netif.SetAddressCallback(inst.handleOwnedAddressChange)
 	inst.udpManager = udp.New()
 	inst.icmpManager = icmp6.New()
 
@@ -885,6 +952,15 @@ func (inst *Instance) wireModules() {
 		NetworkData:  inst, // Instance delegates to netdataLeader
 		MacInfo:      inst, // Instance delegates to mac layer
 		NeighborLookup: func(addr types.ExtAddress) *mle.Neighbor {
+			if inst.ownedAttachment != nil && inst.mleService != nil {
+				parent := inst.mleService.Mle().GetParent()
+				if parent.IsStateValid() && parent.MacAddr == addr {
+					return &parent.Neighbor
+				}
+				if peer := inst.ownedPeerByAddress(addr); peer != nil {
+					return &peer.router.Neighbor
+				}
+			}
 			n := inst.neighborTable.FindNeighborByExtAddress(addr, routing.FilterValid)
 			if n == nil {
 				return nil
@@ -892,6 +968,14 @@ func (inst *Instance) wireModules() {
 			return neighborToMLE(n)
 		},
 	})
+	if inst.entropy != nil {
+		if err := inst.mleService.Dispatcher().SetEntropyReader(nativeEntropyReader{inst: inst}); err != nil {
+			inst.restoreErr = errors.Join(inst.restoreErr, err)
+		}
+	}
+	if err := inst.mleService.Dispatcher().SetSecurityHealth(inst.SecurityError); err != nil {
+		inst.restoreErr = errors.Join(inst.restoreErr, err)
+	}
 
 	// Wire AnnounceHandler's OnSignal callback so that when a newer
 	// Announce is received, the instance switches channel/PAN and
@@ -905,6 +989,27 @@ func (inst *Instance) wireModules() {
 	// parameters and defer heavier sync work via signal+periodic tick.
 	inst.mleService.Mle().SetRoleChangeCallback(func(oldRole, newRole mle.DeviceRole) {
 		inst.notifier.signal(EventThreadRoleChanged)
+		if oldRole == mle.RoleChild && newRole != mle.RoleChild && inst.ownedAttachment != nil {
+			inst.failSourceLifetimes(inst.ownedAttachment, ThreadSourceRoleLost, goterrors.ErrDetached)
+			attachment, epoch := inst.ownedAttachment, inst.threadEpoch
+			inst.deferRadioMaintenance(func() {
+				if inst.ownedAttachment == attachment && inst.threadEpoch == epoch {
+					if inst.threadEnabled {
+						_ = inst.ThreadStop()
+					} else {
+						inst.releaseOwnedAttachment()
+					}
+				}
+			})
+		}
+		if newRole >= mle.RoleRouter && inst.threadAttach != nil {
+			attempt, epoch := inst.threadAttach, inst.threadEpoch
+			inst.deferRadioMaintenance(func() {
+				if inst.threadAttach == attempt && inst.threadEpoch == epoch {
+					inst.failThreadAttach(goterrors.ErrNotCapable)
+				}
+			})
+		}
 		// Update publisher's router flag — safe because this doesn't
 		// call any Mle method that acquires mu.
 		if inst.netdataPublisher != nil {
@@ -984,7 +1089,7 @@ func (inst *Instance) wireModules() {
 		// Update SLAAC addresses based on the new on-mesh prefixes.
 		inst.updateSlaacAddresses()
 	})
-	inst.forwarder = mesh.NewForwarder()
+	inst.forwarder = mesh.NewForwarderWithTag(uint16(inst.keyManager.GetMacFrameCounter()))
 
 	// TMF services — register handlers with the TMF agent for
 	// Address Solicit/Release (Leader), Server Data (network data
@@ -1037,19 +1142,7 @@ func (inst *Instance) wireModules() {
 
 	// SLAAC Manager — generates IPv6 addresses from on-mesh prefixes.
 	{
-		var secretKey [32]byte
-		if inst.stackSettings != nil {
-			if data, err := inst.stackSettings.ReadSlaacIidSecretKey(); err == nil && len(data) == 32 {
-				copy(secretKey[:], data)
-			} else {
-				if inst.entropy != nil {
-					_ = inst.entropy.Fill(secretKey[:])
-				}
-				if inst.stackSettings != nil {
-					_ = inst.stackSettings.WriteSlaacIidSecretKey(secretKey[:])
-				}
-			}
-		}
+		secretKey := inst.readOrCreateSLAACSecret()
 		extAddr := inst.mac.GetExtAddress()
 		iidGen := slaac.NewDefaultIIDGenerator(secretKey, [8]byte(extAddr))
 		inst.slaacManager = slaac.NewManager(iidGen)
@@ -1088,6 +1181,7 @@ func (inst *Instance) wireModules() {
 	inst.discoveryScanner = discover.NewScanner(
 		&discoverySenderAdapter{inst: inst}, discoverTimer,
 	)
+	inst.mleService.DiscoveryHandler.SetScanner(inst.discoveryScanner)
 
 	// ---------------------------------------------------------------
 	// DHCPv6 Client + Server
@@ -1409,25 +1503,12 @@ func (inst *Instance) wireModules() {
 		if mi.SockPort != mle.UDPPort {
 			return false
 		}
-		// Extract the source extended address and compute link margin
-		// from the MAC-layer metadata attached during RX processing.
-		var srcExt types.ExtAddress
-		var linkMargin uint8
-		if mi.LinkInfo != nil {
-			srcExt = mi.LinkInfo.SrcExtAddr
-			// Compute link margin using the radio's actual receive
-			// sensitivity as the noise floor reference.
-			noiseFloor := inst.subMac.GetNoiseFloor()
-			linkMargin = link.ComputeLinkMargin(noiseFloor, mi.LinkInfo.RSSI)
-		}
-		_ = inst.mleService.HandleReceive(payload, srcExt, mi.PeerAddr, mi.SockAddr, linkMargin)
-		// Schedule attacher timer if the received message advanced the
-		// attach state machine.
-		inst.scheduleAttachTimer()
-		// If the child detected stale network data, send a Data Request.
-		if m := inst.mleService.Mle(); m.IsDataRequestPending() && m.IsChild() {
-			m.SetDataRequestPending(false)
-			_ = inst.mleService.ChildHandlers.SendDataRequest()
+		if inst.threadAttach != nil || inst.ownedAttachment != nil {
+			if mi.PeerPort == mle.UDPPort {
+				inst.queueOwnedMLE(payload, mi)
+			}
+		} else {
+			inst.handleMLEReceive(payload, *mi)
 		}
 		return true
 	})
@@ -1438,6 +1519,9 @@ func (inst *Instance) wireModules() {
 		if mi.SockPort != udp.TmfPort {
 			return false
 		}
+		if inst.ownedTMF != nil && inst.ownedTMF.receive(payload, mi) {
+			return true
+		}
 		coapInfo := coap.MessageInfo{
 			PeerAddr:  mi.PeerAddr,
 			PeerPort:  mi.PeerPort,
@@ -1447,6 +1531,16 @@ func (inst *Instance) wireModules() {
 		return true
 	})
 	_ = inst.udpManager.AddReceiver(coapReceiver)
+
+	// A bound native client owns its exact local port, including replies from
+	// DNS port53. Keep this ahead of broad standalone protocol interceptors.
+	_ = inst.udpManager.AddReceiver(udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
+		if binding := inst.srpBinding; binding != nil && mi.SockPort == binding.config.Local.Port {
+			binding.receive(payload, mi)
+			return true
+		}
+		return false
+	}))
 
 	// DHCPv6 client receiver intercepts UDP messages on port 546.
 	dhcp6ClientReceiver := udp.NewReceiver(func(payload []byte, mi *ip6.MessageInfo) bool {
@@ -1498,6 +1592,9 @@ func (inst *Instance) wireModules() {
 		return true
 	})
 	_ = inst.udpManager.AddReceiver(srpReceiver)
+	inst.wireOwnedAttachHandlers()
+	inst.wireOwnedNetworkDataHandlers()
+	inst.wireOwnedChildControlHandlers()
 
 	// Push initial MAC keys to the SubMac/radio.
 	inst.updateMacKeys()
@@ -1506,18 +1603,28 @@ func (inst *Instance) wireModules() {
 // Start launches the event loop goroutine. It is an error to call Start
 // on an already-running Instance.
 func (inst *Instance) Start() error {
+	inst.runningMu.Lock()
+	defer inst.runningMu.Unlock()
+	if inst.discoveryCleanupOnly {
+		return goterrors.ErrBusy
+	}
+	if inst.radioStopRequested {
+		return goterrors.ErrInvalidState
+	}
+	if inst.running {
+		return errAlreadyRunning
+	}
+	if err := inst.SecurityError(); err != nil {
+		return err
+	}
 	if err := inst.PersistenceError(); err != nil {
 		return err
 	}
-	inst.runningMu.Lock()
-	if inst.running {
-		inst.runningMu.Unlock()
-		return errAlreadyRunning
-	}
+	inst.stopCh = make(chan struct{})
+	inst.doneCh = make(chan struct{})
 	inst.running = true
-	inst.runningMu.Unlock()
 
-	go inst.eventLoop()
+	go inst.eventLoop(inst.stopCh, inst.doneCh)
 	return nil
 }
 
@@ -1528,17 +1635,13 @@ func (inst *Instance) Stop() {
 		inst.runningMu.Unlock()
 		return
 	}
+	done := inst.doneCh
+	if !inst.stopping {
+		inst.stopping = true
+		close(inst.stopCh)
+	}
 	inst.runningMu.Unlock()
-
-	close(inst.stopCh)
-	<-inst.doneCh
-
-	inst.runningMu.Lock()
-	inst.running = false
-	// Reset channels for potential restart.
-	inst.stopCh = make(chan struct{})
-	inst.doneCh = make(chan struct{})
-	inst.runningMu.Unlock()
+	<-done
 }
 
 // --------------------------------------------------------------------------
@@ -1549,8 +1652,8 @@ func (inst *Instance) Stop() {
 // enabled so frames can be sent and received. This is the equivalent of
 // OpenThread's otIp6SetEnabled(true).
 //
-// Must be called before ThreadStart. Safe to call from any goroutine;
-// the work is posted to the event loop.
+// Must be called before ThreadStart, either before Start or on the event loop.
+// External callers of a running instance must use Do.
 func (inst *Instance) IfConfigUp() error {
 	if err := inst.PersistenceError(); err != nil {
 		return err
@@ -1583,6 +1686,13 @@ func (inst *Instance) IfConfigDown() error {
 	if inst.threadEnabled {
 		return errThreadStillRunning
 	}
+	if err := inst.cancelDiscovery(goterrors.ErrInvalidState); err != nil {
+		return err
+	}
+	inst.failSourceLifetimes(nil, ThreadSourceInterfaceDown, goterrors.ErrInvalidState)
+	if inst.srpBinding != nil {
+		inst.srpBinding.close(goterrors.ErrInvalidState)
+	}
 	if inst.slaacManager != nil {
 		inst.slaacManager.Disable()
 	}
@@ -1605,6 +1715,16 @@ func (inst *Instance) IsIfConfigUp() bool { return inst.ifConfigUp }
 // interface must be up (IfConfigUp) first. This is the equivalent of
 // OpenThread's otThreadSetEnabled(true).
 func (inst *Instance) ThreadStart() error {
+	return inst.startThread(nil)
+}
+
+func (inst *Instance) startThread(challenge *mle.Challenge) error {
+	if inst.nativeDiscovery != nil {
+		return goterrors.ErrBusy
+	}
+	if err := inst.SecurityError(); err != nil {
+		return err
+	}
 	if err := inst.PersistenceError(); err != nil {
 		return err
 	}
@@ -1627,9 +1747,16 @@ func (inst *Instance) ThreadStart() error {
 		return err
 	}
 	// Kick off the attach state machine.
-	if err := inst.mleService.Attacher.Start(mle.AttachAnyPartition); err != nil {
-		return errors.Join(err, m.Disable())
+	var attachErr error
+	if challenge == nil {
+		attachErr = inst.mleService.Attacher.Start(mle.AttachAnyPartition)
+	} else {
+		attachErr = inst.mleService.Attacher.StartWithChallenge(mle.AttachAnyPartition, *challenge)
 	}
+	if attachErr != nil {
+		return errors.Join(attachErr, m.Disable())
+	}
+	inst.threadEpoch++
 	inst.threadEnabled = true
 	inst.scheduleAttachTimer()
 	return nil
@@ -1686,17 +1813,42 @@ func (inst *Instance) applyActiveDataset() error {
 // clearing routing state and detaching from the network. This is the
 // equivalent of OpenThread's otThreadSetEnabled(false).
 func (inst *Instance) ThreadStop() error {
+	cleanupErr := inst.cancelDiscovery(goterrors.ErrInvalidState)
 	if !inst.threadEnabled {
+		if cleanupErr != nil {
+			return cleanupErr
+		}
 		return errAlready
+	}
+	inst.failSourceLifetimes(inst.ownedAttachment, ThreadSourceStopped, goterrors.ErrInvalidState)
+	inst.finishThreadAttach(&ThreadAttachResult{Err: goterrors.ErrInvalidState})
+	inst.threadEpoch++
+	inst.attachTimerEpoch++
+	if inst.attachTimerCancel != nil {
+		inst.attachTimerCancel()
+		inst.attachTimerCancel = nil
+	}
+	inst.mleService.Attacher.NextTimerDelay = 0
+	if inst.srpBinding != nil {
+		inst.srpBinding.close(goterrors.ErrInvalidState)
 	}
 	m := inst.mleService.Mle()
 	_ = m.Disable()
+	inst.releaseOwnedAttachment()
+	inst.abortFragmentedTraffic()
 	inst.threadEnabled = false
-	return nil
+	return cleanupErr
 }
 
 // IsThreadRunning reports whether the Thread protocol is enabled.
 func (inst *Instance) IsThreadRunning() bool { return inst.threadEnabled }
+
+func (inst *Instance) abortFragmentedTraffic() {
+	inst.retireInitialMLEFragment()
+	if inst.forwarder != nil {
+		inst.forwarder.AbortFragments()
+	}
+}
 
 // IsRunning reports whether the event loop is active.
 func (inst *Instance) IsRunning() bool {
@@ -1709,7 +1861,23 @@ func (inst *Instance) IsRunning() bool {
 // It is safe to call from any goroutine. If the task channel is full,
 // PostTask blocks until space is available.
 func (inst *Instance) PostTask(fn func()) {
-	inst.taskCh <- fn
+	inst.runningMu.Lock()
+	stopped := inst.radioStopRequested
+	inst.runningMu.Unlock()
+	if stopped {
+		inst.logOwnedControlError(goterrors.ErrInvalidState)
+		return
+	}
+	inst.taskCh <- loopTask{fn: func() {
+		inst.runningMu.Lock()
+		stopped := inst.radioStopRequested
+		inst.runningMu.Unlock()
+		if stopped {
+			inst.logOwnedControlError(goterrors.ErrInvalidState)
+			return
+		}
+		fn()
+	}}
 }
 
 // ScheduleTimer schedules a function to run after the given delay on
@@ -2129,6 +2297,15 @@ func (inst *Instance) RLOC16() uint16 { return inst.rloc16 }
 // scheduleAttachTimer schedules a self-re-arming timer for the MLE
 // Attacher state machine.
 func (inst *Instance) scheduleAttachTimer() {
+	inst.attachTimerEpoch++
+	epoch := inst.attachTimerEpoch
+	if inst.attachTimerCancel != nil {
+		inst.attachTimerCancel()
+		inst.attachTimerCancel = nil
+	}
+	if !inst.threadEnabled {
+		return
+	}
 	a := inst.mleService.Attacher
 	if a.NextTimerDelay > 0 {
 		// Enable fast polling during attach.
@@ -2136,8 +2313,23 @@ func (inst *Instance) scheduleAttachTimer() {
 			inst.dataPollSender.SetAttachMode(true)
 		}
 		delay := a.NextTimerDelay
-		inst.timers.schedule(delay, func() {
-			_ = a.HandleTimer()
+		inst.attachTimerCancel = inst.timers.scheduleWithCancel(delay, func() {
+			if inst.attachTimerEpoch != epoch || !inst.threadEnabled {
+				return
+			}
+			inst.attachTimerCancel = nil
+			if err := inst.SecurityError(); err != nil {
+				inst.failThreadAttach(err)
+				return
+			}
+			if err := a.HandleTimer(); err != nil {
+				if inst.threadAttach != nil {
+					inst.failThreadAttach(err)
+				} else {
+					log.Warn(log.RegionMle, "Attach timer failed: %v", err)
+				}
+				return
+			}
 			inst.syncParentAddress()
 			inst.scheduleAttachTimer() // re-arm if needed
 		})
@@ -2204,6 +2396,10 @@ func (inst *Instance) syncSupervision() {
 // Network Data and drives the SLAAC manager to generate or remove
 // IPv6 addresses accordingly.
 func (inst *Instance) updateSlaacAddresses() {
+	if inst.threadAttach != nil && inst.threadAttach.profile == ThreadAttachAwakeFTDChild ||
+		inst.ownedAttachment != nil && inst.ownedAttachment.profile == ThreadAttachAwakeFTDChild {
+		return // Owned sources come only from the actual authenticated parent path.
+	}
 	if inst.slaacManager == nil || !inst.slaacManager.IsEnabled() {
 		return
 	}
@@ -2272,12 +2468,25 @@ const periodicTickInterval = 1 * time.Second
 // startPeriodicTick schedules the first periodic tick. Subsequent ticks
 // are self-re-arming via handlePeriodicTick.
 func (inst *Instance) startPeriodicTick() {
-	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
+	if inst.periodicTickCancel != nil {
+		inst.periodicTickCancel()
+	}
+	inst.periodicTickCancel = inst.timers.scheduleWithCancel(periodicTickInterval, inst.handlePeriodicTick)
 }
 
 // handlePeriodicTick is called once per second from the timer scheduler.
 // It drives all time-based state machines and then re-arms itself.
 func (inst *Instance) handlePeriodicTick() {
+	if inst.SecurityError() != nil {
+		inst.processSecurityFence()
+		inst.startPeriodicTick()
+		return
+	}
+	if inst.threadAttach != nil || inst.ownedAttachment != nil {
+		if err := inst.validateOwnedProfile(); err != nil {
+			inst.failThreadAttach(err)
+		}
+	}
 	now := time.Now()
 
 	// Router ID reuse delay counters.
@@ -2463,7 +2672,7 @@ func (inst *Instance) handlePeriodicTick() {
 	}
 
 	// Re-arm for the next tick.
-	inst.timers.schedule(periodicTickInterval, inst.handlePeriodicTick)
+	inst.startPeriodicTick()
 }
 
 // applyPublisherAction applies a single PublisherAction from the
@@ -2504,6 +2713,10 @@ func (inst *Instance) applyPublisherAction(a *netdata.PublisherAction) {
 // decremented. When the countdown expires, a retry Link Request is
 // sent if attempts remain; otherwise the link is removed.
 func (inst *Instance) handleRouterNeighborTimers(m *mle.Mle) {
+	if attachment := inst.ownedAttachment; attachment != nil && attachment.profile == ThreadAttachAwakeFTDChild {
+		inst.ageOwnedControlPeers()
+		return
+	}
 	// Determine the age threshold based on our current role.
 	maxAge := mle.MaxNeighborAge
 	if m.IsChild() {
@@ -2568,13 +2781,44 @@ func (inst *Instance) sendLinkRequestToRouter(r *routing.Router) {
 
 // eventLoop is the main processing loop. It runs in a single goroutine
 // and processes tasks, timers, and notifier events cooperatively.
-func (inst *Instance) eventLoop() {
-	defer close(inst.doneCh)
+func (inst *Instance) eventLoop(stop <-chan struct{}, done chan struct{}) {
+	defer func() {
+		inst.failSourceLifetimes(nil, ThreadSourceStopped, goterrors.ErrInvalidState)
+		if err := inst.cancelDiscovery(goterrors.ErrInvalidState); err != nil {
+			inst.logOwnedControlError(err)
+		}
+		if (inst.threadAttach != nil || inst.ownedAttachment != nil) && inst.threadEnabled {
+			_ = inst.ThreadStop()
+		}
+		inst.finishThreadAttach(&ThreadAttachResult{Err: goterrors.ErrInvalidState})
+		inst.threadEpoch++
+		inst.attachTimerEpoch++
+		if inst.attachTimerCancel != nil {
+			inst.attachTimerCancel()
+			inst.attachTimerCancel = nil
+		}
+		inst.releaseOwnedAttachment()
+		if inst.srpBinding != nil {
+			inst.srpBinding.close(goterrors.ErrInvalidState)
+		}
+		if inst.periodicTickCancel != nil {
+			inst.periodicTickCancel()
+		}
+		inst.finishRadioLoop(done)
+	}()
 
 	// Start the 1-second periodic tick.
 	inst.startPeriodicTick()
 
 	for {
+		inst.processSecurityFence()
+		select {
+		case <-stop:
+			inst.drainTasks()
+			inst.abortFragmentedTraffic()
+			return
+		default:
+		}
 		// Determine how long to wait for the next timer.
 		var timerCh <-chan time.Time
 		if d, ok := inst.timers.nextDeadline(); ok {
@@ -2582,13 +2826,22 @@ func (inst *Instance) eventLoop() {
 		}
 
 		select {
-		case <-inst.stopCh:
+		case <-stop:
 			// Drain remaining tasks before exit.
 			inst.drainTasks()
+			inst.abortFragmentedTraffic()
 			return
 
-		case fn := <-inst.taskCh:
-			fn()
+		case task := <-inst.taskCh:
+			dispatchLoopTask(task)
+			inst.processSecurityFence()
+			select {
+			case <-stop:
+				inst.drainTasks()
+				inst.abortFragmentedTraffic()
+				return
+			default:
+			}
 			// After running a task, process any timers and notifier events.
 			inst.timers.processExpired()
 			inst.notifier.process()
@@ -2596,6 +2849,7 @@ func (inst *Instance) eventLoop() {
 
 		case <-timerCh:
 			inst.timers.processExpired()
+			inst.processSecurityFence()
 			inst.notifier.process()
 			inst.stackNotifier.Process()
 		}
@@ -2604,10 +2858,12 @@ func (inst *Instance) eventLoop() {
 
 // drainTasks processes any remaining tasks in the channel.
 func (inst *Instance) drainTasks() {
-	for {
+	// Bound shutdown even if legacy PostTask producers continue posting.
+	// Do requests in the stopped generation are cancelled, not executed.
+	for remaining := len(inst.taskCh); remaining > 0; remaining-- {
 		select {
-		case fn := <-inst.taskCh:
-			fn()
+		case task := <-inst.taskCh:
+			dispatchLoopTask(task)
 		default:
 			return
 		}

@@ -268,7 +268,9 @@ func (h *ParentRequestHandler) SendParentResponse(info ParentResponseInfo, dstIP
 
 	// Challenge TLV — generate a new challenge for the child.
 	var ourChallenge Challenge
-	ourChallenge.GenerateChallenge()
+	if err := h.dispatcher.GenerateChallenge(&ourChallenge); err != nil {
+		return err
+	}
 	msg.AppendChallengeTLV(ourChallenge)
 
 	// Store the challenge in the child's PendingChallenge so we can

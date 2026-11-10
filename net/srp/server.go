@@ -1277,10 +1277,14 @@ func (s *Server) verifySignature(data []byte, sigRec *dns.SigRecord, host *RegHo
 
 	hasher.Start()
 
-	// 1. Hash the SIG RDATA (from rdata start to signer name end = sigDataOffset),
-	//    which is: fixed fields (18 bytes) + signer name (uncompressed).
-	//    We hash from rdataOffset to sigDataOffset (excludes the signature itself).
-	hasher.Update(data[rdataOffset:sigDataOffset])
+	// SIG(0) signs canonical RDATA, not the compressed signer bytes on wire.
+	// RFC2931 section 3.1; the fixed fields exclude the signature itself.
+	canonical, err := canonicalSignerName(data, rdataOffset+dns.SigRecordFixedSize)
+	if err != nil {
+		return errors.ErrParse
+	}
+	hasher.Update(data[rdataOffset : rdataOffset+dns.SigRecordFixedSize])
+	hasher.Update(canonical)
 
 	// 2. Hash the modified DNS header: decrement ARCount by 1.
 	modifiedHeader := make([]byte, dns.HeaderSize)

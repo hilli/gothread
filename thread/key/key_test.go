@@ -621,32 +621,32 @@ func TestManagerGetMacKeyId(t *testing.T) {
 	m := NewManager()
 
 	// Key sequence 0 → key ID 0.
-	if m.GetMacKeyId() != 0 {
-		t.Errorf("key ID for seq 0: got %d, want 0", m.GetMacKeyId())
+	if m.GetMacKeyId() != 1 {
+		t.Errorf("key ID for seq 0: got %d, want 1", m.GetMacKeyId())
 	}
 
 	// Key sequence 42 → key ID 42.
 	m.SetCurrentKeySequence(42, ForceUpdate)
-	if m.GetMacKeyId() != 42 {
-		t.Errorf("key ID for seq 42: got %d, want 42", m.GetMacKeyId())
+	if m.GetMacKeyId() != 43 {
+		t.Errorf("key ID for seq 42: got %d, want 43", m.GetMacKeyId())
 	}
 
 	// Key sequence 128 → key ID 0 (mod 128).
 	m.SetCurrentKeySequence(128, ForceUpdate)
-	if m.GetMacKeyId() != 0 {
-		t.Errorf("key ID for seq 128: got %d, want 0", m.GetMacKeyId())
+	if m.GetMacKeyId() != 1 {
+		t.Errorf("key ID for seq 128: got %d, want 1", m.GetMacKeyId())
 	}
 
 	// Key sequence 255 → key ID 127 (255 & 0x7F).
 	m.SetCurrentKeySequence(255, ForceUpdate)
-	if m.GetMacKeyId() != 127 {
-		t.Errorf("key ID for seq 255: got %d, want 127", m.GetMacKeyId())
+	if m.GetMacKeyId() != 128 {
+		t.Errorf("key ID for seq 255: got %d, want 128", m.GetMacKeyId())
 	}
 
 	// Key sequence 0xFFFFFFFF → key ID 127.
 	m.SetCurrentKeySequence(0xFFFFFFFF, ForceUpdate)
-	if m.GetMacKeyId() != 127 {
-		t.Errorf("key ID for max seq: got %d, want 127", m.GetMacKeyId())
+	if m.GetMacKeyId() != 128 {
+		t.Errorf("key ID for max seq: got %d, want 128", m.GetMacKeyId())
 	}
 }
 

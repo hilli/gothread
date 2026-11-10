@@ -6,6 +6,7 @@ package coap
 
 import (
 	"crypto/rand"
+	"io"
 	"math/big"
 	"strings"
 	"sync"
@@ -197,6 +198,8 @@ type pendingRequest struct {
 	confirmable  bool
 	messageID    uint16
 	token        []byte
+	responseWait time.Duration
+	ackOnly      bool
 }
 
 func (pr *pendingRequest) shouldRetransmit() bool {
@@ -241,7 +244,10 @@ type Engine struct {
 	interceptor    func(*Message, MessageInfo) error
 
 	// nowFunc is used for getting the current time; overridable in tests.
-	nowFunc func() time.Time
+	nowFunc          func() time.Time
+	ownerSchedule    func(time.Duration, func()) func()
+	cancelOwnerTimer func()
+	runtimeEntropy   io.Reader
 }
 
 // NewEngine creates a new CoAP engine with the given sender function.
@@ -336,6 +342,19 @@ func (e *Engine) findResource(uriPath string) *Resource {
 // the request times out. For NON messages with a handler, the engine tracks
 // the request but does not retransmit. txParams may be nil for defaults.
 func (e *Engine) SendMessage(msg *Message, info MessageInfo, txParams *TxParameters, handler ResponseHandler) error {
+	return e.sendMessage(msg, info, txParams, handler, false)
+}
+
+// SendMessageAwaitAck completes on the actual transport ACK of a CON
+// notification. It does not change SendMessage's separate-response contract.
+func (e *Engine) SendMessageAwaitAck(msg *Message, info MessageInfo, txParams *TxParameters, handler ResponseHandler) error {
+	if msg.GetType() != TypeConfirmable {
+		return goterrors.ErrInvalidArgs
+	}
+	return e.sendMessage(msg, info, txParams, handler, true)
+}
+
+func (e *Engine) sendMessage(msg *Message, info MessageInfo, txParams *TxParameters, handler ResponseHandler, ackOnly bool) error {
 	if txParams == nil {
 		def := DefaultTxParameters()
 		txParams = &def
@@ -347,11 +366,26 @@ func (e *Engine) SendMessage(msg *Message, info MessageInfo, txParams *TxParamet
 	if err := txParams.Validate(isConfirmable); err != nil {
 		return err
 	}
+	var initialRetx time.Duration
+	if isConfirmable {
+		if e.runtimeEntropy != nil {
+			var err error
+			initialRetx, err = checkedInitialRetx(*txParams, e.runtimeEntropy)
+			if err != nil {
+				return err
+			}
+		} else {
+			initialRetx = txParams.CalculateInitialRetxTimeout()
+		}
+	}
 
 	// Assign message ID.
 	e.mu.Lock()
-	mid := e.nextMessageID()
+	mid, midErr := e.allocateMessageIDLocked()
 	e.mu.Unlock()
+	if midErr != nil {
+		return midErr
+	}
 
 	// Write the message ID into the message bytes.
 	msgBytes := msg.GetBytes()
@@ -363,17 +397,19 @@ func (e *Engine) SendMessage(msg *Message, info MessageInfo, txParams *TxParamet
 
 	if isConfirmable || handler != nil {
 		pr := &pendingRequest{
-			message:     msg,
-			info:        info,
-			handler:     handler,
-			confirmable: isConfirmable,
-			messageID:   mid,
-			token:       copyToken(msg.GetToken()),
+			message:      msg,
+			info:         info,
+			handler:      handler,
+			confirmable:  isConfirmable,
+			messageID:    mid,
+			token:        copyToken(msg.GetToken()),
+			responseWait: txParams.CalculateExchangeLifetime(),
+			ackOnly:      ackOnly,
 		}
 
 		if isConfirmable {
 			pr.retxRemain = txParams.MaxRetransmit
-			pr.retxTimeout = txParams.CalculateInitialRetxTimeout()
+			pr.retxTimeout = initialRetx
 			pr.timerFire = e.nowFunc().Add(pr.retxTimeout)
 		} else {
 			// NON with handler — set expiry based on exchange lifetime.
@@ -546,9 +582,17 @@ func (e *Engine) processReceivedResponse(msg *Message, info MessageInfo) {
 
 	case TypeAck:
 		if code.IsEmpty() {
+			if pr.ackOnly {
+				e.finalizeCoapTransaction(pr, msg, info, nil)
+				return
+			}
 			// Separate ACK — stop retransmissions, wait for response.
 			e.mu.Lock()
-			pr.acknowledged = true
+			if !pr.acknowledged {
+				pr.acknowledged = true
+				pr.timerFire = e.nowFunc().Add(pr.responseWait)
+				e.scheduleRetxTimerLocked()
+			}
 			e.mu.Unlock()
 		} else {
 			// Piggybacked response.
@@ -579,12 +623,16 @@ func (e *Engine) findRelatedRequestLocked(msg *Message, info MessageInfo) *pendi
 	case TypeAck, TypeReset:
 		for _, pr := range e.pending {
 			if pr.messageID == msgID {
+				if pr.ackOnly && (!pr.info.HasSamePeerAddrAndPort(info) || pr.info.LocalAddr != info.LocalAddr ||
+					msg.GetCode() != CodeEmpty || len(msg.GetBytes()) != HeaderSize) {
+					continue
+				}
 				return pr
 			}
 		}
 	case TypeConfirmable, TypeNonConfirmable:
 		for _, pr := range e.pending {
-			if tokensEqual(pr.token, token) && pr.info.HasSamePeerAddrAndPort(info) {
+			if !pr.ackOnly && tokensEqual(pr.token, token) && pr.info.HasSamePeerAddrAndPort(info) {
 				return pr
 			}
 		}
@@ -623,6 +671,10 @@ func (e *Engine) removePendingLocked(pr *pendingRequest) {
 // scheduleRetxTimerLocked schedules or reschedules the retransmission timer
 // based on the earliest pending request fire time. Must be called with e.mu held.
 func (e *Engine) scheduleRetxTimerLocked() {
+	if e.cancelOwnerTimer != nil {
+		e.cancelOwnerTimer()
+		e.cancelOwnerTimer = nil
+	}
 	if e.retxTimer != nil {
 		e.retxTimer.Stop()
 		e.retxTimer = nil
@@ -651,6 +703,10 @@ func (e *Engine) scheduleRetxTimerLocked() {
 		delay = 0
 	}
 
+	if e.ownerSchedule != nil {
+		e.cancelOwnerTimer = e.ownerSchedule(delay, e.handleRetransmissionTimer)
+		return
+	}
 	e.retxTimer = time.AfterFunc(delay, func() {
 		e.handleRetransmissionTimer()
 	})
@@ -669,7 +725,7 @@ func (e *Engine) handleRetransmissionTimer() {
 			switch {
 			case pr.shouldRetransmit():
 				retransmit = append(retransmit, pr)
-			case pr.confirmable && !pr.acknowledged:
+			case pr.confirmable:
 				// All retransmissions exhausted.
 				expired = append(expired, pr)
 			case !pr.confirmable:
@@ -777,6 +833,10 @@ func (e *Engine) AbortTransaction(handler ResponseHandler) error {
 // handlers with ErrAbort) and clears the response cache.
 func (e *Engine) ClearAllRequestsAndResponses() {
 	e.mu.Lock()
+	if e.cancelOwnerTimer != nil {
+		e.cancelOwnerTimer()
+		e.cancelOwnerTimer = nil
+	}
 	pending := e.pending
 	e.pending = nil
 	e.cache = nil

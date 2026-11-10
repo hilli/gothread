@@ -13,7 +13,10 @@ package mle
 
 import (
 	"crypto/rand"
+	"io"
 	"time"
+
+	goterrors "github.com/hilli/gothread/errors"
 
 	"github.com/hilli/gothread/mac/types"
 	"github.com/hilli/gothread/net/ip6"
@@ -74,7 +77,23 @@ type Challenge [ChallengeSize]byte
 
 // GenerateChallenge fills the challenge with random bytes.
 func (c *Challenge) GenerateChallenge() {
-	_, _ = rand.Read(c[:])
+	if err := c.GenerateChallengeWithReader(rand.Reader); err != nil {
+		panic(err) // Legacy void API cannot report entropy failure; never continue with invalid challenge.
+	}
+}
+
+// GenerateChallengeWithReader commits a complete challenge only after a full
+// successful read. Native callers must propagate the error before state/TX.
+func (c *Challenge) GenerateChallengeWithReader(reader io.Reader) error {
+	if reader == nil {
+		return goterrors.ErrInvalidArgs
+	}
+	var temporary Challenge
+	if _, err := io.ReadFull(reader, temporary[:]); err != nil {
+		return err
+	}
+	*c = temporary
+	return nil
 }
 
 // FrameCounters holds the link and MLE frame counters for a neighbor.
